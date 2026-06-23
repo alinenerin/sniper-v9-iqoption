@@ -90,7 +90,7 @@ def analisar_sinal(iq, par_base):
 
         pip = 0.01 if c > 50 else 0.0001
         corpo_medio = sum(abs(closes[i]-opens[i]) for i in range(-5,0))/5
-        if corpo_medio < pip * 1.5: return None, 0
+        if corpo_medio < pip * 1.0: return None, 0
 
         score = 0; direction = None
 
