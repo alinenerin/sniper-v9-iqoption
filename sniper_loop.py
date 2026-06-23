@@ -53,20 +53,15 @@ def get_pares_funcionais(iq):
     ok = []
     try:
         all_profit = iq.get_all_profit()
-        all_open   = iq.get_all_open_time()
         for p in todos:
             if p not in all_profit: continue
-            aberto = False
-            for tipo in ['turbo','binary']:
-                if tipo in all_open and p in all_open[tipo]:
-                    if all_open[tipo][p].get('open', False):
-                        aberto = True; break
-            if not aberto: continue
             pay = all_profit[p]
             pct = pay.get('turbo', pay.get('binary', 0))
             if pct >= PAYOUT_MIN:
                 ok.append((p, pct))
-    except: pass
+                log(f'Par OK: {p} {pct:.0%}')
+    except Exception as e:
+        log(f'Erro get_pares: {e}')
     return ok
 
 def analisar_sinal(iq, par_base):
