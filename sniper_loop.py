@@ -172,6 +172,15 @@ def rodar_ciclo(iq, estado):
 
     sinais.sort(key=lambda x: x['score'], reverse=True)
     melhor = sinais[0]
+
+    # CONFIRMAÇÃO 30 SEGUNDOS — verifica se a direção se mantém
+    log(f'Sinal candidato: {melhor["par"]} {melhor["direction"]} Score:{melhor["score"]} — aguardando 30s...')
+    time.sleep(30)
+    direction2, score2 = analisar_sinal(iq, melhor['par'])
+    if direction2 != melhor['direction']:
+        log(f'Confirmacao 30s FALHOU — direcao mudou. Abortando.')
+        return None
+    log(f'Confirmacao 30s OK — direcao mantida.')
     par = melhor['par']; direction = melhor['direction']
     score = melhor['score']; payout = melhor['payout']
 
