@@ -225,4 +225,34 @@ def main():
     log(f'=== FIM: {len(ops)} operacoes neste ciclo ===')
 
 if __name__ == '__main__':
-    main()
+    from iqoptionapi.stable_api import IQ_Option
+
+    log('=== SNIPER V9 LOOP INFINITO INICIANDO ===')
+    iq = IQ_Option(IQ_EMAIL, IQ_PASS)
+    iq.connect()
+    time.sleep(3)
+    iq.change_balance(ACCOUNT_TYPE)
+    log(f'Conectado! Saldo: ${iq.get_balance():.2f}')
+
+    estado = load_estado()
+
+    while True:
+        try:
+            # Reconectar se necessário
+            if not iq.check_connect():
+                log('Reconectando...')
+                iq.connect()
+                time.sleep(3)
+                iq.change_balance(ACCOUNT_TYPE)
+
+            r = rodar_ciclo(iq, estado)
+            if r == 'STOP':
+                log('STOP ativado. Aguardando 30min...')
+                time.sleep(1800)
+                estado['losses_seq'] = 0
+                save_estado(estado)
+        except Exception as e:
+            log(f'Erro no loop: {e}')
+            time.sleep(10)
+
+        time.sleep(57)
