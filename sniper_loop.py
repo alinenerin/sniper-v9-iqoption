@@ -93,17 +93,31 @@ def analisar_sinal(iq, par_base):
         if corpo_medio < pip * 1.5: return None, 0
 
         score = 0; direction = None
-        if e7 > e9 > e21 and c > e9:
-            direction = 'CALL'; score = 70
-            if rsi < 60: score += 15
-            if rsi > 30: score += 10
-        elif e7 < e9 < e21 and c < e9:
-            direction = 'PUT'; score = 70
-            if rsi > 40: score += 15
-            if rsi < 70: score += 10
+
+        # CALL: pelo menos 2 das 3 EMAs alinhadas para cima
+        call_score = 0
+        if e7 > e9:   call_score += 1
+        if e9 > e21:  call_score += 1
+        if c > e9:    call_score += 1
+
+        # PUT: pelo menos 2 das 3 EMAs alinhadas para baixo
+        put_score = 0
+        if e7 < e9:   put_score += 1
+        if e9 < e21:  put_score += 1
+        if c < e9:    put_score += 1
+
+        if call_score >= 2 and call_score > put_score:
+            direction = 'CALL'; score = 60 + call_score * 10
+            if rsi < 60: score += 10
+            if rsi > 30: score += 5
+        elif put_score >= 2 and put_score > call_score:
+            direction = 'PUT'; score = 60 + put_score * 10
+            if rsi > 40: score += 10
+            if rsi < 70: score += 5
 
         if score < 70 or not direction: return None, 0
 
+        # Confirmação da última vela
         ultima = v[-1]
         if direction == 'CALL' and ultima['close'] < ultima['open']: return None, 0
         if direction == 'PUT'  and ultima['close'] > ultima['open']: return None, 0
