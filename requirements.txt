@@ -1,0 +1,2 @@
+iqoptionapi @ git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git@7.1.1
+requests
