@@ -187,8 +187,8 @@ def rodar_ciclo(iq, estado):
     log(f'SINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
 
     valor = max(round(saldo * VALOR_PCT, 2), 1.0)
-    # Nome limpo para o iq.buy (sem sufixo -op ou -OTC)
-    par_buy = par.replace('-op','').replace('-OTC',':OTC')
+    # Nome correto para iq.buy: -op remove o sufixo, -OTC mantém
+    par_buy = par.replace('-op', '')
     status, id_op = iq.buy(valor, par_buy, direction.lower(), 1)
 
     if not status or isinstance(id_op, str):
