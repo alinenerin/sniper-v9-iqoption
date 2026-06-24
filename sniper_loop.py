@@ -89,16 +89,28 @@ def get_pares_funcionais(iq):
 def analisar_sinal(iq, par_base):
     try:
         nome = par_base.replace('-op','').replace('-OTC','')
-        v = iq.get_candles(nome, 60, 50, time.time())
-        if not v or len(v) < 21: return None, 0
-
-        closes = [c['close'] for c in v]
-        opens  = [c['open']  for c in v]
 
         def ema(data, n):
             k = 2/(n+1); e = data[0]
             for d in data[1:]: e = d*k + e*(1-k)
             return e
+
+        # ── AUDITORIA M15 — tendência maior deve confirmar ──────────
+        v15 = iq.get_candles(nome, 900, 10, time.time())  # 10 velas de 15min
+        if v15 and len(v15) >= 5:
+            c15 = [c['close'] for c in v15]
+            e7_15  = ema(c15[-7:],  7)
+            e21_15 = ema(c15[-21:] if len(c15)>=21 else c15, 21)
+            tendencia_m15 = 'CALL' if e7_15 > e21_15 else 'PUT'
+        else:
+            tendencia_m15 = None  # sem dados M15, não bloqueia
+
+        # ── VELAS M1 ─────────────────────────────────────────────────
+        v = iq.get_candles(nome, 60, 50, time.time())
+        if not v or len(v) < 21: return None, 0
+
+        closes = [c['close'] for c in v]
+        opens  = [c['open']  for c in v]
 
         e7  = ema(closes[-20:], 7)
         e9  = ema(closes[-20:], 9)
@@ -112,7 +124,7 @@ def analisar_sinal(iq, par_base):
 
         pip = 0.01 if c > 50 else 0.0001
         corpo_medio = sum(abs(closes[i]-opens[i]) for i in range(-5,0))/5
-        corpo_min = pip * 0.5  # 0.5 pip para JPY, 0.00005 para demais
+        corpo_min = pip * 0.5
         if corpo_medio < corpo_min: return None, 0
 
         score = 0; direction = None
@@ -137,18 +149,18 @@ def analisar_sinal(iq, par_base):
         else:
             return None, 0
 
-        # Bloquear exaustão RSI
-        if direction == 'CALL' and rsi > 75: return None, 0
-        if direction == 'PUT'  and rsi < 25: return None, 0
+        # ── VETO M15 — tendência maior deve estar alinhada ──────────
+        if tendencia_m15 and tendencia_m15 != direction:
+            return None, 0  # M15 contra — bloqueado
 
-        # Filtro de exaustão: 3+ velas consecutivas na mesma direção
+        # ── FILTRO 5+ VELAS CONSECUTIVAS — exaustão ─────────────────
         consec = 1
-        for i in range(-2, -6, -1):
+        for i in range(-2, -8, -1):
             if (closes[i] > opens[i]) == (closes[-1] > opens[-1]):
                 consec += 1
             else:
                 break
-        if consec >= 3: return None, 0
+        if consec >= 5: return None, 0  # exaustão — não entra
 
         # Confirmação da última vela fechada
         ultima = v[-1]
