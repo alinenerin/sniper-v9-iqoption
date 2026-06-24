@@ -373,7 +373,7 @@ ACTIVES = {
 	'FDJP': 1350,
 	'CAN': 1351,
 	'VIAC': 1352,
-	'TFC': 1353
+	'TFC': 1353,
 
 	"EURUSD-op": 1861,
 	"EURGBP-op": 1862,
