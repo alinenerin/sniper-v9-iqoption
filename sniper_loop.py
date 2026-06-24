@@ -44,8 +44,14 @@ def log(msg):
 
 def load_estado():
     if os.path.exists(ESTADO_FILE):
-        with open(ESTADO_FILE, 'r') as f:
-            return json.load(f)
+        try:
+            with open(ESTADO_FILE, 'r') as f:
+                e = json.load(f)
+                # Limpar cooldowns antigos (> 10 min) para não bloquear após redeploy
+                agora = time.time()
+                e['ultimo_trade'] = {k: v for k, v in e.get('ultimo_trade', {}).items() if agora - v < 600}
+                return e
+        except: pass
     return {'wins':0,'losses':0,'losses_seq':0,'saldo_inicial':None,'ultimo_trade':{}}
 
 def save_estado(e):
@@ -54,16 +60,10 @@ def save_estado(e):
 
 def janela_ok(now_brt):
     hm = now_brt.hour*60 + now_brt.minute
-    # WARM-UP: bloquear 30 min após abertura de cada sessão
-    if hm >= 21*60 and hm < 21*60+30: return False, 'Warm-up Tokyo'
-    if hm >= 4*60  and hm < 4*60+30:  return False, 'Warm-up Londres'
-    if hm >= 9*60  and hm < 9*60+30:  return False, 'Warm-up NY'
-    if hm >= 21*60 or hm < 4*60:      return True, 'Tokyo'
-    if 4*60+30 <= hm < 9*60:          return True, 'Londres'
-    if 9*60+30 <= hm <= 13*60:        return True, 'Londres+NY'
-    if 13*60 < hm <= 17*60:           return True, 'NY'
-    if 17*60 < hm < 21*60:            return True, 'OTC'
-    return False, 'Fora da janela'
+    # OTC opera 24h — apenas bloqueios de minutos críticos
+    # Warm-up de 5 min após meia-noite (virada do dia)
+    if hm < 5: return False, 'Warm-up meia-noite'
+    return True, 'OTC 24h'
 
 def minuto_bloqueado(minuto):
     return minuto in [0,1,2,17,32,47,58,59]
@@ -285,6 +285,18 @@ def rodar_ciclo(iq, estado):
             return None
         if direction == 'PUT' and vela_call:
             log('Bloqueado: vela anterior contra a direção PUT.')
+            return None
+
+        # Filtro de pavio de rejeição — OTC: vela anterior deve ter pavio na direção certa
+        pavio_sup = vela_ant['max'] - max(vela_ant['open'], vela_ant['close'])
+        pavio_inf = min(vela_ant['open'], vela_ant['close']) - vela_ant['min']
+        # CALL: pavio inferior maior que superior (rejeição de baixo = força pra cima)
+        if direction == 'CALL' and pavio_inf < pavio_sup * 0.5:
+            log('Bloqueado: sem pavio de rejeição inferior para CALL.')
+            return None
+        # PUT: pavio superior maior que inferior (rejeição de cima = força pra baixo)
+        if direction == 'PUT' and pavio_sup < pavio_inf * 0.5:
+            log('Bloqueado: sem pavio de rejeição superior para PUT.')
             return None
 
         log('Vela anterior OK — aguardando nova vela abrir...')
