@@ -215,8 +215,20 @@ def rodar_ciclo(iq, estado):
     log(f'SINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
 
     valor = max(round(saldo * VALOR_PCT, 2), 1.0)
-    # Remove sufixo -op ou -OTC para o iq.buy (a lib não aceita o sufixo)
-    par_buy = par.replace('-op', '').replace('-OTC', '')
+    par_buy = par
+
+    # Verificar se o ativo está aberto para negociação neste momento
+    try:
+        open_time = iq.get_all_open_time()
+        nome_check = par.replace('-op','').replace('-OTC','')
+        tipo_check = 'turbo' if '-op' in par else 'binary'
+        aberto = open_time.get(tipo_check, {}).get(nome_check, {}).get('open', False)
+        if not aberto:
+            log(f'Ativo fechado agora: {par}')
+            return None
+    except Exception as e:
+        log(f'Erro check open_time: {e}')
+
     try:
         status, id_op = iq.buy(valor, par_buy, direction.lower(), 1)
     except Exception as e:
