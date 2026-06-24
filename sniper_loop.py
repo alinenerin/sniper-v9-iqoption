@@ -215,11 +215,14 @@ def rodar_ciclo(iq, estado):
     log(f'SINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
 
     valor = max(round(saldo * VALOR_PCT, 2), 1.0)
-    # Nome correto para iq.buy: manter -op e -OTC como estão
     par_buy = par
-    status, id_op = iq.buy(valor, par_buy, direction.lower(), 1)
+    try:
+        status, id_op = iq.buy(valor, par_buy, direction.lower(), 1)
+    except Exception as e:
+        log(f'Erro no buy: {par} | {e}')
+        return None
 
-    if not status or not id_op or (isinstance(id_op, str) and not id_op.isdigit()):
+    if not status or not id_op or (isinstance(id_op, str) and not id_op.strip().lstrip('-').isdigit()):
         log(f'Par rejeitado: {par} | resposta: {id_op}')
         return None
 
