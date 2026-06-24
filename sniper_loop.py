@@ -246,41 +246,68 @@ def rodar_ciclo(iq, estado):
     sinais.sort(key=lambda x: x['score'], reverse=True)
     melhor = sinais[0]
 
-    # CONFIRMAÇÃO CORRETA:
-    # 1. Observa os últimos 30s da vela anterior fechando
-    # 2. Aguarda a nova vela abrir
-    # 3. Entra entre 3-5 segundos após abertura da nova vela
+    # FILTRO PREDITIVO — analisa vela anterior fechada (pavio + corpo + direção)
+    # Depois entra 3-5s após abertura da nova vela
     par = melhor['par']; direction = melhor['direction']
     score = melhor['score']; payout = melhor['payout']
     nome_par = par.replace('-op','').replace('-OTC','')
 
-    log(f'Sinal candidato: {par} {direction} Score:{score} — observando vela anterior fechar...')
+    log(f'Sinal candidato: {par} {direction} Score:{score} — validando vela anterior...')
 
-    # Pega o timestamp da vela atual
     try:
-        velas_agora = iq.get_candles(nome_par, 60, 2, time.time())
-        ts_vela_atual = velas_agora[-1]['from'] if velas_agora else None
-    except:
-        ts_vela_atual = None
+        velas = iq.get_candles(nome_par, 60, 3, time.time())
+        if not velas or len(velas) < 2:
+            log('Sem velas suficientes para filtro preditivo.')
+            return None
 
-    # Aguarda a vela atual fechar e a nova abrir (espera até virada do minuto)
-    agora_ts = time.time()
-    segundos_na_vela = agora_ts % 60
-    segundos_para_fechar = 60 - segundos_na_vela
+        vela_ant = velas[-2]  # vela anterior fechada
+        corpo    = abs(vela_ant['close'] - vela_ant['open'])
+        amplitude = vela_ant['max'] - vela_ant['min']
+        pavio    = amplitude - corpo
+        pip      = 0.01 if vela_ant['close'] > 50 else 0.0001
 
-    log(f'Vela atual tem {segundos_na_vela:.0f}s — aguardando fechar em {segundos_para_fechar:.0f}s...')
-    time.sleep(segundos_para_fechar)
+        # Bloquear se vela anterior for Marubozu (sem pavio = manipulação)
+        if amplitude > 0 and (pavio / amplitude) < 0.1:
+            log('Bloqueado: vela anterior sem pavio (Marubozu).')
+            return None
 
-    # Nova vela abriu — aguarda 4 segundos (entre 3-5s)
-    log('Nova vela aberta — aguardando 4s para confirmar direção...')
-    time.sleep(4)
+        # Bloquear se corpo muito pequeno (volatilidade insuficiente)
+        if corpo < pip * 1.0:
+            log('Bloqueado: corpo da vela anterior fraco.')
+            return None
 
-    # Confirma que o sinal ainda é válido na nova vela
-    direction2, score2 = analisar_sinal(iq, par)
-    if direction2 != direction:
-        log(f'Confirmacao FALHOU na nova vela — abortando.')
+        # Confirmar que vela anterior está na mesma direção do sinal
+        vela_call = vela_ant['close'] > vela_ant['open']
+        if direction == 'CALL' and not vela_call:
+            log('Bloqueado: vela anterior contra a direção CALL.')
+            return None
+        if direction == 'PUT' and vela_call:
+            log('Bloqueado: vela anterior contra a direção PUT.')
+            return None
+
+        log('Vela anterior OK — aguardando nova vela abrir...')
+
+        # Aguarda virada do minuto (nova vela)
+        segundos_na_vela = time.time() % 60
+        segundos_para_fechar = 60 - segundos_na_vela
+        if segundos_para_fechar > 0:
+            time.sleep(segundos_para_fechar)
+
+        # Nova vela aberta — aguarda 4s (entre 3-5s)
+        time.sleep(4)
+        log('Nova vela aberta — confirmando direção e entrando...')
+
+        # Confirma sinal na nova vela
+        direction2, score2 = analisar_sinal(iq, par)
+        if direction2 != direction:
+            log('Bloqueado: nova vela não confirmou direção.')
+            return None
+
+        log('Confirmação OK — executando ordem.')
+
+    except Exception as e:
+        log(f'Erro no filtro preditivo: {e}')
         return None
-    log(f'Confirmacao OK — entrando agora.')
 
     log(f'SINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
 
