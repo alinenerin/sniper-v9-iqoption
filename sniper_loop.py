@@ -4,8 +4,9 @@ SNIPER V9 - LOOP INTERNO 8 CICLOS
 Roda 8 analises com 60s de intervalo dentro de um unico disparo do cron.
 """
 import sys, time, json, os, datetime, urllib.request, urllib.parse
-sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
-sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work')
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, BASE_DIR)
 
 IQ_EMAIL     = 'laiane.aline@gmail.com'
 IQ_PASS      = 'alineegui95'
