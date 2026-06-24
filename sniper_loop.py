@@ -279,7 +279,46 @@ def rodar_ciclo(iq, estado):
     save_estado(estado)
     saldo_antes = saldo
 
-    time.sleep(65)
+    # ── EARLY CLOSE — monitorar e fechar se preço virar contra ──────
+    nome_par = par.replace('-op','').replace('-OTC','')
+    preco_entrada = None
+    early_closed = False
+
+    try:
+        vela_entrada = iq.get_candles(nome_par, 60, 1, time.time())
+        if vela_entrada:
+            preco_entrada = vela_entrada[-1]['open']
+    except: pass
+
+    pip = 0.01 if (preco_entrada and preco_entrada > 50) else 0.0001
+    limite_contra = pip * 3  # fechar se mover 3 pips contra
+
+    for check_s in [15, 25, 35, 45]:
+        time.sleep(10)
+        if early_closed: break
+        try:
+            velas = iq.get_candles(nome_par, 60, 1, time.time())
+            if not velas or not preco_entrada: continue
+            preco_atual = velas[-1]['close']
+            movimento = preco_atual - preco_entrada
+
+            contra = (direction == 'CALL' and movimento < -limite_contra) or \
+                     (direction == 'PUT'  and movimento >  limite_contra)
+
+            if contra:
+                log(f'Early Close aos {check_s}s — preço contra {movimento:.5f}')
+                try:
+                    iq.sell_option(id_op)
+                    early_closed = True
+                    log('Posição fechada antecipadamente.')
+                except Exception as e:
+                    log(f'Erro Early Close: {e}')
+                break
+        except: pass
+
+    if not early_closed:
+        # Aguardar restante até vencimento
+        time.sleep(max(5, 65 - 10*4))
 
     # Reconectar para garantir conexão ativa antes do check
     try:
@@ -290,7 +329,7 @@ def rodar_ciclo(iq, estado):
             iq.change_balance(ACCOUNT_TYPE)
     except: pass
 
-    # Tentar check_win_v3 com timeout
+    # Tentar check_win_v3
     resultado = None
     try:
         resultado = iq.check_win_v3(id_op)
@@ -299,7 +338,7 @@ def rodar_ciclo(iq, estado):
 
     saldo_novo = iq.get_balance()
 
-    # Se check_win_v3 falhou, inferir resultado pelo saldo
+    # Se check_win_v3 falhou, inferir pelo saldo
     if resultado is None:
         diff = saldo_novo - saldo_antes
         resultado = diff
@@ -311,8 +350,8 @@ def rodar_ciclo(iq, estado):
         telegram(f'✅ WIN! {par} {direction}\n💰 +${resultado:.2f}\n💵 Saldo: ${saldo_novo:.2f}')
     else:
         estado['losses'] += 1; estado['losses_seq'] += 1
-        log(f'LOSS! -${valor:.2f} | Saldo:${saldo_novo:.2f}')
-        telegram(f'❌ LOSS! {par} {direction}\n💸 -${valor:.2f}\n💵 Saldo: ${saldo_novo:.2f}')
+        log(f'LOSS! -${abs(resultado):.2f} | Saldo:${saldo_novo:.2f}')
+        telegram(f'❌ LOSS! {par} {direction}\n💸 -${abs(resultado):.2f}\n💵 Saldo: ${saldo_novo:.2f}')
 
     taxa = round(estado['wins']/(estado['wins']+estado['losses'])*100,1)
     log(f'{estado["wins"]}W x {estado["losses"]}L | WR:{taxa}%')
