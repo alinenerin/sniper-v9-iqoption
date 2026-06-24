@@ -287,16 +287,11 @@ def rodar_ciclo(iq, estado):
             log('Bloqueado: vela anterior contra a direção PUT.')
             return None
 
-        # Filtro de pavio de rejeição — OTC: vela anterior deve ter pavio na direção certa
-        pavio_sup = vela_ant['max'] - max(vela_ant['open'], vela_ant['close'])
-        pavio_inf = min(vela_ant['open'], vela_ant['close']) - vela_ant['min']
-        # CALL: pavio inferior maior que superior (rejeição de baixo = força pra cima)
-        if direction == 'CALL' and pavio_inf < pavio_sup * 0.5:
-            log('Bloqueado: sem pavio de rejeição inferior para CALL.')
-            return None
-        # PUT: pavio superior maior que inferior (rejeição de cima = força pra baixo)
-        if direction == 'PUT' and pavio_sup < pavio_inf * 0.5:
-            log('Bloqueado: sem pavio de rejeição superior para PUT.')
+        # Filtro de corpo mínimo — vela anterior não pode ser muito fraca
+        pip_ant = 0.01 if vela_ant['close'] > 50 else 0.0001
+        corpo_ant = abs(vela_ant['close'] - vela_ant['open'])
+        if corpo_ant < pip_ant * 0.8:
+            log('Bloqueado: corpo da vela anterior muito fraco.')
             return None
 
         log('Vela anterior OK — aguardando nova vela abrir...')
