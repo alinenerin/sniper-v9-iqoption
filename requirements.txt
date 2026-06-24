@@ -1,2 +1,5 @@
-git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git
 requests
+websocket-client
+pyaes
+six
+
