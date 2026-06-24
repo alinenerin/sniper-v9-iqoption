@@ -121,22 +121,19 @@ def analisar_sinal(iq, par_base):
         if e9 < e21:  put_score += 1
         if c < e9:    put_score += 1
 
+        # Determinar direção base
         if call_score >= 2 and call_score > put_score:
-            direction = 'CALL'; score = 60 + call_score * 10
-            if rsi < 60: score += 10
-            if rsi > 30: score += 5
-            # Bloquear CALL se RSI > 75 (sobrecomprado)
-            if rsi > 75: return None, 0
+            direction = 'CALL'
         elif put_score >= 2 and put_score > call_score:
-            direction = 'PUT'; score = 60 + put_score * 10
-            if rsi > 40: score += 10
-            if rsi < 70: score += 5
-            # Bloquear PUT se RSI < 25 (sobrevendido)
-            if rsi < 25: return None, 0
+            direction = 'PUT'
+        else:
+            return None, 0
 
-        if score < 70 or not direction: return None, 0
+        # Bloquear exaustão RSI
+        if direction == 'CALL' and rsi > 75: return None, 0
+        if direction == 'PUT'  and rsi < 25: return None, 0
 
-        # Filtro de exaustão: bloquear se 3+ velas consecutivas na mesma direção
+        # Filtro de exaustão: 3+ velas consecutivas na mesma direção
         consec = 1
         for i in range(-2, -6, -1):
             if (closes[i] > opens[i]) == (closes[-1] > opens[-1]):
@@ -145,10 +142,50 @@ def analisar_sinal(iq, par_base):
                 break
         if consec >= 3: return None, 0
 
-        # Confirmação da última vela
+        # Confirmação da última vela fechada
         ultima = v[-1]
         if direction == 'CALL' and ultima['close'] < ultima['open']: return None, 0
         if direction == 'PUT'  and ultima['close'] > ultima['open']: return None, 0
+
+        # ── SCORE INSTITUCIONAL SFI V6 ──────────────────────────────
+        score = 0
+
+        # 1. Alinhamento EMAs (até 60 pts)
+        if direction == 'CALL':
+            if e7 > e9:  score += 20
+            if e9 > e21: score += 20
+            if c > e21:  score += 20
+        else:
+            if e7 < e9:  score += 20
+            if e9 < e21: score += 20
+            if c < e21:  score += 20
+
+        # 2. RSI na zona certa (até 30 pts)
+        if direction == 'CALL':
+            if 40 <= rsi <= 65: score += 30
+            elif rsi < 40:      score += 15
+        else:
+            if 35 <= rsi <= 60: score += 30
+            elif rsi > 60:      score += 15
+
+        # 3. Corpo médio forte (até 20 pts)
+        pip = 0.01 if c > 50 else 0.0001
+        if corpo_medio >= pip * 3:    score += 20
+        elif corpo_medio >= pip * 1.5: score += 10
+
+        # 4. EMA 50 confluente (até 20 pts)
+        if len(closes) >= 50:
+            e50 = ema(closes[-50:], 50)
+            if direction == 'CALL' and c > e50: score += 20
+            if direction == 'PUT'  and c < e50: score += 20
+
+        # 5. Corpo da vela atual forte (até 20 pts)
+        corpo_atual = abs(ultima['close'] - ultima['open'])
+        if corpo_atual >= pip * 2: score += 20
+        elif corpo_atual >= pip:   score += 10
+
+        # Score mínimo DIAMANTE = 150
+        if score < 150: return None, 0
 
         return direction, score
     except:
@@ -191,7 +228,7 @@ def rodar_ciclo(iq, estado):
         ult = estado['ultimo_trade'].get(par, 0)
         if agora - ult < COOLDOWN: continue
         direction, score = analisar_sinal(iq, par)
-        if direction and score >= 70:
+        if direction and score >= 150:
             sinais.append({'par':par,'direction':direction,'score':score,'payout':payout})
 
     if not sinais:
