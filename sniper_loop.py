@@ -3,7 +3,7 @@
 SNIPER V9 - LOOP INTERNO 8 CICLOS
 Roda 8 analises com 60s de intervalo dentro de um unico disparo do cron.
 """
-import sys, time, json, os, datetime
+import sys, time, json, os, datetime, urllib.request, urllib.parse
 sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
 sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work')
 
@@ -12,6 +12,15 @@ IQ_PASS      = 'alineegui95'
 ACCOUNT_TYPE = 'PRACTICE'
 PAYOUT_MIN   = 0.80
 VALOR_PCT    = 0.02
+TG_TOKEN     = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
+TG_CHAT_ID   = '5911742397'
+
+def telegram(msg):
+    try:
+        texto = urllib.parse.quote(msg)
+        url = f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage?chat_id={TG_CHAT_ID}&text={texto}'
+        urllib.request.urlopen(url, timeout=5)
+    except: pass
 LOG_FILE     = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/logs/sniper_job.log'
 ESTADO_FILE  = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/estado.json'
 CICLOS       = 8
@@ -225,9 +234,11 @@ def rodar_ciclo(iq, estado):
     if resultado > 0:
         estado['wins'] += 1; estado['losses_seq'] = 0
         log(f'WIN! +${resultado:.2f} | Saldo:${saldo_novo:.2f}')
+        telegram(f'✅ WIN! {par} {direction}\n💰 +${resultado:.2f}\n💵 Saldo: ${saldo_novo:.2f}')
     else:
         estado['losses'] += 1; estado['losses_seq'] += 1
-        log(f'LOSS! -${abs(resultado):.2f} | Saldo:${saldo_novo:.2f}')
+        log(f'LOSS! -${valor:.2f} | Saldo:${saldo_novo:.2f}')
+        telegram(f'❌ LOSS! {par} {direction}\n💸 -${valor:.2f}\n💵 Saldo: ${saldo_novo:.2f}')
 
     taxa = round(estado['wins']/(estado['wins']+estado['losses'])*100,1)
     log(f'{estado["wins"]}W x {estado["losses"]}L | WR:{taxa}%')
