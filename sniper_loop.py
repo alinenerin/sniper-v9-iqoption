@@ -240,10 +240,33 @@ def rodar_ciclo(iq, estado):
     log(f'Ordem enviada! ${valor:.2f} | ID:{id_op}')
     estado['ultimo_trade'][par] = time.time()
     save_estado(estado)
+    saldo_antes = saldo
 
     time.sleep(65)
-    resultado = iq.check_win_v3(id_op)
+
+    # Reconectar para garantir conexão ativa antes do check
+    try:
+        if not iq.check_connect():
+            log('Reconectando para checar resultado...')
+            iq.connect()
+            time.sleep(3)
+            iq.change_balance(ACCOUNT_TYPE)
+    except: pass
+
+    # Tentar check_win_v3 com timeout
+    resultado = None
+    try:
+        resultado = iq.check_win_v3(id_op)
+    except Exception as e:
+        log(f'Erro check_win_v3: {e}')
+
     saldo_novo = iq.get_balance()
+
+    # Se check_win_v3 falhou, inferir resultado pelo saldo
+    if resultado is None:
+        diff = saldo_novo - saldo_antes
+        resultado = diff
+        log(f'Resultado inferido pelo saldo: {diff:.2f}')
 
     if resultado > 0:
         estado['wins'] += 1; estado['losses_seq'] = 0
