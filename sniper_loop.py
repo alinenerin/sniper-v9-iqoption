@@ -210,8 +210,8 @@ def rodar_ciclo(iq, estado):
     par_buy = par
     status, id_op = iq.buy(valor, par_buy, direction.lower(), 1)
 
-    if not status or isinstance(id_op, str):
-        log(f'Par rejeitado: {par}')
+    if not status or not id_op or (isinstance(id_op, str) and not id_op.isdigit()):
+        log(f'Par rejeitado: {par} | resposta: {id_op}')
         return None
 
     log(f'Ordem enviada! ${valor:.2f} | ID:{id_op}')
