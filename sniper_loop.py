@@ -16,7 +16,12 @@ TG_TOKEN     = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
 TG_CHAT_ID   = '5911742397'
 
 # Chave de segurança — bot só opera se BOT_ATIVO=true no ambiente
+# Padrão: false — redeploy automático não opera
 BOT_ATIVO = os.environ.get('BOT_ATIVO', 'false').lower() == 'true'
+
+# OVERRIDE MANUAL — mude para True apenas quando quiser operar
+BOT_ATIVO_MANUAL = False
+BOT_ATIVO = BOT_ATIVO or BOT_ATIVO_MANUAL
 
 def telegram(msg):
     try:
