@@ -246,16 +246,41 @@ def rodar_ciclo(iq, estado):
     sinais.sort(key=lambda x: x['score'], reverse=True)
     melhor = sinais[0]
 
-    # CONFIRMAÇÃO 30 SEGUNDOS — verifica se a direção se mantém
-    log(f'Sinal candidato: {melhor["par"]} {melhor["direction"]} Score:{melhor["score"]} — aguardando 30s...')
-    time.sleep(30)
-    direction2, score2 = analisar_sinal(iq, melhor['par'])
-    if direction2 != melhor['direction']:
-        log(f'Confirmacao 30s FALHOU — direcao mudou. Abortando.')
-        return None
-    log(f'Confirmacao 30s OK — direcao mantida.')
+    # CONFIRMAÇÃO CORRETA:
+    # 1. Observa os últimos 30s da vela anterior fechando
+    # 2. Aguarda a nova vela abrir
+    # 3. Entra entre 3-5 segundos após abertura da nova vela
     par = melhor['par']; direction = melhor['direction']
     score = melhor['score']; payout = melhor['payout']
+    nome_par = par.replace('-op','').replace('-OTC','')
+
+    log(f'Sinal candidato: {par} {direction} Score:{score} — observando vela anterior fechar...')
+
+    # Pega o timestamp da vela atual
+    try:
+        velas_agora = iq.get_candles(nome_par, 60, 2, time.time())
+        ts_vela_atual = velas_agora[-1]['from'] if velas_agora else None
+    except:
+        ts_vela_atual = None
+
+    # Aguarda a vela atual fechar e a nova abrir (espera até virada do minuto)
+    agora_ts = time.time()
+    segundos_na_vela = agora_ts % 60
+    segundos_para_fechar = 60 - segundos_na_vela
+
+    log(f'Vela atual tem {segundos_na_vela:.0f}s — aguardando fechar em {segundos_para_fechar:.0f}s...')
+    time.sleep(segundos_para_fechar)
+
+    # Nova vela abriu — aguarda 4 segundos (entre 3-5s)
+    log('Nova vela aberta — aguardando 4s para confirmar direção...')
+    time.sleep(4)
+
+    # Confirma que o sinal ainda é válido na nova vela
+    direction2, score2 = analisar_sinal(iq, par)
+    if direction2 != direction:
+        log(f'Confirmacao FALHOU na nova vela — abortando.')
+        return None
+    log(f'Confirmacao OK — entrando agora.')
 
     log(f'SINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
 
@@ -299,34 +324,30 @@ def rodar_ciclo(iq, estado):
     except: pass
 
     pip = 0.01 if (preco_entrada and preco_entrada > 50) else 0.0001
-    limite_contra = pip * 3  # fechar se mover 3 pips contra
+    limite_contra = pip * 5  # 5 pips contra = fechar antecipado
 
-    for check_s in [15, 25, 35, 45]:
-        time.sleep(10)
-        if early_closed: break
-        try:
-            velas = iq.get_candles(nome_par, 60, 1, time.time())
-            if not velas or not preco_entrada: continue
+    # Aguarda 50 segundos e checa UMA VEZ se está contra
+    time.sleep(50)
+    early_closed = False
+    try:
+        velas = iq.get_candles(nome_par, 60, 1, time.time())
+        if velas and preco_entrada:
             preco_atual = velas[-1]['close']
             movimento = preco_atual - preco_entrada
-
             contra = (direction == 'CALL' and movimento < -limite_contra) or \
                      (direction == 'PUT'  and movimento >  limite_contra)
-
             if contra:
-                log(f'Early Close aos {check_s}s — preço contra {movimento:.5f}')
+                log(f'Early Close aos 50s — preço contra {movimento:.5f}')
                 try:
                     iq.sell_option(id_op)
                     early_closed = True
                     log('Posição fechada antecipadamente.')
                 except Exception as e:
                     log(f'Erro Early Close: {e}')
-                break
-        except: pass
+    except: pass
 
     if not early_closed:
-        # Aguardar restante até vencimento
-        time.sleep(max(5, 65 - 10*4))
+        time.sleep(15)  # aguarda vencimento
 
     # Reconectar para garantir conexão ativa antes do check
     try:
