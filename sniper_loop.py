@@ -215,7 +215,8 @@ def rodar_ciclo(iq, estado):
     log(f'SINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
 
     valor = max(round(saldo * VALOR_PCT, 2), 1.0)
-    par_buy = par
+    # Remove sufixo -op ou -OTC para o iq.buy (a lib não aceita o sufixo)
+    par_buy = par.replace('-op', '').replace('-OTC', '')
     try:
         status, id_op = iq.buy(valor, par_buy, direction.lower(), 1)
     except Exception as e:
