@@ -49,7 +49,8 @@ def minuto_bloqueado(minuto):
 
 def get_pares_funcionais(iq):
     todos = ['EURUSD-op','GBPUSD-op','AUDUSD-op','GBPJPY-op','EURGBP-op',
-             'EURUSD-OTC','GBPUSD-OTC','EURJPY-OTC','AUDUSD-OTC']
+             'USDJPY-op','EURJPY-op',
+             'EURUSD-OTC','GBPUSD-OTC','EURJPY-OTC','AUDUSD-OTC','GBPJPY-OTC','USDJPY-OTC']
     ok = []
     try:
         all_profit = iq.get_all_profit()
