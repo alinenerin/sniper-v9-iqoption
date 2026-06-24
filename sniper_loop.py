@@ -37,11 +37,15 @@ def save_estado(e):
 
 def janela_ok(now_brt):
     hm = now_brt.hour*60 + now_brt.minute
-    if hm >= 21*60 or hm < 4*60:  return True, 'Tokyo'
-    if 4*60 <= hm < 9*60:          return True, 'Londres'
-    if 9*60 <= hm <= 13*60:        return True, 'Londres+NY'
-    if 13*60 < hm <= 17*60:        return True, 'NY'
-    if 17*60 < hm < 21*60:        return True, 'OTC'
+    # WARM-UP: bloquear 30 min após abertura de cada sessão
+    if hm >= 21*60 and hm < 21*60+30: return False, 'Warm-up Tokyo'
+    if hm >= 4*60  and hm < 4*60+30:  return False, 'Warm-up Londres'
+    if hm >= 9*60  and hm < 9*60+30:  return False, 'Warm-up NY'
+    if hm >= 21*60 or hm < 4*60:      return True, 'Tokyo'
+    if 4*60+30 <= hm < 9*60:          return True, 'Londres'
+    if 9*60+30 <= hm <= 13*60:        return True, 'Londres+NY'
+    if 13*60 < hm <= 17*60:           return True, 'NY'
+    if 17*60 < hm < 21*60:            return True, 'OTC'
     return False, 'Fora da janela'
 
 def minuto_bloqueado(minuto):
