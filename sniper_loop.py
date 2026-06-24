@@ -95,7 +95,8 @@ def analisar_sinal(iq, par_base):
 
         pip = 0.01 if c > 50 else 0.0001
         corpo_medio = sum(abs(closes[i]-opens[i]) for i in range(-5,0))/5
-        if corpo_medio < pip * 1.0: return None, 0
+        corpo_min = pip * 0.5  # 0.5 pip para JPY, 0.00005 para demais
+        if corpo_medio < corpo_min: return None, 0
 
         score = 0; direction = None
 
