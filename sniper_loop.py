@@ -184,8 +184,8 @@ def analisar_sinal(iq, par_base):
         if corpo_atual >= pip * 2: score += 20
         elif corpo_atual >= pip:   score += 10
 
-        # Score mínimo DIAMANTE = 150
-        if score < 150: return None, 0
+        # Score mínimo = 120
+        if score < 120: return None, 0
 
         return direction, score
     except:
@@ -228,7 +228,7 @@ def rodar_ciclo(iq, estado):
         ult = estado['ultimo_trade'].get(par, 0)
         if agora - ult < COOLDOWN: continue
         direction, score = analisar_sinal(iq, par)
-        if direction and score >= 150:
+        if direction and score >= 120:
             sinais.append({'par':par,'direction':direction,'score':score,'payout':payout})
 
     if not sinais:
