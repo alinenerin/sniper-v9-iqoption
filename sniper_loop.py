@@ -116,12 +116,25 @@ def analisar_sinal(iq, par_base):
             direction = 'CALL'; score = 60 + call_score * 10
             if rsi < 60: score += 10
             if rsi > 30: score += 5
+            # Bloquear CALL se RSI > 75 (sobrecomprado)
+            if rsi > 75: return None, 0
         elif put_score >= 2 and put_score > call_score:
             direction = 'PUT'; score = 60 + put_score * 10
             if rsi > 40: score += 10
             if rsi < 70: score += 5
+            # Bloquear PUT se RSI < 25 (sobrevendido)
+            if rsi < 25: return None, 0
 
         if score < 70 or not direction: return None, 0
+
+        # Filtro de exaustão: bloquear se 3+ velas consecutivas na mesma direção
+        consec = 1
+        for i in range(-2, -6, -1):
+            if (closes[i] > opens[i]) == (closes[-1] > opens[-1]):
+                consec += 1
+            else:
+                break
+        if consec >= 3: return None, 0
 
         # Confirmação da última vela
         ultima = v[-1]
