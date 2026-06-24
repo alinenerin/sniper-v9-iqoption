@@ -15,6 +15,9 @@ VALOR_PCT    = 0.02
 TG_TOKEN     = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
 TG_CHAT_ID   = '5911742397'
 
+# Chave de segurança — bot só opera se BOT_ATIVO=true no ambiente
+BOT_ATIVO = os.environ.get('BOT_ATIVO', 'false').lower() == 'true'
+
 def telegram(msg):
     try:
         texto = urllib.parse.quote(msg)
@@ -391,6 +394,12 @@ if __name__ == '__main__':
     from iqoptionapi.stable_api import IQ_Option
 
     log('=== SNIPER V9 LOOP INFINITO INICIANDO ===')
+
+    if not BOT_ATIVO:
+        log('BOT_ATIVO=false — bot pausado. Defina BOT_ATIVO=true no Railway para operar.')
+        telegram('⚠️ Sniper V9 iniciado mas PAUSADO.\nDefina BOT_ATIVO=true no Railway para operar.')
+        sys.exit(0)
+
     iq = IQ_Option(IQ_EMAIL, IQ_PASS)
     log('Conectando IQ Option...')
     check, reason = iq.connect()
