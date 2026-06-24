@@ -4,9 +4,8 @@ SNIPER V9 - LOOP INTERNO 8 CICLOS
 Roda 8 analises com 60s de intervalo dentro de um unico disparo do cron.
 """
 import sys, time, json, os, datetime, urllib.request, urllib.parse
-import os
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, BASE_DIR)
+sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
+sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work')
 
 IQ_EMAIL     = 'laiane.aline@gmail.com'
 IQ_PASS      = 'alineegui95'
@@ -294,7 +293,12 @@ if __name__ == '__main__':
 
     log('=== SNIPER V9 LOOP INFINITO INICIANDO ===')
     iq = IQ_Option(IQ_EMAIL, IQ_PASS)
-    iq.connect()
+    log('Conectando IQ Option...')
+    check, reason = iq.connect()
+    log(f'Conexao: {check} | {reason}')
+    if not check:
+        log('ERRO: falha na conexao. Encerrando.')
+        sys.exit(1)
     time.sleep(3)
     iq.change_balance(ACCOUNT_TYPE)
     log(f'Conectado! Saldo: ${iq.get_balance():.2f}')
