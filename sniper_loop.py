@@ -111,7 +111,7 @@ def load_estado():
                 return e
         except:
             pass
-    return {'wins': 0, 'losses': 0, 'losses_seq': 0, 'saldo_inicial': None, 'ultimo_trade': {}}
+    return {'wins': 0, 'losses': 0, 'losses_seq': 0, 'saldo_inicial': None, 'saldo_dia': None, 'ultimo_trade': {}}
 
 def save_estado(e):
     try:
@@ -318,15 +318,37 @@ def rodar_ciclo(iq, estado):
         telegram('🛑 STOP LOSS — 3 losses seguidos. Bot pausado 30min.')
         return 'STOP'
 
-    # Stop por perda de banca
+    # ── GESTÃO DE BANCA DIÁRIA ───────────────────────────────────────
     saldo = iq.get_balance()
+
+    # Registra banca inicial do dia (reseta a cada novo dia)
+    hoje = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    if estado.get('saldo_dia') is None or estado.get('data_dia') != hoje:
+        estado['saldo_dia']  = saldo
+        estado['data_dia']   = hoje
+        estado['losses_seq'] = 0
+        save_estado(estado)
+        log(f'Banca inicial do dia: ${saldo:.2f}')
+
+    saldo_dia = estado['saldo_dia']
+
+    # STOP WIN: +5% sobre banca do dia
+    if saldo >= saldo_dia * 1.05:
+        msg = f'🎯 META ALCANÇADA DO DIA!\n💵 Saldo: ${saldo:.2f} (+{((saldo/saldo_dia)-1)*100:.1f}%)\nBot encerrado. Até amanhã!'
+        log(msg)
+        telegram(msg)
+        return 'STOP_WIN'
+
+    # STOP LOSS DIÁRIO: -3% sobre banca do dia
+    if saldo <= saldo_dia * 0.97:
+        msg = f'🛡️ STOP LOSS ATINGIDO. PRESERVANDO CAPITAL\n💵 Saldo: ${saldo:.2f} (-{((1-(saldo/saldo_dia))*100):.1f}%)\nOperações travadas até amanhã.'
+        log(msg)
+        telegram(msg)
+        return 'STOP_LOSS_DIA'
+
     if estado['saldo_inicial'] is None:
         estado['saldo_inicial'] = saldo
         save_estado(estado)
-    if saldo < estado['saldo_inicial'] * 0.90:
-        log(f'STOP: loss 10%! Saldo: ${saldo:.2f}')
-        telegram(f'🛑 STOP LOSS 10%\n💵 Saldo: ${saldo:.2f}')
-        return 'STOP'
 
     log(f'[{now_brt.strftime("%H:%M")}] [{sessao}] Analisando...')
 
@@ -601,6 +623,14 @@ if __name__ == '__main__':
                 time.sleep(1800)
                 estado['losses_seq'] = 0
                 save_estado(estado)
+            elif r == 'STOP_WIN':
+                log('Meta diária atingida. Encerrando bot.')
+                iq.close()
+                sys.exit(0)
+            elif r == 'STOP_LOSS_DIA':
+                log('Stop loss diário atingido. Encerrando até amanhã.')
+                iq.close()
+                sys.exit(0)
 
         except Exception as e:
             log(f'Erro no loop principal: {e}')
