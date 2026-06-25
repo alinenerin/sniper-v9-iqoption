@@ -78,9 +78,12 @@ def save_estado(e):
         json.dump(e, f)
 
 def janela_ok(now_brt):
-    hm = now_brt.hour * 60 + now_brt.minute
-    if hm < 5: return False, 'Warm-up meia-noite'
-    return True, 'OTC 24h'
+    h = now_brt.hour
+    # Janelas ativas: 09h-17h e 21h-02h BRT
+    # Bloqueado: 02h-09h (mercado fraco, RSI exausto, poucos sinais)
+    if 2 <= h < 9:
+        return False, f'Fora da janela ({now_brt.strftime("%H:%M")} BRT) — retoma às 09h'
+    return True, 'OTC ativo'
 
 def minuto_bloqueado(minuto):
     # Bloqueia viradas críticas e janelas de manipulação
