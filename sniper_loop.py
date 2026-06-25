@@ -268,11 +268,6 @@ def rodar_ciclo(iq, estado):
         pavio    = amplitude - corpo
         pip      = 0.01 if vela_ant['close'] > 50 else 0.0001
 
-        # Bloquear se vela anterior for Marubozu (sem pavio = manipulação)
-        if amplitude > 0 and (pavio / amplitude) < 0.1:
-            log('Bloqueado: vela anterior sem pavio (Marubozu).')
-            return None
-
         # Bloquear se corpo muito pequeno (volatilidade insuficiente)
         if corpo < pip * 1.0:
             log('Bloqueado: corpo da vela anterior fraco.')
