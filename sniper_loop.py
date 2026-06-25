@@ -519,17 +519,27 @@ def rodar_ciclo(iq, estado):
         estado['wins'] += 1
         estado['losses_seq'] = 0
         log(f'✅ WIN! +${resultado:.2f} | Saldo:${saldo_novo:.2f}')
+        total = estado['wins'] + estado.get('losses', 0)
+        taxa  = round(estado['wins'] / total * 100, 1) if total > 0 else 0
         telegram(
-            f'✅ WIN!\n📊 {par} {direction}\n'
-            f'💰 +${resultado:.2f}\n💵 Saldo: ${saldo_novo:.2f}'
+            f'✅ WIN!\n'
+            f'📊 {par} {direction} | Score:{score}\n'
+            f'💰 +${resultado:.2f} | Payout:{payout*100:.0f}%\n'
+            f'💵 Saldo: ${saldo_novo:.2f}\n'
+            f'📈 Placar: {estado["wins"]}W x {estado.get("losses",0)}L | WR:{taxa}%'
         )
     else:
         estado['losses'] += 1
         estado['losses_seq'] += 1
         log(f'❌ LOSS! -${abs(resultado):.2f} | Saldo:${saldo_novo:.2f}')
+        total = estado['wins'] + estado['losses']
+        taxa  = round(estado['wins'] / total * 100, 1) if total > 0 else 0
         telegram(
-            f'❌ LOSS\n📊 {par} {direction}\n'
-            f'💸 -${abs(resultado):.2f}\n💵 Saldo: ${saldo_novo:.2f}'
+            f'❌ LOSS\n'
+            f'📊 {par} {direction} | Score:{score}\n'
+            f'💸 -${abs(resultado):.2f}\n'
+            f'💵 Saldo: ${saldo_novo:.2f}\n'
+            f'📉 Placar: {estado["wins"]}W x {estado["losses"]}L | WR:{taxa}%'
         )
 
     total = estado['wins'] + estado['losses']
