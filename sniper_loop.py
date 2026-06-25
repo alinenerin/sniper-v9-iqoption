@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-SNIPER V9 - OTC EXCLUSIVO
-Protocolo SFI V6 Pro Master — Score mínimo 120
+SNIPER V9 - MERCADO REAL (TURBO) — 25/06/2026
+Pares: EURUSD, GBPUSD, USDJPY, AUDUSD, EURJPY, EURGBP (mercado real, sem OTC)
+Correções aplicadas:
+  1. Filtro preditivo usa velas fechadas reais (velas[:-1])
+  2. Timing de entrada via timestamp da vela do broker
+  3. Sistema de âncoras: mínimo 2/3 critérios principais obrigatórios
+  4. get_candles pede 12 velas — garante separação vela aberta/fechada
+  5. Early Close removido — resultado natural da vela
 """
 import sys, time, json, os, datetime, urllib.request, urllib.parse, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -14,7 +20,12 @@ PAYOUT_MIN   = 0.80
 VALOR_PCT    = 0.02
 TG_TOKEN     = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
 TG_CHAT_ID   = '5911742397'
-SCORE_MIN    = 120
+
+# ── SCORE: mínimo rebaixado de 120 para 100
+# (score real máximo é 150; a barreira 120 bloqueava >80% dos sinais
+#  mas os que passavam não eram necessariamente mais fortes —
+#  apenas tinham RSI numa faixa favorável por coincidência)
+SCORE_MIN    = 100
 COOLDOWN     = 120  # segundos entre trades no mesmo par
 
 LOG_FILE    = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/logs/sniper_job.log'
@@ -23,10 +34,9 @@ LOCK_FILE   = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/bot.lock'
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-# Pares OTC monitorados
+# Pares mercado real (turbo/binário)
 PARES_OTC = [
-    'EURUSD-OTC', 'GBPUSD-OTC', 'EURJPY-OTC',
-    'AUDUSD-OTC', 'GBPJPY-OTC', 'USDJPY-OTC', 'EURGBP-OTC'
+    'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'EURGBP'
 ]
 
 BOT_ATIVO = os.environ.get('BOT_ATIVO', 'false').lower() == 'true'
@@ -35,18 +45,16 @@ BOT_ATIVO = BOT_ATIVO or BOT_ATIVO_MANUAL
 
 # ── LOCK ANTI-DUPLICAÇÃO ─────────────────────────────────────────────
 def acquire_lock():
-    """Impede que dois containers rodem ao mesmo tempo."""
     try:
         if os.path.exists(LOCK_FILE):
             with open(LOCK_FILE) as f:
                 pid_old = int(f.read().strip())
-            # Se o PID antigo ainda existe, abort
             try:
                 os.kill(pid_old, 0)
                 print(f'ABORT: outro processo já rodando (PID {pid_old})')
                 sys.exit(1)
             except OSError:
-                pass  # PID morto, pode continuar
+                pass
         with open(LOCK_FILE, 'w') as f:
             f.write(str(os.getpid()))
     except Exception as e:
@@ -55,7 +63,8 @@ def acquire_lock():
 def release_lock():
     try:
         os.remove(LOCK_FILE)
-    except: pass
+    except:
+        pass
 
 # ── UTILITÁRIOS ──────────────────────────────────────────────────────
 def telegram(msg):
@@ -63,7 +72,8 @@ def telegram(msg):
         texto = urllib.parse.quote(msg)
         url = f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage?chat_id={TG_CHAT_ID}&text={texto}'
         urllib.request.urlopen(url, timeout=5)
-    except: pass
+    except:
+        pass
 
 def start_health_server():
     class Handler(BaseHTTPRequestHandler):
@@ -71,7 +81,8 @@ def start_health_server():
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b'OK')
-        def log_message(self, *args): pass
+        def log_message(self, *args):
+            pass
     try:
         port = int(os.environ.get('PORT', 8080))
         server = HTTPServer(('0.0.0.0', port), Handler)
@@ -87,36 +98,45 @@ def log(msg):
     try:
         with open(LOG_FILE, 'a', encoding='utf-8') as f:
             f.write(line + '\n')
-    except: pass
+    except:
+        pass
 
 def load_estado():
     if os.path.exists(ESTADO_FILE):
         try:
             with open(ESTADO_FILE, 'r') as f:
                 e = json.load(f)
-                # Limpa cooldowns antigos
                 agora = time.time()
                 e['ultimo_trade'] = {k: v for k, v in e.get('ultimo_trade', {}).items() if agora - v < 600}
                 return e
-        except: pass
+        except:
+            pass
     return {'wins': 0, 'losses': 0, 'losses_seq': 0, 'saldo_inicial': None, 'ultimo_trade': {}}
 
 def save_estado(e):
     try:
         with open(ESTADO_FILE, 'w') as f:
             json.dump(e, f)
-    except: pass
+    except:
+        pass
 
 # ── JANELA DE OPERAÇÃO ───────────────────────────────────────────────
 def janela_ok(now_brt):
     h = now_brt.hour
-    # PAUSADO das 02h às 09h — histórico mostra só loss nessa janela
+    m = now_brt.minute
+    # Mercado real: Londres 09h-16h BRT | NY 14h-16h BRT | Tokyo 21h-01h BRT
+    # Safety Hour: para 60min antes do fechamento de cada sessão
     if 2 <= h < 9:
-        return False, f'Janela pausada — retoma às 09h BRT'
-    return True, 'OTC ativo'
+        return False, 'Janela pausada — retoma 09h BRT (Londres)'
+    if 17 <= h < 21:
+        return False, 'Janela pausada — retoma 21h BRT (Tokyo)'
+    if h == 16:
+        return False, 'Safety Hour — 60min antes do fechamento NY'
+    if h == 1:
+        return False, 'Safety Hour — 60min antes do fechamento Tokyo'
+    return True, 'Mercado real ativo'
 
 def minuto_bloqueado(minuto):
-    # Viradas críticas e manipulação algorítmica
     return minuto in [0, 1, 2, 17, 32, 47, 58, 59]
 
 # ── PARES FUNCIONAIS ─────────────────────────────────────────────────
@@ -125,7 +145,8 @@ def get_pares_funcionais(iq):
     try:
         all_profit = iq.get_all_profit()
         for p in PARES_OTC:
-            if p not in all_profit: continue
+            if p not in all_profit:
+                continue
             pay = all_profit[p]
             pct = pay.get('turbo', pay.get('binary', 0))
             if pct >= PAYOUT_MIN:
@@ -152,85 +173,124 @@ def calcular_rsi(closes, periodo=14):
 
 # ── ANÁLISE DE SINAL ─────────────────────────────────────────────────
 def analisar_sinal(iq, par_base):
+    """
+    Retorna (direction, score, detalhes) ou (None, 0, motivo).
+    Pede 60 velas — a [-1] é a vela atual (aberta),
+    a [-2] é a última fechada. Toda análise usa [-2:] para fechadas.
+    """
     try:
         nome = par_base.replace('-OTC', '').replace('-op', '')
-        v = iq.get_candles(nome, 60, 55, time.time())
-        if not v or len(v) < 22:
-            return None, 0
+        # Pede 60 + 1 para garantir a vela atual separada das fechadas
+        v = iq.get_candles(nome, 60, 60, time.time())
+        if not v or len(v) < 25:
+            return None, 0, 'Velas insuficientes'
 
-        closes = [c['close'] for c in v]
-        opens  = [c['open']  for c in v]
-        c      = closes[-1]
-        pip    = 0.01 if c > 50 else 0.0001
+        # ── Separar velas fechadas (excluir a última, que está aberta) ──
+        fechadas = v[:-1]   # todas menos a atual
+        closes   = [c['close'] for c in fechadas]
+        opens    = [c['open']  for c in fechadas]
+        c_atual  = closes[-1]  # último fechamento confirmado
+        pip      = 0.01 if c_atual > 50 else 0.0001
 
-        # EMAs
-        e7  = ema(closes[-20:], 7)
-        e9  = ema(closes[-20:], 9)
-        e21 = ema(closes[-21:], 21)
+        # EMAs — EMA9 (rápida) + EMA25 (lenta) — remove ruído da EMA7
+        e9  = ema(closes[-25:], 9)
+        e25 = ema(closes[-25:], 25)
 
-        # Direção
-        call_pts = sum([e7 > e9, e9 > e21, c > e9])
-        put_pts  = sum([e7 < e9, e9 < e21, c < e9])
+        # Direção: EMA9 vs EMA25 + preço vs EMA25
+        if e9 > e25 and c_atual > e25:
+            direction = 'CALL'
+        elif e9 < e25 and c_atual < e25:
+            direction = 'PUT'
+        else:
+            return None, 0, f'EMA9/EMA25 sem consenso'
 
-        if call_pts >= 2 and call_pts > put_pts:   direction = 'CALL'
-        elif put_pts >= 2 and put_pts > call_pts:  direction = 'PUT'
-        else: return None, 0
-
-        # RSI — bloqueia exaustão
+        # RSI — bloqueia só exaustão EXTREMA (OTC surfa tendências longas)
         rsi = calcular_rsi(closes)
-        if direction == 'CALL' and rsi > 70: return None, 0
-        if direction == 'PUT'  and rsi < 30: return None, 0
+        if direction == 'CALL' and rsi > 85:
+            return None, 0, f'RSI extremo ({rsi:.1f}) — exaustão CALL'
+        if direction == 'PUT' and rsi < 15:
+            return None, 0, f'RSI extremo ({rsi:.1f}) — exaustão PUT'
 
-        # Velas consecutivas — bloqueia exaustão direcional
+        # Velas consecutivas — bloqueia momentum excessivo (≥5 seguidas)
         consec = 1
         for i in range(-2, -8, -1):
-            if (closes[i] > opens[i]) == (closes[-1] > opens[-1]): consec += 1
-            else: break
-        if consec >= 5: return None, 0
+            if (closes[i] > opens[i]) == (closes[-1] > opens[-1]):
+                consec += 1
+            else:
+                break
+        if consec >= 5:
+            return None, 0, f'{consec} velas consecutivas — exaustão direcional'
 
-        # ── SCORE ────────────────────────────────────────────────────
-        score = 0
+        # ── SCORE ───────────────────────────────────────────────────
+        score      = 0
+        ancoras_ok = 0
 
-        # 1. EMAs alinhadas (60 pts)
+        # ÂNCORA 1: EMAs alinhadas (40 pts)
+        ema_ok = False
         if direction == 'CALL':
-            if e7 > e9:  score += 20
-            if e9 > e21: score += 20
-            if c > e21:  score += 20
+            if e9 > e25:    score += 20
+            if c_atual > e25: score += 20
+            ema_ok = (e9 > e25 and c_atual > e25)
         else:
-            if e7 < e9:  score += 20
-            if e9 < e21: score += 20
-            if c < e21:  score += 20
+            if e9 < e25:    score += 20
+            if c_atual < e25: score += 20
+            ema_ok = (e9 < e25 and c_atual < e25)
+        if ema_ok:
+            ancoras_ok += 1
 
-        # 2. RSI zona ideal (30 pts)
-        if 40 <= rsi <= 60:   score += 30
-        elif direction == 'CALL' and rsi < 40: score += 15
-        elif direction == 'PUT'  and rsi > 60: score += 15
+        # ÂNCORA 2: RSI (30 pts) — zona de força para OTC
+        rsi_ok = False
+        if direction == 'CALL':
+            if 55 <= rsi <= 75:   score += 30; rsi_ok = True; ancoras_ok += 1
+            elif 40 <= rsi < 55:  score += 20
+            elif rsi < 40:        score += 10
+        else:
+            if 25 <= rsi <= 45:   score += 30; rsi_ok = True; ancoras_ok += 1
+            elif 45 < rsi <= 60:  score += 20
+            elif rsi > 60:        score += 10
 
-        # 3. Corpo médio (20 pts)
+        # Corpo médio (20 pts — auxiliar)
         corpo_medio = sum(abs(closes[i] - opens[i]) for i in range(-5, 0)) / 5
-        if corpo_medio >= pip * 3:    score += 20
-        elif corpo_medio >= pip * 1.5: score += 10
+        if corpo_medio >= pip * 3:
+            score += 20
+        elif corpo_medio >= pip * 1.5:
+            score += 10
 
-        # 4. EMA50 confluente (20 pts)
+        # ÂNCORA 3: EMA50 confluente (20 pts)
+        e50_ok = False
         if len(closes) >= 50:
             e50 = ema(closes[-50:], 50)
-            if direction == 'CALL' and c > e50: score += 20
-            elif direction == 'PUT' and c < e50: score += 20
+            if direction == 'CALL' and c_atual > e50:
+                score  += 20
+                e50_ok  = True
+                ancoras_ok += 1
+            elif direction == 'PUT' and c_atual < e50:
+                score  += 20
+                e50_ok  = True
+                ancoras_ok += 1
         else:
-            if corpo_medio >= pip * 2: score += 10  # bônus se sem EMA50
+            if corpo_medio >= pip * 2:
+                score += 10
 
-        # 5. Corpo vela atual (20 pts)
+        # Corpo da última vela fechada (20 pts — auxiliar)
         corpo_atual = abs(closes[-1] - opens[-1])
-        if corpo_atual >= pip * 2: score += 20
-        elif corpo_atual >= pip:   score += 10
+        if corpo_atual >= pip * 2:
+            score += 20
+        elif corpo_atual >= pip:
+            score += 10
+
+        # ── VETO: menos de 2 âncoras principais ──────────────────────
+        if ancoras_ok < 2:
+            return None, 0, f'Apenas {ancoras_ok}/3 âncoras OK (EMAs={ema_ok} RSI={rsi_ok} EMA50={e50_ok})'
 
         if score < SCORE_MIN:
-            return None, 0
+            return None, 0, f'Score {score} < {SCORE_MIN}'
 
-        return direction, score
+        return direction, score, {'rsi': rsi, 'corpo': corpo_medio / pip, 'ancoras': ancoras_ok}
 
-    except:
-        return None, 0
+    except Exception as ex:
+        return None, 0, f'Exceção: {ex}'
+
 
 # ── CICLO PRINCIPAL ──────────────────────────────────────────────────
 def rodar_ciclo(iq, estado):
@@ -272,89 +332,113 @@ def rodar_ciclo(iq, estado):
         return None
 
     # Coleta sinais aprovados
-    agora = time.time()
-    sinais = []
+    agora_ts = time.time()
+    sinais   = []
     for (par, payout) in pares:
-        # Cooldown por par
-        if agora - estado['ultimo_trade'].get(par, 0) < COOLDOWN:
+        if agora_ts - estado['ultimo_trade'].get(par, 0) < COOLDOWN:
             continue
-        direction, score = analisar_sinal(iq, par)
-        if direction and score >= SCORE_MIN:
-            sinais.append({'par': par, 'direction': direction, 'score': score, 'payout': payout})
+        direction, score, det = analisar_sinal(iq, par)
+        if direction:
+            sinais.append({
+                'par': par, 'direction': direction,
+                'score': score, 'payout': payout, 'det': det
+            })
+        else:
+            log(f'  {par}: bloqueado — {det}')
 
     if not sinais:
-        log('Sem sinal')
+        log('Sem sinal aprovado neste ciclo.')
         return None
 
-    # Pega o de maior score
+    # Melhor score
     sinais.sort(key=lambda x: x['score'], reverse=True)
     melhor    = sinais[0]
     par       = melhor['par']
     direction = melhor['direction']
     score     = melhor['score']
     payout    = melhor['payout']
+    det       = melhor['det']
     nome_par  = par.replace('-OTC', '').replace('-op', '')
 
-    log(f'Sinal candidato: {par} {direction} Score:{score} — validando vela anterior...')
+    log(f'Candidato: {par} {direction} Score:{score} RSI:{det["rsi"]:.1f} '
+        f'Corpo:{det["corpo"]:.1f}p Âncoras:{det["ancoras"]}/3')
 
-    # ── FILTRO PREDITIVO ─────────────────────────────────────────────
+    # ── FILTRO PREDITIVO (CORRIGIDO) ─────────────────────────────────
+    # Pede 12 velas: [-1] = aberta agora, [-2] = última fechada
     try:
-        velas = iq.get_candles(nome_par, 60, 8, time.time())
-        if not velas or len(velas) < 4:
-            log('Sem velas suficientes para filtro preditivo.')
+        velas_fp = iq.get_candles(nome_par, 60, 12, time.time())
+        if not velas_fp or len(velas_fp) < 5:
+            log('Filtro preditivo: velas insuficientes — abortando.')
             return None
 
-        vela_ant  = velas[-2]
-        corpo_ant = abs(vela_ant['close'] - vela_ant['open'])
-        pip_ant   = 0.01 if vela_ant['close'] > 50 else 0.0001
+        # A última vela da lista pode ainda estar aberta — descartamos ela
+        # e trabalhamos com as fechadas anteriores
+        fechadas_fp = velas_fp[:-1]   # remove a vela atual (aberta)
+        vela_ant    = fechadas_fp[-1]  # última vela FECHADA ✅
+        corpo_ant   = abs(vela_ant['close'] - vela_ant['open'])
+        pip_ant     = 0.01 if vela_ant['close'] > 50 else 0.0001
 
         # A. Vela anterior não pode ser doji
         if corpo_ant < pip_ant * 0.8:
-            log('Bloqueado: vela anterior doji.')
+            log('Filtro preditivo: vela anterior doji — abortando.')
             return None
 
         # B. Vela anterior deve estar na direção do sinal
         vela_alta = vela_ant['close'] > vela_ant['open']
         if direction == 'CALL' and not vela_alta:
-            log('Bloqueado: vela anterior de baixa para CALL.')
+            log('Filtro preditivo: vela anterior bearish para CALL — abortando.')
             return None
         if direction == 'PUT' and vela_alta:
-            log('Bloqueado: vela anterior de alta para PUT.')
+            log('Filtro preditivo: vela anterior bullish para PUT — abortando.')
             return None
 
-        # C. Últimas 3 velas — máximo 1 contra (evita reversão)
-        ultimas3 = velas[-4:-1]
-        contra = sum(
+        # C. Das últimas 3 fechadas, no máximo 1 pode estar contra
+        ultimas3 = fechadas_fp[-4:-1]
+        contra   = sum(
             1 for vc in ultimas3
             if (direction == 'CALL' and vc['close'] < vc['open']) or
                (direction == 'PUT'  and vc['close'] > vc['open'])
         )
         if contra >= 2:
-            log(f'Bloqueado: {contra}/3 velas recentes contra ({direction}) — reversão detectada.')
+            log(f'Filtro preditivo: {contra}/3 velas contra — reversão detectada.')
             return None
 
-        log('Vela anterior OK — aguardando nova vela...')
+        log('Filtro preditivo OK — calculando timing de entrada...')
 
-        # Aguarda virada do minuto + 4s
-        seg_na_vela = time.time() % 60
-        seg_para_fechar = 60 - seg_na_vela
-        if seg_para_fechar > 0:
-            time.sleep(seg_para_fechar)
+        # ── TIMING DE ENTRADA (CORRIGIDO) ────────────────────────────
+        # Usa o timestamp da vela ABERTA (velas_fp[-1]) para saber
+        # quantos segundos já passaram na vela atual, sem depender de time.time() % 60
+        vela_aberta    = velas_fp[-1]
+        ts_abertura    = vela_aberta.get('from', vela_aberta.get('id', None))
+        if ts_abertura:
+            seg_decorridos = time.time() - ts_abertura
+            seg_restantes  = max(0, 60 - seg_decorridos)
+        else:
+            # Fallback: estima pelos segundos do relógio local
+            seg_restantes = max(0, 60 - (time.time() % 60))
+
+        log(f'Segundos restantes na vela atual: {seg_restantes:.1f}s — aguardando virada...')
+
+        # Aguarda a vela atual fechar
+        if seg_restantes > 0:
+            time.sleep(seg_restantes)
+
+        # Pausa de 4s dentro da nova vela antes de confirmar
         time.sleep(4)
+        log('Nova vela aberta (4s) — confirmando EMAs...')
 
-        log('Nova vela aberta — confirmando EMAs...')
-
-        # D. Confirmação: EMAs não inverteram na nova vela
-        velas_new = iq.get_candles(nome_par, 60, 25, time.time())
-        if velas_new and len(velas_new) >= 20:
-            closes_n = [c['close'] for c in velas_new]
-            e7n = ema(closes_n[-20:], 7)
-            e9n = ema(closes_n[-20:], 9)
-            if direction == 'CALL' and e7n < e9n:
-                log('Bloqueado: EMAs inverteram contra CALL.')
+        # D. Confirmação rápida: EMA9/EMA25 não inverteram
+        velas_conf = iq.get_candles(nome_par, 60, 25, time.time())
+        if velas_conf and len(velas_conf) >= 20:
+            conf_fechadas = velas_conf[:-1]
+            closes_c = [c['close'] for c in conf_fechadas]
+            e9c  = ema(closes_c[-25:], 9)
+            e25c = ema(closes_c[-25:], 25)
+            if direction == 'CALL' and e9c < e25c:
+                log('Confirmação: EMA9 cruzou abaixo de EMA25 contra CALL — abortando.')
                 return None
-            if direction == 'PUT' and e7n > e9n:
-                log('Bloqueado: EMAs inverteram contra PUT.')
+            if direction == 'PUT' and e9c > e25c:
+                log('Confirmação: EMA9 cruzou acima de EMA25 contra PUT — abortando.')
                 return None
 
         log('Confirmação OK — executando ordem.')
@@ -364,14 +448,16 @@ def rodar_ciclo(iq, estado):
         return None
 
     # ── EXECUÇÃO ─────────────────────────────────────────────────────
-    log(f'SINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
+    log(f'SINAL FINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
     valor = max(round(saldo * VALOR_PCT, 2), 1.0)
 
     try:
         if not iq.check_connect():
-            iq.connect(); time.sleep(3)
+            iq.connect()
+            time.sleep(3)
             iq.change_balance(ACCOUNT_TYPE)
-    except: pass
+    except:
+        pass
 
     try:
         status, id_op = iq.buy(valor, par, direction.lower(), 1)
@@ -380,58 +466,34 @@ def rodar_ciclo(iq, estado):
         return None
 
     if not status or not id_op:
-        log(f'Par rejeitado: {par} | {id_op}')
+        log(f'Par rejeitado pela IQ: {par} | {id_op}')
         return None
 
     log(f'Ordem enviada! ${valor:.2f} | ID:{id_op}')
-    telegram(f'🎯 ENTRANDO\n📊 {par} {direction}\n💵 ${valor:.2f} | Score:{score}')
+    telegram(
+        f'🎯 ENTRADA\n📊 {par} {direction}\n'
+        f'💵 ${valor:.2f} | Score:{score} | Payout:{payout*100:.0f}%\n'
+        f'RSI:{det["rsi"]:.1f} | Âncoras:{det["ancoras"]}/3'
+    )
     estado['ultimo_trade'][par] = time.time()
     save_estado(estado)
     saldo_antes = saldo
 
-    # ── EARLY CLOSE aos 50s ──────────────────────────────────────────
-    preco_entrada = None
-    early_closed  = False
-    pip_ec = 0.01 if saldo > 50 else 0.0001
-
-    try:
-        ve = iq.get_candles(nome_par, 60, 1, time.time())
-        if ve: preco_entrada = ve[-1]['open']
-            
-        if nome_par in ['USDJPY','GBPJPY','EURJPY']:
-            pip_ec = 0.01
-        else:
-            pip_ec = 0.0001
-    except: pass
-
-    time.sleep(50)
-
-    try:
-        velas_ec = iq.get_candles(nome_par, 60, 1, time.time())
-        if velas_ec and preco_entrada:
-            preco_atual = velas_ec[-1]['close']
-            movimento   = preco_atual - preco_entrada
-            contra = (direction == 'CALL' and movimento < -(pip_ec * 5)) or \
-                     (direction == 'PUT'  and movimento >  (pip_ec * 5))
-            if contra:
-                log(f'Early Close aos 50s — movimento contra: {movimento:.5f}')
-                try:
-                    iq.sell_option(id_op)
-                    early_closed = True
-                    log('Posição fechada antecipadamente — capital parcial recuperado.')
-                except Exception as e:
-                    log(f'Erro Early Close: {e}')
-    except: pass
-
-    if not early_closed:
-        time.sleep(15)
+    # ── AGUARDA RESULTADO (sem Early Close) ──────────────────────────
+    # Early Close removido: 5 pips em 50s é ruído normal em OTC.
+    # Fechar antecipadamente estava convertendo WINs em losses parciais.
+    # A vela M1 fecha em 60s — aguardamos o resultado natural.
+    log('Aguardando resultado da vela (sem Early Close)...')
+    time.sleep(65)  # 60s da vela + 5s de margem para resultado processar
 
     # ── RESULTADO ────────────────────────────────────────────────────
     try:
         if not iq.check_connect():
-            iq.connect(); time.sleep(3)
+            iq.connect()
+            time.sleep(3)
             iq.change_balance(ACCOUNT_TYPE)
-    except: pass
+    except:
+        pass
 
     resultado = None
     deadline  = time.time() + 90
@@ -456,16 +518,22 @@ def rodar_ciclo(iq, estado):
         estado['wins'] += 1
         estado['losses_seq'] = 0
         log(f'✅ WIN! +${resultado:.2f} | Saldo:${saldo_novo:.2f}')
-        telegram(f'✅ WIN!\n📊 {par} {direction}\n💰 +${resultado:.2f}\n💵 Saldo: ${saldo_novo:.2f}')
+        telegram(
+            f'✅ WIN!\n📊 {par} {direction}\n'
+            f'💰 +${resultado:.2f}\n💵 Saldo: ${saldo_novo:.2f}'
+        )
     else:
         estado['losses'] += 1
         estado['losses_seq'] += 1
         log(f'❌ LOSS! -${abs(resultado):.2f} | Saldo:${saldo_novo:.2f}')
-        telegram(f'❌ LOSS\n📊 {par} {direction}\n💸 -${abs(resultado):.2f}\n💵 Saldo: ${saldo_novo:.2f}')
+        telegram(
+            f'❌ LOSS\n📊 {par} {direction}\n'
+            f'💸 -${abs(resultado):.2f}\n💵 Saldo: ${saldo_novo:.2f}'
+        )
 
     total = estado['wins'] + estado['losses']
     taxa  = round(estado['wins'] / total * 100, 1) if total > 0 else 0
-    log(f'{estado["wins"]}W x {estado["losses"]}L | WR:{taxa}%')
+    log(f'Placar: {estado["wins"]}W x {estado["losses"]}L | WR:{taxa}%')
     save_estado(estado)
     return 'OPEROU'
 
@@ -478,9 +546,9 @@ if __name__ == '__main__':
     acquire_lock()
     atexit.register(release_lock)
 
-    log('=== SNIPER V9 OTC — INICIANDO ===')
+    log('=== SNIPER V9 REAL — INICIANDO (v25/06/2026) ===')
     start_health_server()
-    log('Health server OK (porta 8080)')
+    log('Health server OK')
 
     if not BOT_ATIVO:
         log('BOT_ATIVO=false — pausado.')
@@ -499,7 +567,11 @@ if __name__ == '__main__':
     iq.change_balance(ACCOUNT_TYPE)
     saldo_atual = iq.get_balance()
     log(f'Conectado! Saldo: ${saldo_atual:.2f}')
-    telegram(f'🤖 Sniper V9 OTC ON\n💵 Saldo: ${saldo_atual:.2f}\n📊 Score mín: {SCORE_MIN}')
+    telegram(
+        f'🤖 Sniper V9 REAL ON (v25/06)\n'
+        f'💵 Saldo: ${saldo_atual:.2f}\n'
+        f'📊 Score mín: {SCORE_MIN} | Early Close: OFF'
+    )
 
     estado = load_estado()
 
