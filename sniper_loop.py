@@ -406,7 +406,7 @@ def rodar_ciclo(iq, estado):
     nome_par  = par.replace('-OTC', '').replace('-op', '')
 
     log(f'Candidato: {par} {direction} Score:{score} RSI:{det["rsi"]:.1f} '
-        f'Corpo:{det["corpo"]:.1f}p Âncoras:{det["ancoras"]}/3')
+        f'Corpo:{det["corpo_medio"]:.1f}p EMA50:{det.get("e50_ok","?")} RSI_ok:{det.get("rsi_ok","?")}')
 
     # ── FILTRO PREDITIVO (CORRIGIDO) ─────────────────────────────────
     # Pede 12 velas: [-1] = aberta agora, [-2] = última fechada
@@ -524,7 +524,7 @@ def rodar_ciclo(iq, estado):
     telegram(
         f'🎯 ENTRADA\n📊 {par} {direction}\n'
         f'💵 ${valor:.2f} | Score:{score} | Payout:{payout*100:.0f}%\n'
-        f'RSI:{det["rsi"]:.1f} | Âncoras:{det["ancoras"]}/3'
+        f'RSI:{det["rsi"]:.1f} | EMA50:{det.get("e50_ok","?")} | RSI_ok:{det.get("rsi_ok","?")}'
     )
     estado['ultimo_trade'][par] = time.time()
     save_estado(estado)
