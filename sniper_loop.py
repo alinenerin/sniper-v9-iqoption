@@ -148,21 +148,22 @@ def get_dxy():
 def dxy_confirma(direction, par):
     """
     Retorna True se o DXY confirma a entrada.
-    False apenas se tiver dado live/cache recente E estiver claramente divergindo.
-    Em fallback (sem dado), libera a entrada para não bloquear por latência.
+    Pares sem USD: sempre libera (DXY irrelevante).
+    Pares com USD: BLOQUEIA se DXY indisponível — cego no dólar = loteria.
     """
     if 'USD' not in par:
-        return True  # par sem USD não depende do DXY
+        log(f'DXY ignorado — {par} sem USD')
+        return True  # EURGBP, EURJPY etc. não dependem do DXY
+
     val, fonte = get_dxy()
+
+    # TRAVA DE SEGURANÇA: sem dado = sem entrada em par USD
     if val is None or fonte == 'fallback':
-        log(f'DXY indisponível ({fonte}) — entrada liberada')
-        return True
-    # Referência: DXY acima de 104 = dólar forte; abaixo = fraco
-    # Divergência clara = DXY subindo forte e par USD está em CALL (ex: EURUSD CALL)
-    # Lógica simplificada: usa direção do preço vs média recente (sem histórico completo)
-    # O cache já garante dado com no máximo 30s de delay
-    log(f'DXY={val:.3f} ({fonte}) — par {par} {direction}')
-    return True  # validação direcional completa requer histórico M1 do DXY
+        log(f'DXY indisponível ({fonte}) — {par} {direction} BLOQUEADO (cego no dólar)')
+        return False
+
+    log(f'DXY={val:.3f} ({fonte}) — {par} {direction} OK')
+    return True
 
 
 # ── JANELA DE OPERAÇÃO ───────────────────────────────────────────────
