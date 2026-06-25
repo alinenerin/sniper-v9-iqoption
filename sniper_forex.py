@@ -408,10 +408,7 @@ def rodar_ciclo(iq, estado):
         return None
 
     # Stop por losses seguidos
-    if estado['losses_seq'] >= 3:
-        log('STOP: 3 losses seguidos!')
-        telegram('🛑 STOP LOSS — 3 losses seguidos. Bot pausado 30min.')
-        return 'STOP'
+    # Stop por losses seguidos — DESATIVADO (validação)
 
     # ── SALDO ─────────────────────────────────────────────────────────
     saldo = iq.get_balance()
