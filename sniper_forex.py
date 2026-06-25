@@ -32,7 +32,7 @@ LOCK_FILE   = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/forex.lock'
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 # Pares Forex real
-PARES_OTC = [
+PARES_FOREX = [
     'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'EURGBP'
 ]
 
@@ -238,7 +238,7 @@ def get_pares_funcionais(iq):
     ok = []
     try:
         all_profit = iq.get_all_profit()
-        for p in PARES_OTC:
+        for p in PARES_FOREX:
             pay = all_profit.get(p)
             if pay is None:
                 log(f'Par não encontrado na API: {p}')
