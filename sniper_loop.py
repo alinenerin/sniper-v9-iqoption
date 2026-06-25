@@ -3,7 +3,8 @@
 SNIPER V9 - OTC EXCLUSIVO
 Protocolo SFI V6 Pro Master — Score mínimo 120
 """
-import sys, time, json, os, datetime, urllib.request, urllib.parse
+import sys, time, json, os, datetime, urllib.request, urllib.parse, threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
 sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work')
 
@@ -37,6 +38,22 @@ def telegram(msg):
         url = f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage?chat_id={TG_CHAT_ID}&text={texto}'
         urllib.request.urlopen(url, timeout=5)
     except: pass
+
+def start_health_server():
+    """Servidor HTTP na porta 8080 para manter o container Railway vivo."""
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'OK')
+        def log_message(self, *args): pass
+    try:
+        port = int(os.environ.get('PORT', 8080))
+        server = HTTPServer(('0.0.0.0', port), Handler)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+    except Exception as e:
+        print(f'Health server erro: {e}')
 
 def log(msg):
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -301,6 +318,18 @@ def rodar_ciclo(iq, estado):
             log('Bloqueado: vela anterior de alta para PUT.')
             return None
 
+        # 3. FILTRO DAS 3 VELAS RECENTES — evita entrar em reversão
+        # Se 2 ou mais das últimas 3 velas fechadas forem contrárias ao sinal, bloqueia
+        ultimas3 = velas[-4:-1]
+        contra_count = 0
+        for vc in ultimas3:
+            vc_alta = vc['close'] > vc['open']
+            if direction == 'CALL' and not vc_alta: contra_count += 1
+            if direction == 'PUT'  and vc_alta:     contra_count += 1
+        if contra_count >= 2:
+            log(f'Bloqueado: {contra_count}/3 velas recentes contra o sinal ({direction}) — reversão detectada.')
+            return None
+
         log('Vela anterior OK — aguardando nova vela abrir...')
 
         # Aguarda virada do minuto
@@ -443,6 +472,8 @@ if __name__ == '__main__':
     from iqoptionapi.stable_api import IQ_Option
 
     log('=== SNIPER V9 OTC — LOOP INFINITO ===')
+    start_health_server()
+    log('Health server iniciado na porta 8080.')
 
     if not BOT_ATIVO:
         log('BOT_ATIVO=false — bot pausado.')
