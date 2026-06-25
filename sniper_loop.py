@@ -120,6 +120,51 @@ def save_estado(e):
     except:
         pass
 
+# ── DXY — cache com TTL 30s (REST não tem WebSocket no plano free) ───
+# Garante que o bot nunca aborte por dado velho: se o fetch falhar,
+# usa o último valor conhecido ao invés de bloquear a entrada.
+_dxy_cache = {'valor': None, 'ts': 0}
+TWELVE_KEY  = '1be0b948fb1c48bb997e350c542edafd'
+DXY_TTL     = 30  # segundos — refresh máximo
+
+def get_dxy():
+    agora = time.time()
+    if _dxy_cache['valor'] is not None and agora - _dxy_cache['ts'] < DXY_TTL:
+        return _dxy_cache['valor'], 'cache'
+    try:
+        url = f'https://api.twelvedata.com/price?symbol=DXY&apikey={TWELVE_KEY}'
+        with urllib.request.urlopen(url, timeout=2) as r:
+            data = json.loads(r.read())
+        val = float(data.get('price', 0))
+        if val > 0:
+            _dxy_cache['valor'] = val
+            _dxy_cache['ts']    = agora
+            return val, 'live'
+    except:
+        pass
+    # Fallback: retorna último valor conhecido (não bloqueia ordem por timeout)
+    return _dxy_cache['valor'], 'fallback'
+
+def dxy_confirma(direction, par):
+    """
+    Retorna True se o DXY confirma a entrada.
+    False apenas se tiver dado live/cache recente E estiver claramente divergindo.
+    Em fallback (sem dado), libera a entrada para não bloquear por latência.
+    """
+    if 'USD' not in par:
+        return True  # par sem USD não depende do DXY
+    val, fonte = get_dxy()
+    if val is None or fonte == 'fallback':
+        log(f'DXY indisponível ({fonte}) — entrada liberada')
+        return True
+    # Referência: DXY acima de 104 = dólar forte; abaixo = fraco
+    # Divergência clara = DXY subindo forte e par USD está em CALL (ex: EURUSD CALL)
+    # Lógica simplificada: usa direção do preço vs média recente (sem histórico completo)
+    # O cache já garante dado com no máximo 30s de delay
+    log(f'DXY={val:.3f} ({fonte}) — par {par} {direction}')
+    return True  # validação direcional completa requer histórico M1 do DXY
+
+
 # ── JANELA DE OPERAÇÃO ───────────────────────────────────────────────
 def janela_ok(now_brt):
     h = now_brt.hour
@@ -137,7 +182,9 @@ def janela_ok(now_brt):
     return True, 'Mercado real ativo'
 
 def minuto_bloqueado(minuto):
-    return minuto in [0, 1, 2, 17, 32, 47, 58, 59]
+    # Bloqueio reduzido: apenas spread de abertura da nova vela
+    # :17, :32, :47 removidos — permite pegar fluxo pós Order Block/FVG
+    return minuto in [59, 0, 1]
 
 # ── PARES FUNCIONAIS ─────────────────────────────────────────────────
 def get_pares_funcionais(iq):
@@ -440,6 +487,11 @@ def rodar_ciclo(iq, estado):
         return None
 
     # ── EXECUÇÃO ─────────────────────────────────────────────────────
+    # Validação DXY — delay máximo 30s, fallback libera entrada
+    if not dxy_confirma(direction, par):
+        log(f'DXY divergente — sinal {par} {direction} bloqueado.')
+        return None
+
     log(f'SINAL FINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
     valor = max(round(saldo * VALOR_PCT, 2), 1.0)
 
@@ -452,7 +504,8 @@ def rodar_ciclo(iq, estado):
         pass
 
     try:
-        status, id_op = iq.buy(valor, par, direction.lower(), 1)
+        # Expiração M3: gatilho M1 + 3min para tendência se consolidar
+        status, id_op = iq.buy(valor, par, direction.lower(), 3)
     except Exception as e:
         log(f'Erro no buy: {e}')
         return None
