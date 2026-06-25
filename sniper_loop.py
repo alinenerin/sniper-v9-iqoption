@@ -36,7 +36,7 @@ os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 # Pares mercado real (turbo/binário)
 PARES_OTC = [
-    'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'EURGBP'
+    'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'EURGBP-OTC'
 ]
 
 BOT_ATIVO = os.environ.get('BOT_ATIVO', 'false').lower() == 'true'
