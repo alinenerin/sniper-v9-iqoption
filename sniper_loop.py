@@ -25,8 +25,8 @@ TG_CHAT_ID   = '5911742397'
 # (score real máximo é 150; a barreira 120 bloqueava >80% dos sinais
 #  mas os que passavam não eram necessariamente mais fortes —
 #  apenas tinham RSI numa faixa favorável por coincidência)
-SCORE_MIN    = 100
-COOLDOWN     = 120  # segundos entre trades no mesmo par
+SCORE_MIN    = 120
+COOLDOWN     = 120
 
 LOG_FILE    = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/logs/sniper_job.log'
 ESTADO_FILE = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/estado.json'
