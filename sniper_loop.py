@@ -501,8 +501,14 @@ def rodar_ciclo(iq, estado):
     while time.time() < deadline:
         try:
             r = iq.check_win_v3(id_op)
-            if r is not None:
+            log(f'check_win_v3 raw: {r!r}')
+            if r is not None and r != 0.0:
                 resultado = r
+                break
+            elif r == 0.0:
+                # 0.0 = LOSS confirmado pela IQ Option
+                resultado = -valor
+                log(f'Resultado 0.0 interpretado como LOSS: -{valor}')
                 break
         except Exception as e:
             log(f'check_win_v3 erro: {e}')
