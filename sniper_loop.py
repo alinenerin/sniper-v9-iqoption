@@ -402,11 +402,19 @@ def rodar_ciclo(iq, estado):
             iq.change_balance(ACCOUNT_TYPE)
     except: pass
 
+    # Aguarda até 90s para o resultado — com timeout por segurança
     resultado = None
-    try:
-        resultado = iq.check_win_v3(id_op)
-    except Exception as e:
-        log(f'Erro check_win_v3: {e}')
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        try:
+            r = iq.check_win_v3(id_op)
+            if r is not None:
+                resultado = r
+                break
+        except Exception as e:
+            log(f'check_win_v3 erro: {e}')
+            break
+        time.sleep(3)
 
     saldo_novo = iq.get_balance()
 
