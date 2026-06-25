@@ -79,9 +79,9 @@ def save_estado(e):
 
 def janela_ok(now_brt):
     h = now_brt.hour
-    # Janela fraca 02h-09h: score mínimo elevado para 140
+    # Janela fraca 02h-09h: PAUSADO — histórico mostra só loss nesse horário
     if 2 <= h < 9:
-        return True, 'OTC janela fraca (score 140+)'
+        return False, f'Janela pausada ({now_brt.strftime("%H:%M")} BRT) — retoma às 09h'
     return True, 'OTC ativo'
 
 def minuto_bloqueado(minuto):
