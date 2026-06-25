@@ -79,10 +79,9 @@ def save_estado(e):
 
 def janela_ok(now_brt):
     h = now_brt.hour
-    # Janelas ativas: 09h-17h e 21h-02h BRT
-    # Bloqueado: 02h-09h (mercado fraco, RSI exausto, poucos sinais)
+    # Janela fraca 02h-09h: score mínimo elevado para 140
     if 2 <= h < 9:
-        return False, f'Fora da janela ({now_brt.strftime("%H:%M")} BRT) — retoma às 09h'
+        return True, 'OTC janela fraca (score 140+)'
     return True, 'OTC ativo'
 
 def minuto_bloqueado(minuto):
@@ -267,6 +266,12 @@ def rodar_ciclo(iq, estado):
 
     log(f'[{now_brt.strftime("%H:%M")}] [{sessao}] Analisando...')
 
+    # Score mínimo dinâmico — janela fraca exige sinal mais forte
+    h = now_brt.hour
+    score_min = 140 if 2 <= h < 9 else SCORE_MIN
+    if score_min == 140:
+        log('Janela fraca (02h-09h) — score mínimo elevado para 140.')
+
     pares = get_pares_funcionais(iq)
     if not pares:
         log('Nenhum par disponivel')
@@ -278,7 +283,7 @@ def rodar_ciclo(iq, estado):
         ult = estado['ultimo_trade'].get(par, 0)
         if agora - ult < COOLDOWN: continue
         direction, score = analisar_sinal(iq, par)
-        if direction and score >= SCORE_MIN:
+        if direction and score >= score_min:
             sinais.append({'par': par, 'direction': direction, 'score': score, 'payout': payout})
 
     if not sinais:
