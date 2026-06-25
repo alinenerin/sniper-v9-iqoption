@@ -239,13 +239,16 @@ def get_pares_funcionais(iq):
     try:
         all_profit = iq.get_all_profit()
         for p in PARES_OTC:
-            if p not in all_profit:
+            pay = all_profit.get(p)
+            if pay is None:
+                log(f'Par não encontrado na API: {p}')
                 continue
-            pay = all_profit[p]
             pct = pay.get('turbo', pay.get('binary', 0))
             if pct >= PAYOUT_MIN:
                 ok.append((p, pct))
                 log(f'Par OK: {p} {pct:.0%}')
+            else:
+                log(f'Par payout baixo: {p} {pct:.0%}')
     except Exception as e:
         log(f'Erro get_pares: {e}')
     return ok
