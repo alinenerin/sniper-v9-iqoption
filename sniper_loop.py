@@ -120,51 +120,6 @@ def save_estado(e):
     except:
         pass
 
-# ── DXY — cache com TTL 30s (REST não tem WebSocket no plano free) ───
-# Garante que o bot nunca aborte por dado velho: se o fetch falhar,
-# usa o último valor conhecido ao invés de bloquear a entrada.
-_dxy_cache = {'valor': None, 'ts': 0}
-TWELVE_KEY  = '1be0b948fb1c48bb997e350c542edafd'
-DXY_TTL     = 30  # segundos — refresh máximo
-
-def get_dxy():
-    agora = time.time()
-    if _dxy_cache['valor'] is not None and agora - _dxy_cache['ts'] < DXY_TTL:
-        return _dxy_cache['valor'], 'cache'
-    try:
-        url = f'https://api.twelvedata.com/price?symbol=DXY&apikey={TWELVE_KEY}'
-        with urllib.request.urlopen(url, timeout=2) as r:
-            data = json.loads(r.read())
-        val = float(data.get('price', 0))
-        if val > 0:
-            _dxy_cache['valor'] = val
-            _dxy_cache['ts']    = agora
-            return val, 'live'
-    except:
-        pass
-    # Fallback: retorna último valor conhecido (não bloqueia ordem por timeout)
-    return _dxy_cache['valor'], 'fallback'
-
-def dxy_confirma(direction, par):
-    """
-    Retorna True se o DXY confirma a entrada.
-    Pares sem USD: sempre libera (DXY irrelevante).
-    Pares com USD: BLOQUEIA se DXY indisponível — cego no dólar = loteria.
-    """
-    if 'USD' not in par:
-        log(f'DXY ignorado — {par} sem USD')
-        return True  # EURGBP, EURJPY etc. não dependem do DXY
-
-    val, fonte = get_dxy()
-
-    # TRAVA DE SEGURANÇA: sem dado = sem entrada em par USD
-    if val is None or fonte == 'fallback':
-        log(f'DXY indisponível ({fonte}) — {par} {direction} BLOQUEADO (cego no dólar)')
-        return False
-
-    log(f'DXY={val:.3f} ({fonte}) — {par} {direction} OK')
-    return True
-
 
 # ── JANELA DE OPERAÇÃO ───────────────────────────────────────────────
 def janela_ok(now_brt):
@@ -493,11 +448,6 @@ def rodar_ciclo(iq, estado):
         return None
 
     # ── EXECUÇÃO ─────────────────────────────────────────────────────
-    # Validação DXY — delay máximo 30s, fallback libera entrada
-    if not dxy_confirma(direction, par):
-        log(f'DXY divergente — sinal {par} {direction} bloqueado.')
-        return None
-
     log(f'SINAL FINAL: {par} {direction} Score:{score} Payout:{payout*100:.0f}%')
     valor = max(round(saldo * VALOR_PCT, 2), 1.0)
 
