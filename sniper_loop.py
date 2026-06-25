@@ -485,9 +485,9 @@ def rodar_ciclo(iq, estado):
     # Fechar antecipadamente estava convertendo WINs em losses parciais.
     # A vela M1 fecha em 60s — aguardamos o resultado natural.
     log('Aguardando resultado da vela (sem Early Close)...')
-    time.sleep(65)  # 60s da vela + 5s de margem para resultado processar
+    time.sleep(68)  # 60s da vela + 8s de margem
 
-    # ── RESULTADO ────────────────────────────────────────────────────
+    # ── RESULTADO — via saldo (método robusto) ────────────────────────
     try:
         if not iq.check_connect():
             iq.connect()
@@ -496,30 +496,20 @@ def rodar_ciclo(iq, estado):
     except:
         pass
 
-    resultado = None
-    deadline  = time.time() + 90
-    while time.time() < deadline:
-        try:
-            r = iq.check_win_v3(id_op)
-            log(f'check_win_v3 raw: {r!r}')
-            if r is not None and r != 0.0:
-                resultado = r
-                break
-            elif r == 0.0:
-                # 0.0 = LOSS confirmado pela IQ Option
-                resultado = -valor
-                log(f'Resultado 0.0 interpretado como LOSS: -{valor}')
-                break
-        except Exception as e:
-            log(f'check_win_v3 erro: {e}')
-            break
-        time.sleep(3)
-
     saldo_novo = iq.get_balance()
+    resultado  = round(saldo_novo - saldo_antes, 2)
+    log(f'Resultado por saldo: antes={saldo_antes:.2f} depois={saldo_novo:.2f} diff={resultado:.2f}')
 
-    if resultado is None:
-        resultado = saldo_novo - saldo_antes
-        log(f'Resultado inferido pelo saldo: {resultado:.2f}')
+    # Tenta enriquecer com check_win_v3 mas não bloqueia se falhar
+    try:
+        r = iq.check_win_v3(id_op)
+        log(f'check_win_v3 raw: {r!r}')
+        if r is not None and isinstance(r, (int, float)) and r != resultado:
+            log(f'check_win_v3 confirmou: {r:.2f} (usando este)')
+            resultado = r
+    except Exception as e:
+        log(f'check_win_v3 ignorado: {e}')
+
 
     if resultado > 0:
         estado['wins'] += 1
