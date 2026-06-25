@@ -416,16 +416,30 @@ def rodar_ciclo(iq, estado):
     # ── GESTÃO DE BANCA DIÁRIA ───────────────────────────────────────
     saldo = iq.get_balance()
 
-    # Registra banca inicial do dia (reseta a cada novo dia)
-    hoje = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
-    if estado.get('saldo_dia') is None or estado.get('data_dia') != hoje:
-        estado['saldo_dia']  = saldo
-        estado['data_dia']   = hoje
-        estado['losses_seq'] = 0
-        save_estado(estado)
-        log(f'Banca inicial do dia: ${saldo:.2f}')
+    # Registra banca do dia UMA única vez por dia — nunca sobrescreve no mesmo dia
+    # Usa arquivo dedicado para sobreviver a reboots/redeploys
+    hoje = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)).date().isoformat()
+    banca_file = '/tmp/banca_dia_forex.json'
+    banca_info = {}
+    try:
+        import json as _json
+        with open(banca_file) as f:
+            banca_info = _json.load(f)
+    except:
+        pass
 
-    saldo_dia = estado['saldo_dia']
+    if banca_info.get('data') != hoje:
+        banca_info = {'data': hoje, 'saldo_dia': saldo}
+        try:
+            import json as _json
+            with open(banca_file, 'w') as f:
+                _json.dump(banca_info, f)
+        except:
+            pass
+        log(f'📅 Nova banca do dia registrada: ${saldo:.2f} ({hoje})')
+
+    saldo_dia = banca_info['saldo_dia']
+    log(f'Banca do dia: ${saldo_dia:.2f} | Atual: ${saldo:.2f} | Var: {((saldo/saldo_dia)-1)*100:+.1f}%')
 
     # STOP WIN: +5% sobre banca do dia
     if saldo >= saldo_dia * 1.05:
