@@ -222,71 +222,63 @@ def analisar_sinal(iq, par_base):
             return None, 0, f'{consec} velas consecutivas — exaustão direcional'
 
         # ── SCORE ───────────────────────────────────────────────────
-        score      = 0
-        ancoras_ok = 0
+        # ══════════════════════════════════════════════════════════════
+        # TABELA DE SCORE — SNIPER V9 OTC  (máx 150 pts | mín 120)
+        # ══════════════════════════════════════════════════════════════
+        score = 0
 
-        # ÂNCORA 1: EMAs alinhadas (40 pts)
-        ema_ok = False
-        if direction == 'CALL':
-            if e9 > e25:    score += 20
-            if c_atual > e25: score += 20
-            ema_ok = (e9 > e25 and c_atual > e25)
-        else:
-            if e9 < e25:    score += 20
-            if c_atual < e25: score += 20
-            ema_ok = (e9 < e25 and c_atual < e25)
-        if ema_ok:
-            ancoras_ok += 1
+        # ── BLOCO A: DIREÇÃO E TENDÊNCIA — máx 60 pts ────────────────
 
-        # ÂNCORA 2: RSI (30 pts) — zona de força para OTC
-        rsi_ok = False
-        if direction == 'CALL':
-            if 55 <= rsi <= 75:   score += 30; rsi_ok = True; ancoras_ok += 1
-            elif 40 <= rsi < 55:  score += 20
-            elif rsi < 40:        score += 10
-        else:
-            if 25 <= rsi <= 45:   score += 30; rsi_ok = True; ancoras_ok += 1
-            elif 45 < rsi <= 60:  score += 20
-            elif rsi > 60:        score += 10
+        # A1. EMA9 alinhada com o sinal (20 pts)
+        if direction == 'CALL' and e9 > e25:    score += 20
+        elif direction == 'PUT' and e9 < e25:   score += 20
 
-        # Corpo médio (20 pts — auxiliar)
-        corpo_medio = sum(abs(closes[i] - opens[i]) for i in range(-5, 0)) / 5
-        if corpo_medio >= pip * 3:
-            score += 20
-        elif corpo_medio >= pip * 1.5:
-            score += 10
+        # A2. Preço vs EMA25 (20 pts)
+        if direction == 'CALL' and c_atual > e25:   score += 20
+        elif direction == 'PUT' and c_atual < e25:  score += 20
 
-        # ÂNCORA 3: EMA50 confluente (20 pts)
+        # A3. EMA25 confluente com EMA50 — tendência macro (20 pts)
         e50_ok = False
         if len(closes) >= 50:
             e50 = ema(closes[-50:], 50)
-            if direction == 'CALL' and c_atual > e50:
-                score  += 20
-                e50_ok  = True
-                ancoras_ok += 1
-            elif direction == 'PUT' and c_atual < e50:
-                score  += 20
-                e50_ok  = True
-                ancoras_ok += 1
-        else:
-            if corpo_medio >= pip * 2:
-                score += 10
+            if direction == 'CALL' and e25 > e50:
+                score += 20; e50_ok = True
+            elif direction == 'PUT' and e25 < e50:
+                score += 20; e50_ok = True
 
-        # Corpo da última vela fechada (20 pts — auxiliar)
+        # ── BLOCO B: FORÇA E MOMENTUM (RSI) — máx 30 pts ─────────────
+
+        # Zona de força: 55-75 CALL / 25-45 PUT = +30 pts
+        # Zona neutra extrema (46-54) = 0 pts
+        rsi_ok = False
+        if direction == 'CALL' and 55 <= rsi <= 75:
+            score += 30; rsi_ok = True
+        elif direction == 'PUT' and 25 <= rsi <= 45:
+            score += 30; rsi_ok = True
+
+        # ── BLOCO C: VOLATILIDADE E CORPO DA VELA — máx 60 pts ────────
+
+        corpo_medio = sum(abs(closes[i] - opens[i]) for i in range(-5, 0)) / 5
         corpo_atual = abs(closes[-1] - opens[-1])
-        if corpo_atual >= pip * 2:
-            score += 20
-        elif corpo_atual >= pip:
-            score += 10
+        vela_ant_alta = closes[-2] > opens[-2]
 
-        # ── VETO: menos de 2 âncoras principais ──────────────────────
-        if ancoras_ok < 2:
-            return None, 0, f'Apenas {ancoras_ok}/3 âncoras OK (EMAs={ema_ok} RSI={rsi_ok} EMA50={e50_ok})'
+        # C1. Corpo da vela atual forte (20 pts)
+        if corpo_atual >= pip * 2:    score += 20
+        elif corpo_atual >= pip * 1:  score += 10
 
+        # C2. Vela anterior a favor do movimento (20 pts)
+        if direction == 'CALL' and vela_ant_alta:      score += 20
+        elif direction == 'PUT' and not vela_ant_alta: score += 20
+
+        # C3. Média das últimas 5 velas saudável — ATR (20 pts)
+        if corpo_medio >= pip * 3:     score += 20
+        elif corpo_medio >= pip * 1.5: score += 10
+
+        # ── VETO FINAL ────────────────────────────────────────────────
         if score < SCORE_MIN:
-            return None, 0, f'Score {score} < {SCORE_MIN}'
+            return None, 0, f'Score {score} < {SCORE_MIN} (RSI={rsi:.1f} EMA50={e50_ok} RSI_ok={rsi_ok})'
 
-        return direction, score, {'rsi': rsi, 'corpo': corpo_medio / pip, 'ancoras': ancoras_ok}
+        return direction, score, {'rsi': rsi, 'corpo_medio': corpo_medio / pip, 'e50_ok': e50_ok, 'rsi_ok': rsi_ok}
 
     except Exception as ex:
         return None, 0, f'Exceção: {ex}'
