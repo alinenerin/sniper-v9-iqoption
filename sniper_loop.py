@@ -270,9 +270,14 @@ def analisar_sinal(iq, par_base):
         corpo_atual = abs(closes[-1] - opens[-1])
         vela_ant_alta = closes[-2] > opens[-2]
 
+        # TRAVA DE CONVICÇÃO OTC — mínimo 1.5 pip obrigatório
+        # Velas nanicas (< 1.5p) indicam falta de força direcional → REJEITADO
+        if corpo_atual < pip * 1.5:
+            return None, 0, f'Vela nânica ({corpo_atual/pip:.1f}p < 1.5p) — sem convicção'
+
         # C1. Corpo da vela atual forte (20 pts)
         if corpo_atual >= pip * 2:    score += 20
-        elif corpo_atual >= pip * 1:  score += 10
+        elif corpo_atual >= pip * 1.5: score += 10
 
         # C2. Vela anterior a favor do movimento (20 pts)
         if direction == 'CALL' and vela_ant_alta:      score += 20
@@ -460,8 +465,8 @@ def rodar_ciclo(iq, estado):
         pass
 
     try:
-        # Expiração M3: gatilho M1 + 3min para tendência se consolidar
-        status, id_op = iq.buy(valor, par, direction.lower(), 3)
+        # OTC = M1 obrigatório (tiro curto de fluxo — M3 expõe à reversão de ciclo)
+        status, id_op = iq.buy(valor, par, direction.lower(), 1)
     except Exception as e:
         log(f'Erro no buy: {e}')
         return None
