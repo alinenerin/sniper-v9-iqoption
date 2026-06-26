@@ -1,37 +1,83 @@
-import time, requests, threading
+import time, requests
 from datetime import datetime, timedelta
 from pytz import timezone
-from iqoptionapi.stable_api import IQ_Option
 
+# ⚙️ CONFIGURAÇÕES
 EMAIL = "laiane.aline@gmail.com"
 SENHA = "alineegui95"
-CONTA = "PRACTICE"
 BR    = timezone("America/Sao_Paulo")
 PARES = ["EURJPY-OTC","EURGBP-OTC","USDJPY","AUDUSD-OTC","EURUSD-OTC"]
 MIN_CONF = 75
-
-import logging; logging.disable(logging.CRITICAL)
-
-iq = IQ_Option(EMAIL, SENHA)
-env = set()
 FF = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
-def conecta():
+sess = requests.Session()
+sess.headers.update({"User-Agent": "Mozilla/5.0"})
+
+# ── LOGIN IQ OPTION (REST puro — sem websocket) ──────────────────────
+def login():
     try:
-        ok, _ = iq.connect()
-        if ok:
-            iq.change_balance(CONTA)
-            print(f"\n=== CONECTADO | SALDO: {iq.get_balance()} | {CONTA} ===\n")
-        return ok
-    except Exception as e:
-        print("ERRO:", e)
+        r = sess.post("https://auth.iqoption.com/api/v1.0/login",
+            json={"identifier": EMAIL, "password": SENHA}, timeout=10)
+        token = r.json().get("data", {}).get("ssid", "")
+        if token:
+            sess.cookies.set("ssid", token)
+            print(f"=== CONECTADO ===\n")
+            return True
+        print("Erro login:", r.text[:200])
         return False
+    except Exception as e:
+        print("ERRO LOGIN:", e)
+        return False
+
+def get_velas(par, n=55):
+    """Busca velas M1 via REST — sem websocket, sem travamento"""
+    try:
+        ativo = par.replace("-OTC", "").replace("-op", "")
+        url = f"https://iqoption.com/api/v6/getcandles"
+        payload = {
+            "active_id": ativo,
+            "size": 60,
+            "count": n,
+            "to": int(time.time())
+        }
+        r = sess.post(url, json=payload, timeout=8)
+        data = r.json()
+        candles = data.get("data", {}).get("candles", [])
+        if candles:
+            return candles
+    except:
+        pass
+    # Fallback: Twelve Data
+    try:
+        ATIVOS_MAP = {
+            "EURJPY": "EUR/JPY", "EURGBP": "EUR/GBP",
+            "USDJPY": "USD/JPY", "AUDUSD": "AUD/USD", "EURUSD": "EUR/USD"
+        }
+        ativo_td = ATIVOS_MAP.get(par.replace("-OTC","").replace("-op",""), "")
+        if not ativo_td:
+            return []
+        url = f"https://api.twelvedata.com/time_series?symbol={ativo_td}&interval=1min&outputsize={n}&apikey=1be0b948fb1c48bb997e350c542edafd"
+        r = requests.get(url, timeout=8)
+        vals = r.json().get("values", [])
+        if not vals:
+            return []
+        velas = []
+        for v in reversed(vals):
+            velas.append({
+                "open": float(v["open"]),
+                "close": float(v["close"]),
+                "max": float(v["high"]),
+                "min": float(v["low"])
+            })
+        return velas
+    except:
+        return []
 
 def noticia(p):
     try:
         m = p[:3]
         ag = datetime.now(BR)
-        resp = requests.get(FF, timeout=4).json()
+        resp = requests.get(FF, timeout=5).json()
         for e in resp:
             if e["impact"] == "High" and e["country"] == m:
                 d = datetime.fromisoformat(e["date"]).astimezone(BR)
@@ -41,23 +87,9 @@ def noticia(p):
         pass
     return False
 
-def get_candles_timeout(p, timeout=8):
-    """Busca velas com timeout para não travar o loop"""
-    resultado = [None]
-    def _busca():
-        try:
-            resultado[0] = iq.get_candles(p, 60, 55, time.time())
-        except:
-            pass
-    t = threading.Thread(target=_busca)
-    t.daemon = True
-    t.start()
-    t.join(timeout)
-    return resultado[0]
-
 def sinal(p):
     try:
-        v = get_candles_timeout(p, timeout=8)
+        v = get_velas(p, 55)
         if not v or len(v) < 50:
             return None
 
@@ -100,6 +132,7 @@ def sinal(p):
 def rodar_ciclo():
     agora_br = datetime.now(BR)
     print(f"\n🔍 {agora_br.strftime('%H:%M:%S')} — Analisando...")
+    env_local = []
     achou = False
     for p in PARES:
         x = sinal(p)
@@ -107,20 +140,15 @@ def rodar_ciclo():
         if noticia(p):
             print(f"  {p}: bloqueado por notícia")
             continue
-        chave = f"{x['h']}{x['p']}"
-        if chave in env: continue
-        env.add(chave)
         marca = "⭐" if x["c"] >= 80 else "✅"
         print(f"M1;{x['p']};{x['h']};{x['d']} | {x['c']}% {marca}")
         achou = True
     if not achou:
         print("  Sem sinal neste ciclo.")
-    if len(env) > 200:
-        env.clear()
 
 def roda():
-    if not conecta():
-        return
+    if not login():
+        print("Tentando sem login (Twelve Data)...")
 
     ultimo_ciclo = ""
     print("🟢 Rodando! Atualiza a cada minuto.\n")
@@ -129,26 +157,16 @@ def roda():
         try:
             agora_br = datetime.now(BR)
             chave_min = agora_br.strftime("%H:%M")
-
             if chave_min != ultimo_ciclo:
                 ultimo_ciclo = chave_min
-                # Roda o ciclo em thread separada com timeout total de 50s
-                t = threading.Thread(target=rodar_ciclo)
-                t.daemon = True
-                t.start()
-                t.join(50)  # máximo 50s — nunca bloqueia o loop
-                if t.is_alive():
-                    print(f"  ⚠️ Ciclo {chave_min} demorou demais, pulando...")
-
+                rodar_ciclo()
             time.sleep(5)
-
         except KeyboardInterrupt:
             print("\n⛔ Encerrado.")
             break
         except Exception as e:
-            print(f"\n⚠️ Erro: {e} — reconectando...")
+            print(f"\n⚠️ Erro: {e}")
             time.sleep(5)
-            conecta()
 
 try:
     roda()
