@@ -265,8 +265,9 @@ def analisar_sinal(iq, par_base):
         pip      = 0.01 if c_atual > 50 else 0.0001
 
         # EMAs — EMA9 (rápida) + EMA25 (lenta) — remove ruído da EMA7
-        e9  = ema(closes[-25:], 9)
-        e25 = ema(closes[-25:], 25)
+        e9      = ema(closes[-25:], 9)
+        e25     = ema(closes[-25:], 25)
+        e9_prev = ema(closes[-26:-1], 9) if len(closes) >= 26 else e9
 
         # Direção: EMA9 vs EMA25 + preço vs EMA25
         if e9 > e25 and c_atual > e25:
@@ -275,6 +276,31 @@ def analisar_sinal(iq, par_base):
             direction = 'PUT'
         else:
             return None, 0, f'EMA9/EMA25 sem consenso'
+
+        # ── FILTRO 1: INCLINAÇÃO DA EMA9 ─────────────────────────────
+        # EMA9 precisa estar em movimento — não apenas posicionada
+        inclinacao = e9 - e9_prev
+        limiar_inclinacao = pip * 0.2  # 0.2 pip mínimo de inclinação
+        if direction == 'CALL' and inclinacao < limiar_inclinacao:
+            return None, 0, f'Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)'
+        if direction == 'PUT' and inclinacao > -limiar_inclinacao:
+            return None, 0, f'Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)'
+
+        # ── FILTRO 2: TAXA REDONDA INSTITUCIONAL ─────────────────────
+        # Preço próximo de .000 / .050 / .100 indo CONTRA essa zona = rejeição
+        preco_mod = c_atual % (pip * 100)   # módulo de 100 pips (1 figura)
+        distancias_redondas = [
+            preco_mod,                      # distância até .000 / .100
+            abs(preco_mod - pip * 50),      # distância até .050
+        ]
+        dist_redonda = min(distancias_redondas)
+        if dist_redonda < pip * 1.5:
+            # Verifica se o sinal vai CONTRA a taxa redonda mais próxima
+            taxa_redonda = round(c_atual / (pip * 50)) * (pip * 50)
+            indo_contra = (direction == 'CALL' and c_atual > taxa_redonda) or \
+                          (direction == 'PUT'  and c_atual < taxa_redonda)
+            if indo_contra:
+                return None, 0, f'Taxa Redonda Institucional ({dist_redonda/pip:.1f}p da zona — risco rejeição)'
 
         # RSI — bloqueia só exaustão EXTREMA (OTC surfa tendências longas)
         rsi = calcular_rsi(closes)
