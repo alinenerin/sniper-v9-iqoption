@@ -1,0 +1,8 @@
+{
+  "data": "2026-06-26",
+  "bloqueios": [
+    {"inicio": "08:45", "fim": "10:15", "motivo": "🔴 PCE EUA (09:30)"},
+    {"inicio": "10:45", "fim": "11:15", "motivo": "🟡 Michigan Consumer Sentiment (11:00)"},
+    {"inicio": "14:15", "fim": "14:45", "motivo": "🟡 IPCA-15 Brasil (14:30)"}
+  ]
+}
