@@ -87,6 +87,42 @@ def get_velas(simbolo, n=55):
     except:
         return []
 
+# ── BOLLINGER BANDS ──────────────────────────────────────────────────
+def calcular_bollinger(closes, periodo=20, desvios=2.0):
+    if len(closes) < periodo:
+        return None, None, None
+    media = sum(closes[-periodo:]) / periodo
+    variancia = sum((x - media)**2 for x in closes[-periodo:]) / periodo
+    std = variancia ** 0.5
+    superior = media + desvios * std
+    inferior = media - desvios * std
+    return round(superior, 5), round(media, 5), round(inferior, 5)
+
+# ── STOCHASTIC ────────────────────────────────────────────────────────
+def calcular_stochastic(v, k=14, d=3):
+    try:
+        if len(v) < k + d: return 50, 50
+        highs  = [x["max"]   for x in v[-k:]]
+        lows   = [x["min"]   for x in v[-k:]]
+        close  = v[-1]["close"]
+        hh = max(highs); ll = min(lows)
+        if hh == ll: return 50, 50
+        k_val = round((close - ll) / (hh - ll) * 100, 1)
+        # %D = média dos últimos d valores de %K
+        k_vals = []
+        for i in range(d):
+            idx = -(i+1)
+            hs = [x["max"] for x in v[idx-k:idx if idx != 0 else len(v)]]
+            ls = [x["min"] for x in v[idx-k:idx if idx != 0 else len(v)]]
+            c  = v[idx]["close"]
+            hmax = max(hs); lmin = min(ls)
+            if hmax == lmin: k_vals.append(50)
+            else: k_vals.append((c - lmin) / (hmax - lmin) * 100)
+        d_val = round(sum(k_vals) / len(k_vals), 1)
+        return k_val, d_val
+    except:
+        return 50, 50
+
 # ── RSI ──────────────────────────────────────────────────────────────
 def calcular_rsi(closes, periodo=14):
     if len(closes) < periodo + 1:
@@ -134,6 +170,9 @@ def calcular_sinal(par):
         closes = [x["close"] for x in v]
         rsi = calcular_rsi(closes)
         adx = calcular_adx(v)
+        bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
+        stoch_k, stoch_d = calcular_stochastic(v)
+        pc = v[-1]["close"]
 
         # Filtro RSI neutro — mercado sem força
         if 45 <= rsi <= 55:
@@ -144,6 +183,21 @@ def calcular_sinal(par):
         if adx < 20:
             print(f"  {par}: bloqueado ADX fraco ({adx})")
             return None
+
+        # Filtro Bollinger — preço no meio da banda = sem direcionalidade
+        if bb_sup and bb_inf and bb_med:
+            banda_total = bb_sup - bb_inf
+            if banda_total > 0:
+                posicao = (pc - bb_inf) / banda_total  # 0=inf, 1=sup
+                if 0.30 < posicao < 0.70:
+                    print(f"  {par}: bloqueado BB range ({posicao:.2f})")
+                    return None
+
+        # Filtro Stochastic — dupla confirmação de exaustão com RSI
+        # CALL: stoch deve estar saindo de sobrevenda (<30) e %K > %D
+        # PUT:  stoch deve estar saindo de sobrecompra (>70) e %K < %D
+        stoch_call = stoch_k < 50 and stoch_k > stoch_d
+        stoch_put  = stoch_k > 50 and stoch_k < stoch_d
 
         # Filtro confirmação de vela — última vela fechada confirma direção?
         vela_ant = v[-2]  # penúltima vela (já fechada)
@@ -185,6 +239,14 @@ def calcular_sinal(par):
             print(f"  {par}: bloqueado vela anterior contra PUT")
             return None
 
+        # Filtro Stochastic — confirma direção com momentum real
+        if dir_provisoria == "CALL" and not stoch_call:
+            print(f"  {par}: bloqueado Stoch contra CALL (K:{stoch_k} D:{stoch_d})")
+            return None
+        if dir_provisoria == "PUT" and not stoch_put:
+            print(f"  {par}: bloqueado Stoch contra PUT (K:{stoch_k} D:{stoch_d})")
+            return None
+
         vol = (max(x["max"] for x in v[-10:]) - min(x["min"] for x in v[-10:])) / pc * 100
         if 0.01 <= vol <= 0.08:
             pt += 10; ps += 10
@@ -197,7 +259,8 @@ def calcular_sinal(par):
         if conf < MIN_CONF: return None
 
         hora_exec = (datetime.utcnow() - timedelta(hours=3) + timedelta(seconds=120)).strftime("%H:%M")
-        return {"p": par, "d": dir_, "c": conf, "h": hora_exec, "rsi": rsi, "adx": adx}
+        return {"p": par, "d": dir_provisoria, "c": conf, "h": hora_exec,
+                "rsi": rsi, "adx": adx, "stoch_k": stoch_k, "stoch_d": stoch_d}
     except:
         return None
 
@@ -230,7 +293,7 @@ def ciclo():
         print(f"M1;{x['p']};{x['h']};{x['d']} | {x['c']}% {marca}")
 
     bloco = "\n".join([
-        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'} | RSI:{x.get('rsi','?')} ADX:{x.get('adx','?')}"
+        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'} | RSI:{x.get('rsi','?')} ADX:{x.get('adx','?')} K:{x.get('stoch_k','?')}"
         for x in sinais
     ])
     tg(f"🎯 <b>GERADOR — {agora.strftime('%H:%M')}</b>\n\n{bloco}")
