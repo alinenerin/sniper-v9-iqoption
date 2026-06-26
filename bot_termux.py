@@ -1,21 +1,18 @@
-import time, requests
+import time, requests, threading
 from datetime import datetime, timedelta
 from pytz import timezone
 from iqoptionapi.stable_api import IQ_Option
 
-# ⚙️ CONFIGURAÇÕES
 EMAIL = "laiane.aline@gmail.com"
 SENHA = "alineegui95"
 CONTA = "PRACTICE"
 BR    = timezone("America/Sao_Paulo")
 PARES = ["EURJPY-OTC","EURGBP-OTC","USDJPY","AUDUSD-OTC","EURUSD-OTC"]
-MIN_CONF  = 75
+MIN_CONF = 75
 
 import logging; logging.disable(logging.CRITICAL)
 
 iq = IQ_Option(EMAIL, SENHA)
-trava = False
-sw = sl = 0
 env = set()
 FF = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
@@ -27,14 +24,14 @@ def conecta():
             print(f"\n=== CONECTADO | SALDO: {iq.get_balance()} | {CONTA} ===\n")
         return ok
     except Exception as e:
-        print("ERRO NA CONEXÃO:", e)
+        print("ERRO:", e)
         return False
 
 def noticia(p):
     try:
         m = p[:3]
         ag = datetime.now(BR)
-        resp = requests.get(FF, timeout=5).json()
+        resp = requests.get(FF, timeout=4).json()
         for e in resp:
             if e["impact"] == "High" and e["country"] == m:
                 d = datetime.fromisoformat(e["date"]).astimezone(BR)
@@ -44,9 +41,23 @@ def noticia(p):
         pass
     return False
 
+def get_candles_timeout(p, timeout=8):
+    """Busca velas com timeout para não travar o loop"""
+    resultado = [None]
+    def _busca():
+        try:
+            resultado[0] = iq.get_candles(p, 60, 55, time.time())
+        except:
+            pass
+    t = threading.Thread(target=_busca)
+    t.daemon = True
+    t.start()
+    t.join(timeout)
+    return resultado[0]
+
 def sinal(p):
     try:
-        v = iq.get_candles(p, 60, 55, time.time())
+        v = get_candles_timeout(p, timeout=8)
         if not v or len(v) < 50:
             return None
 
@@ -112,18 +123,25 @@ def roda():
         return
 
     ultimo_ciclo = ""
-    print("🟢 Bot iniciado! Analisa a cada minuto.\n")
+    print("🟢 Rodando! Atualiza a cada minuto.\n")
 
     while True:
         try:
             agora_br = datetime.now(BR)
-            # Roda UMA vez por minuto — usa HH:MM como chave, sem depender do segundo
             chave_min = agora_br.strftime("%H:%M")
+
             if chave_min != ultimo_ciclo:
                 ultimo_ciclo = chave_min
-                rodar_ciclo()
-            else:
-                time.sleep(5)
+                # Roda o ciclo em thread separada com timeout total de 50s
+                t = threading.Thread(target=rodar_ciclo)
+                t.daemon = True
+                t.start()
+                t.join(50)  # máximo 50s — nunca bloqueia o loop
+                if t.is_alive():
+                    print(f"  ⚠️ Ciclo {chave_min} demorou demais, pulando...")
+
+            time.sleep(5)
+
         except KeyboardInterrupt:
             print("\n⛔ Encerrado.")
             break
