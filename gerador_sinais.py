@@ -265,6 +265,32 @@ def calcular_sinal(par):
             print(f"  {par}: bloqueado MACD sem cruzamento (L:{macd_l} S:{macd_s})")
             return None
 
+        # FILTRO 5 — INCLINAÇÃO DA EMA9 (tendência precisa estar em movimento)
+        pip = 0.01 if pc > 50 else 0.0001
+        if len(closes) >= 26:
+            e9_atual = ema(closes[-25:], 9)
+            e9_prev  = ema(closes[-26:-1], 9)
+            inclinacao = e9_atual - e9_prev
+            limiar = pip * 0.2
+            if cruzamento == "CALL" and inclinacao < limiar:
+                print(f"  {par}: bloqueado Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)")
+                return None
+            if cruzamento == "PUT" and inclinacao > -limiar:
+                print(f"  {par}: bloqueado Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)")
+                return None
+
+        # FILTRO 6 — TAXA REDONDA INSTITUCIONAL (rejeição algorítmica)
+        pip = 0.01 if pc > 50 else 0.0001
+        preco_mod = pc % (pip * 100)
+        dist_redonda = min(preco_mod, abs(preco_mod - pip * 50))
+        if dist_redonda < pip * 1.5:
+            taxa_redonda = round(pc / (pip * 50)) * (pip * 50)
+            indo_contra = (cruzamento == "CALL" and pc > taxa_redonda) or \
+                          (cruzamento == "PUT"  and pc < taxa_redonda)
+            if indo_contra:
+                print(f"  {par}: bloqueado Taxa Redonda Institucional ({dist_redonda/pip:.1f}p da zona)")
+                return None
+
         print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} MACD:{cruzamento}")
 
         # SCORE — MACD define a direção, demais confirmam
