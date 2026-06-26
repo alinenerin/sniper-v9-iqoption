@@ -189,24 +189,23 @@ def calcular_sinal(par):
             banda_total = bb_sup - bb_inf
             if banda_total > 0:
                 posicao = (pc - bb_inf) / banda_total  # 0=inf, 1=sup
-                if 0.30 < posicao < 0.70:
+                if 0.25 < posicao < 0.75:
                     print(f"  {par}: bloqueado BB range ({posicao:.2f})")
                     return None
 
-        # Filtro Stochastic — dupla confirmação de exaustão com RSI
-        # CALL: stoch deve estar saindo de sobrevenda (<30) e %K > %D
-        # PUT:  stoch deve estar saindo de sobrecompra (>70) e %K < %D
-        stoch_call = stoch_k < 50 and stoch_k > stoch_d
-        stoch_put  = stoch_k > 50 and stoch_k < stoch_d
+        # Filtro Stochastic — confirma momentum (sem exigir cruzamento estrito)
+        # Só bloqueia se Stoch claramente contra a direção
+        stoch_call = stoch_k <= 65  # não está em sobrecompra extrema
+        stoch_put  = stoch_k >= 35  # não está em sobrevenda extrema
 
         # Filtro confirmação de vela — última vela fechada confirma direção?
         vela_ant = v[-2]  # penúltima vela (já fechada)
         vela_ant_alta = vela_ant["close"] > vela_ant["open"]
 
-        # Filtro de pavio — rejeição forte indica indecisão
+        # Filtro de pavio — rejeição forte indica indecisão (afrouxado para 0.25)
         corpo_ant = abs(vela_ant["close"] - vela_ant["open"])
         sombra_ant = vela_ant["max"] - vela_ant["min"]
-        if sombra_ant > 0 and corpo_ant / sombra_ant < 0.35:
+        if sombra_ant > 0 and corpo_ant / sombra_ant < 0.25:
             print(f"  {par}: bloqueado pavio dominante (rejeição)")
             return None
 
@@ -230,21 +229,22 @@ def calcular_sinal(par):
         if all(x["close"] > x["open"] for x in v[-3:]): pt += 17
         elif all(x["close"] < x["open"] for x in v[-3:]): ps += 17
 
-        # Filtro confirmação direcional — sinal deve estar alinhado com vela anterior
+        # Confirmação direcional — vela anterior penaliza se contra, mas não bloqueia
         dir_provisoria = "CALL" if pt > ps else "PUT"
         if dir_provisoria == "CALL" and not vela_ant_alta:
-            print(f"  {par}: bloqueado vela anterior contra CALL")
-            return None
+            ps += 10  # penalidade leve — não bloqueia mas reduz confiança
         if dir_provisoria == "PUT" and vela_ant_alta:
-            print(f"  {par}: bloqueado vela anterior contra PUT")
-            return None
+            pt += 10
 
-        # Filtro Stochastic — confirma direção com momentum real
+        # Recalcula direção após penalidade
+        dir_provisoria = "CALL" if pt > ps else "PUT"
+
+        # Filtro Stochastic — bloqueia só se claramente contra
         if dir_provisoria == "CALL" and not stoch_call:
-            print(f"  {par}: bloqueado Stoch contra CALL (K:{stoch_k} D:{stoch_d})")
+            print(f"  {par}: bloqueado Stoch sobrecompra (K:{stoch_k})")
             return None
         if dir_provisoria == "PUT" and not stoch_put:
-            print(f"  {par}: bloqueado Stoch contra PUT (K:{stoch_k} D:{stoch_d})")
+            print(f"  {par}: bloqueado Stoch sobrevenda (K:{stoch_k})")
             return None
 
         vol = (max(x["max"] for x in v[-10:]) - min(x["min"] for x in v[-10:])) / pc * 100
