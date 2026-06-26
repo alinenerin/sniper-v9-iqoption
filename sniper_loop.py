@@ -286,21 +286,8 @@ def analisar_sinal(iq, par_base):
         if direction == 'PUT' and inclinacao > -limiar_inclinacao:
             return None, 0, f'Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)'
 
-        # ── FILTRO 2: TAXA REDONDA INSTITUCIONAL ─────────────────────
-        # Preço próximo de .000 / .050 / .100 indo CONTRA essa zona = rejeição
-        preco_mod = c_atual % (pip * 100)   # módulo de 100 pips (1 figura)
-        distancias_redondas = [
-            preco_mod,                      # distância até .000 / .100
-            abs(preco_mod - pip * 50),      # distância até .050
-        ]
-        dist_redonda = min(distancias_redondas)
-        if dist_redonda < pip * 1.5:
-            # Verifica se o sinal vai CONTRA a taxa redonda mais próxima
-            taxa_redonda = round(c_atual / (pip * 50)) * (pip * 50)
-            indo_contra = (direction == 'CALL' and c_atual > taxa_redonda) or \
-                          (direction == 'PUT'  and c_atual < taxa_redonda)
-            if indo_contra:
-                return None, 0, f'Taxa Redonda Institucional ({dist_redonda/pip:.1f}p da zona — risco rejeição)'
+        # ── FILTRO 2: TAXA REDONDA INSTITUCIONAL — reservado para Forex real ──
+        # (no OTC o preço é gerado pela corretora, zonas redondas não se aplicam)
 
         # RSI — bloqueia só exaustão EXTREMA (OTC surfa tendências longas)
         rsi = calcular_rsi(closes)
