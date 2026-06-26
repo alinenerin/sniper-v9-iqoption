@@ -2,11 +2,9 @@
 """
 GERADOR DE SINAIS — Railway
 Fonte de dados: Twelve Data (M1)
-Sem dependência da lib IQ Option.
+Filtros: RSI + ADX + Bollinger (3 filtros limpos, sem conflito)
 """
 import sys, os, subprocess
-
-# Instala dependências próprias sem afetar outros serviços
 subprocess.call([sys.executable, "-m", "pip", "install", "-q", "requests", "pytz"])
 
 import time, requests, threading
@@ -87,212 +85,189 @@ def get_velas(simbolo, n=55):
     except:
         return []
 
-# ── BOLLINGER BANDS ──────────────────────────────────────────────────
-def calcular_bollinger(closes, periodo=20, desvios=2.0):
-    if len(closes) < periodo:
-        return None, None, None
-    media = sum(closes[-periodo:]) / periodo
-    variancia = sum((x - media)**2 for x in closes[-periodo:]) / periodo
-    std = variancia ** 0.5
-    superior = media + desvios * std
-    inferior = media - desvios * std
-    return round(superior, 5), round(media, 5), round(inferior, 5)
-
-# ── STOCHASTIC ────────────────────────────────────────────────────────
-def calcular_stochastic(v, k=14, d=3):
-    try:
-        if len(v) < k + d: return 50, 50
-        highs  = [x["max"]   for x in v[-k:]]
-        lows   = [x["min"]   for x in v[-k:]]
-        close  = v[-1]["close"]
-        hh = max(highs); ll = min(lows)
-        if hh == ll: return 50, 50
-        k_val = round((close - ll) / (hh - ll) * 100, 1)
-        # %D = média dos últimos d valores de %K
-        k_vals = []
-        for i in range(d):
-            idx = -(i+1)
-            hs = [x["max"] for x in v[idx-k:idx if idx != 0 else len(v)]]
-            ls = [x["min"] for x in v[idx-k:idx if idx != 0 else len(v)]]
-            c  = v[idx]["close"]
-            hmax = max(hs); lmin = min(ls)
-            if hmax == lmin: k_vals.append(50)
-            else: k_vals.append((c - lmin) / (hmax - lmin) * 100)
-        d_val = round(sum(k_vals) / len(k_vals), 1)
-        return k_val, d_val
-    except:
-        return 50, 50
-
 # ── RSI ──────────────────────────────────────────────────────────────
 def calcular_rsi(closes, periodo=14):
     if len(closes) < periodo + 1:
         return 50
     gains, losses = [], []
-    for i in range(-periodo, 0):
-        diff = closes[i] - closes[i-1]
+    for i in range(1, periodo + 1):
+        diff = closes[-i] - closes[-i-1]
         gains.append(max(diff, 0))
         losses.append(max(-diff, 0))
     ag = sum(gains) / periodo
     al = sum(losses) / periodo
-    if al == 0: return 100
-    return round(100 - (100 / (1 + ag/al)), 1)
+    if al == 0:
+        return 100
+    return round(100 - (100 / (1 + ag / al)), 1)
 
 # ── ADX ──────────────────────────────────────────────────────────────
 def calcular_adx(v, periodo=14):
     try:
-        if len(v) < periodo + 2: return 0
+        if len(v) < periodo + 2:
+            return 0
         tr_list, pdm_list, mdm_list = [], [], []
-        for i in range(-periodo, 0):
-            h, l, pc = v[i]["max"], v[i]["min"], v[i-1]["close"]
-            tr = max(h - l, abs(h - pc), abs(l - pc))
-            pdm = max(v[i]["max"] - v[i-1]["max"], 0)
-            mdm = max(v[i-1]["min"] - v[i]["min"], 0)
-            if pdm > mdm: mdm = 0
+        for i in range(1, periodo + 1):
+            cur  = v[-i]
+            prev = v[-i-1]
+            h, l, pc = cur["max"], cur["min"], prev["close"]
+            tr  = max(h - l, abs(h - pc), abs(l - pc))
+            pdm = max(cur["max"] - prev["max"], 0)
+            mdm = max(prev["min"] - cur["min"], 0)
+            if pdm > mdm:   mdm = 0
             elif mdm > pdm: pdm = 0
-            else: pdm = mdm = 0
+            else:           pdm = mdm = 0
             tr_list.append(tr); pdm_list.append(pdm); mdm_list.append(mdm)
         atr = sum(tr_list) / periodo
-        if atr == 0: return 0
-        pdi = (sum(pdm_list)/periodo / atr) * 100
-        mdi = (sum(mdm_list)/periodo / atr) * 100
+        if atr == 0:
+            return 0
+        pdi = (sum(pdm_list) / periodo / atr) * 100
+        mdi = (sum(mdm_list) / periodo / atr) * 100
         dx  = abs(pdi - mdi) / (pdi + mdi) * 100 if (pdi + mdi) > 0 else 0
         return round(dx, 1)
     except:
         return 0
 
+# ── BOLLINGER BANDS ──────────────────────────────────────────────────
+def calcular_bollinger(closes, periodo=20, desvios=2.0):
+    if len(closes) < periodo:
+        return None, None, None
+    serie  = closes[-periodo:]
+    media  = sum(serie) / periodo
+    std    = (sum((x - media)**2 for x in serie) / periodo) ** 0.5
+    return media + desvios * std, media, media - desvios * std
+
 # ── CÁLCULO ──────────────────────────────────────────────────────────
 def calcular_sinal(par):
     try:
         v = get_velas(PARES[par], 55)
-        if not v or len(v) < 50:
+        if not v or len(v) < 52:
             return None
 
         closes = [x["close"] for x in v]
-        rsi = calcular_rsi(closes)
-        adx = calcular_adx(v)
-        bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
-        stoch_k, stoch_d = calcular_stochastic(v)
-        pc = v[-1]["close"]
+        pc     = closes[-1]
 
-        # Filtro RSI neutro — mercado sem força
-        if 45 <= rsi <= 55:
+        # ── Indicadores ──────────────────────────────────────────────
+        rsi               = calcular_rsi(closes)
+        adx               = calcular_adx(v)
+        bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
+
+        # ── FILTRO 1: RSI neutro (mercado sem força) ──────────────────
+        if 43 <= rsi <= 57:
             print(f"  {par}: bloqueado RSI neutro ({rsi})")
             return None
 
-        # Filtro ADX fraco — mercado lateral
-        if adx < 20:
+        # ── FILTRO 2: ADX fraco (mercado lateral) ────────────────────
+        if adx < 18:
             print(f"  {par}: bloqueado ADX fraco ({adx})")
             return None
 
-        # Filtro Bollinger — preço no meio da banda = sem direcionalidade
-        if bb_sup and bb_inf and bb_med:
-            banda_total = bb_sup - bb_inf
-            if banda_total > 0:
-                posicao = (pc - bb_inf) / banda_total  # 0=inf, 1=sup
-                if 0.25 < posicao < 0.75:
-                    print(f"  {par}: bloqueado BB range ({posicao:.2f})")
+        # ── FILTRO 3: Bollinger — preço no meio da banda ─────────────
+        if bb_sup and bb_inf:
+            banda = bb_sup - bb_inf
+            if banda > 0:
+                pos = (pc - bb_inf) / banda
+                if 0.30 < pos < 0.70:
+                    print(f"  {par}: bloqueado BB range ({pos:.2f})")
                     return None
 
-        # Filtro Stochastic — confirma momentum (sem exigir cruzamento estrito)
-        # Só bloqueia se Stoch claramente contra a direção
-        stoch_call = stoch_k <= 65  # não está em sobrecompra extrema
-        stoch_put  = stoch_k >= 35  # não está em sobrevenda extrema
-
-        # Filtro confirmação de vela — última vela fechada confirma direção?
-        vela_ant = v[-2]  # penúltima vela (já fechada)
-        vela_ant_alta = vela_ant["close"] > vela_ant["open"]
-
-        # Filtro de pavio — rejeição forte indica indecisão (afrouxado para 0.25)
-        corpo_ant = abs(vela_ant["close"] - vela_ant["open"])
-        sombra_ant = vela_ant["max"] - vela_ant["min"]
-        if sombra_ant > 0 and corpo_ant / sombra_ant < 0.25:
-            print(f"  {par}: bloqueado pavio dominante (rejeição)")
-            return None
-
-        c20 = sum(x["close"] for x in v[-20:]) / 20
-        c50 = sum(x["close"] for x in v[-50:]) / 50
-        pc  = v[-1]["close"]
+        # ── SCORE DIRECIONAL ─────────────────────────────────────────
+        c20 = sum(closes[-20:]) / 20
+        c50 = sum(closes[-50:]) / 50
         pt = ps = 0
 
+        # Tendência de médias
         if pc > c20 > c50:   pt += 25
         elif pc < c20 < c50: ps += 25
 
-        if abs(c20 - c50) / c50 * 100 > 0.025:
-            pt += 18; ps += 18
+        # Distância entre médias (força da tendência)
+        sep = abs(c20 - c50) / c50 * 100
+        if sep > 0.025:
+            if pc > c20: pt += 18
+            else:        ps += 18
 
-        corpo  = abs(v[-1]["close"] - v[-1]["open"])
+        # Corpo da última vela
+        corpo = abs(closes[-1] - v[-1]["open"])
         sombra = v[-1]["max"] - v[-1]["min"]
-        if sombra > 0 and corpo / sombra > 0.7:
-            if v[-1]["close"] > v[-1]["open"]: pt += 20
-            else: ps += 20
+        if sombra > 0 and corpo / sombra > 0.6:
+            if closes[-1] > v[-1]["open"]: pt += 20
+            else:                          ps += 20
 
-        if all(x["close"] > x["open"] for x in v[-3:]): pt += 17
-        elif all(x["close"] < x["open"] for x in v[-3:]): ps += 17
+        # 3 velas consecutivas na mesma direção
+        if all(v[-i]["close"] > v[-i]["open"] for i in range(1, 4)): pt += 17
+        elif all(v[-i]["close"] < v[-i]["open"] for i in range(1, 4)): ps += 17
 
-        # Confirmação direcional — vela anterior penaliza se contra, mas não bloqueia
-        dir_provisoria = "CALL" if pt > ps else "PUT"
-        if dir_provisoria == "CALL" and not vela_ant_alta:
-            ps += 10  # penalidade leve — não bloqueia mas reduz confiança
-        if dir_provisoria == "PUT" and vela_ant_alta:
-            pt += 10
+        # RSI como bônus direcional
+        if rsi > 60:   pt += 10
+        elif rsi < 40: ps += 10
 
-        # Recalcula direção após penalidade
-        dir_provisoria = "CALL" if pt > ps else "PUT"
+        # ADX como bônus de força
+        if adx >= 25:
+            pt += 8; ps += 8
 
-        # Filtro Stochastic — bloqueia só na zona neutra (sem momentum)
-        # Extremos (K<20 ou K>80) = momentum forte = PERMITIDO
-        # Zona neutra (40-60) = sem força = BLOQUEAR
-        if 40 <= stoch_k <= 60:
-            print(f"  {par}: bloqueado Stoch neutro (K:{stoch_k})")
+        # ── DIREÇÃO E CONFIANÇA ──────────────────────────────────────
+        total = pt + ps
+        if total == 0 or abs(pt - ps) < 10:
             return None
 
-        vol = (max(x["max"] for x in v[-10:]) - min(x["min"] for x in v[-10:])) / pc * 100
-        if 0.01 <= vol <= 0.08:
-            pt += 10; ps += 10
-
-        total = pt + ps
-        if total == 0 or abs(pt - ps) < 12: return None
-
-        conf = round(max(pt, ps) / total * 100, 1)
         dir_ = "CALL" if pt > ps else "PUT"
-        if conf < MIN_CONF: return None
+        conf = round(max(pt, ps) / total * 100, 1)
+
+        if conf < MIN_CONF:
+            return None
 
         hora_exec = (datetime.utcnow() - timedelta(hours=3) + timedelta(seconds=120)).strftime("%H:%M")
-        return {"p": par, "d": dir_provisoria, "c": conf, "h": hora_exec,
-                "rsi": rsi, "adx": adx, "stoch_k": stoch_k, "stoch_d": stoch_d}
-    except:
+        return {"p": par, "d": dir_, "c": conf, "h": hora_exec, "rsi": rsi, "adx": adx}
+    except Exception as e:
+        print(f"  {par}: erro — {e}")
         return None
 
-# ── CICLO ────────────────────────────────────────────────────────────
-env = set()
+# ── JANELA OPERACIONAL ───────────────────────────────────────────────
+env = {}
+def janela_ok(agora):
+    h, m = agora.hour, agora.minute
+    # Bloqueia viradas de hora e minutos de manipulação
+    if m in (2, 17, 32, 47):   return False
+    if 58 <= m or m <= 2:      return False
+    # Janela BRT: 04:00-17:00 e 21:00-02:00
+    if 4 <= h < 17:            return True
+    if h >= 21 or h < 2:       return True
+    return False
 
+# ── CICLO ────────────────────────────────────────────────────────────
 def ciclo():
     agora = datetime.utcnow() - timedelta(hours=3)
     print(f"\n🔍 {agora.strftime('%H:%M:%S')} — analisando...")
+
+    if not janela_ok(agora):
+        print("  Fora da janela operacional.")
+        return
+
     sinais = []
     for par in PARES:
-        if tem_noticia(par):
-            print(f"  {par}: bloqueado notícia")
-            continue
-        x = calcular_sinal(par)
-        if not x:
-            continue
-        chave = f"{x['h']}{x['p']}"
+        chave = f"{par}-{agora.strftime('%H:%M')}"
         if chave in env:
             continue
-        env.add(chave)
-        sinais.append(x)
+        if tem_noticia(par):
+            print(f"  {par}: bloqueado por notícia")
+            continue
+        s = calcular_sinal(par)
+        if s:
+            env[chave] = True
+            sinais.append(s)
+            print(f"  M1;{s['p']};{s['h']};{s['d']} | {s['c']}% | RSI:{s['rsi']} ADX:{s['adx']}")
 
     if not sinais:
         print("  Sem sinal.")
         return
+
+    sinais.sort(key=lambda x: x["c"], reverse=True)
 
     for x in sinais:
         marca = "⭐" if x["c"] >= 80 else "✅"
         print(f"M1;{x['p']};{x['h']};{x['d']} | {x['c']}% {marca}")
 
     bloco = "\n".join([
-        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'} | RSI:{x.get('rsi','?')} ADX:{x.get('adx','?')} K:{x.get('stoch_k','?')}"
+        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'} | RSI:{x['rsi']} ADX:{x['adx']}"
         for x in sinais
     ])
     tg(f"🎯 <b>GERADOR — {agora.strftime('%H:%M')}</b>\n\n{bloco}")
@@ -303,7 +278,7 @@ def ciclo():
 # ── MAIN ─────────────────────────────────────────────────────────────
 def main():
     print("🟢 Gerador de Sinais iniciado!")
-    tg("🟢 <b>Gerador de Sinais online!</b>")
+    tg("🟢 <b>Gerador de Sinais online! (filtros RSI+ADX+BB)</b>")
     ultimo = ""
     while True:
         try:
