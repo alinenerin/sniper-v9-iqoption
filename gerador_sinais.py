@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
 GERADOR DE SINAIS — Railway
-Fonte de dados: Twelve Data (M1, tempo real)
-Envia sinais aprovados via Telegram.
+Fonte de dados: Twelve Data (M1)
+Sem dependência da lib IQ Option.
 """
-import sys, os, time, requests, threading
+import sys, os, subprocess
+
+# Instala dependências próprias sem afetar outros serviços
+subprocess.call([sys.executable, "-m", "pip", "install", "-q", "requests", "pytz"])
+
+import time, requests, threading
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -31,7 +36,10 @@ class _H(BaseHTTPRequestHandler):
         self.wfile.write(b"Gerador OK")
     def log_message(self, *a): pass
 
-threading.Thread(target=lambda: HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), _H).serve_forever(), daemon=True).start()
+threading.Thread(
+    target=lambda: HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), _H).serve_forever(),
+    daemon=True
+).start()
 
 # ── TELEGRAM ─────────────────────────────────────────────────────────
 def tg(msg):
@@ -56,14 +64,14 @@ def tem_noticia(p):
         agora = datetime.utcnow()
         for e in _ff_cache["data"]:
             if e["impact"] == "High" and e["country"] == m:
-                d = datetime.fromisoformat(e["date"].replace("Z",""))
+                d = datetime.fromisoformat(e["date"].replace("Z", ""))
                 if abs((d - agora).total_seconds()) <= 1800:
                     return True
     except:
         pass
     return False
 
-# ── BUSCA VELAS TWELVE DATA ──────────────────────────────────────────
+# ── BUSCA VELAS ──────────────────────────────────────────────────────
 def get_velas(simbolo, n=55):
     try:
         url = (f"https://api.twelvedata.com/time_series"
@@ -73,23 +81,16 @@ def get_velas(simbolo, n=55):
         vals = r.json().get("values", [])
         if not vals:
             return []
-        velas = []
-        for v in reversed(vals):
-            velas.append({
-                "open":  float(v["open"]),
-                "close": float(v["close"]),
-                "max":   float(v["high"]),
-                "min":   float(v["low"])
-            })
-        return velas
+        return [{"open": float(v["open"]), "close": float(v["close"]),
+                 "max": float(v["high"]), "min": float(v["low"])}
+                for v in reversed(vals)]
     except:
         return []
 
-# ── CÁLCULO DE SINAL ─────────────────────────────────────────────────
+# ── CÁLCULO ──────────────────────────────────────────────────────────
 def calcular_sinal(par):
     try:
-        simbolo = PARES[par]
-        v = get_velas(simbolo, 55)
+        v = get_velas(PARES[par], 55)
         if not v or len(v) < 50:
             return None
 
@@ -141,9 +142,11 @@ def ciclo():
             print(f"  {par}: bloqueado notícia")
             continue
         x = calcular_sinal(par)
-        if not x: continue
+        if not x:
+            continue
         chave = f"{x['h']}{x['p']}"
-        if chave in env: continue
+        if chave in env:
+            continue
         env.add(chave)
         sinais.append(x)
 
@@ -156,7 +159,7 @@ def ciclo():
         print(f"M1;{x['p']};{x['h']};{x['d']} | {x['c']}% {marca}")
 
     bloco = "\n".join([
-        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c']>=80 else '✅'}"
+        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'}"
         for x in sinais
     ])
     tg(f"🎯 <b>GERADOR — {agora.strftime('%H:%M')}</b>\n\n{bloco}")
@@ -166,7 +169,7 @@ def ciclo():
 
 # ── MAIN ─────────────────────────────────────────────────────────────
 def main():
-    print("🟢 Gerador de Sinais iniciado! (Twelve Data)\n")
+    print("🟢 Gerador de Sinais iniciado!")
     tg("🟢 <b>Gerador de Sinais online!</b>")
     ultimo = ""
     while True:
