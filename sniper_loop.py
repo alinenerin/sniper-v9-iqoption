@@ -80,8 +80,8 @@ VALOR_PCT    = 0.02
 TG_TOKEN     = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
 TG_CHAT_ID   = '5911742397'
 
-# ── SCORE mínimo: 150 (DIAMANTE obrigatório para OTC)
-SCORE_MIN    = 150
+# ── SCORE mínimo: 120 (permite variações de mercado; trava física 1.5pip garante segurança)
+SCORE_MIN    = 120
 COOLDOWN     = 120
 
 LOG_FILE    = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/logs/sniper_job.log'
@@ -295,8 +295,7 @@ def analisar_sinal(iq, par_base):
 
         # ── SCORE ───────────────────────────────────────────────────
         # ══════════════════════════════════════════════════════════════
-        # TABELA DE SCORE — SNIPER V9 OTC  (máx 150 pts | mín 120)
-        # ══════════════════════════════════════════════════════════════
+        # TABELA DE SCORE — SNIPER V9 OTC  (máx 150 pts | mín 120)        # ══════════════════════════════════════════════════════════════
         score = 0
 
         # ── BLOCO A: DIREÇÃO E TENDÊNCIA — máx 60 pts ────────────────
