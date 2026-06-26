@@ -323,9 +323,17 @@ def calcular_sinal(par):
 env = {}
 def janela_ok(agora):
     h, m = agora.hour, agora.minute
+    dia = agora.weekday()  # 0=seg ... 4=sex, 5=sab, 6=dom
+
+    # Sexta, sábado e domingo — OTC 24h
+    if dia in (4, 5, 6):
+        if m in (2, 17, 32, 47): return False
+        if m >= 58:              return False
+        return True
+
+    # Segunda a quinta — janela BRT: 04:00-17:00 e 21:00-02:00
     if m in (2, 17, 32, 47):  return False
     if m >= 58:               return False
-    # Janela BRT: 04:00-17:00 e 21:00-02:00
     if 4 <= h < 17:           return True
     if h >= 21 or h < 2:      return True
     return False
