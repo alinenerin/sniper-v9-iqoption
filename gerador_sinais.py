@@ -145,6 +145,17 @@ def calcular_sinal(par):
             print(f"  {par}: bloqueado ADX fraco ({adx})")
             return None
 
+        # Filtro confirmação de vela — última vela fechada confirma direção?
+        vela_ant = v[-2]  # penúltima vela (já fechada)
+        vela_ant_alta = vela_ant["close"] > vela_ant["open"]
+
+        # Filtro de pavio — rejeição forte indica indecisão
+        corpo_ant = abs(vela_ant["close"] - vela_ant["open"])
+        sombra_ant = vela_ant["max"] - vela_ant["min"]
+        if sombra_ant > 0 and corpo_ant / sombra_ant < 0.35:
+            print(f"  {par}: bloqueado pavio dominante (rejeição)")
+            return None
+
         c20 = sum(x["close"] for x in v[-20:]) / 20
         c50 = sum(x["close"] for x in v[-50:]) / 50
         pc  = v[-1]["close"]
@@ -164,6 +175,15 @@ def calcular_sinal(par):
 
         if all(x["close"] > x["open"] for x in v[-3:]): pt += 17
         elif all(x["close"] < x["open"] for x in v[-3:]): ps += 17
+
+        # Filtro confirmação direcional — sinal deve estar alinhado com vela anterior
+        dir_provisoria = "CALL" if pt > ps else "PUT"
+        if dir_provisoria == "CALL" and not vela_ant_alta:
+            print(f"  {par}: bloqueado vela anterior contra CALL")
+            return None
+        if dir_provisoria == "PUT" and vela_ant_alta:
+            print(f"  {par}: bloqueado vela anterior contra PUT")
+            return None
 
         vol = (max(x["max"] for x in v[-10:]) - min(x["min"] for x in v[-10:])) / pc * 100
         if 0.01 <= vol <= 0.08:
