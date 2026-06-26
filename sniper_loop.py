@@ -71,9 +71,10 @@ def telegram(msg):
     try:
         texto = urllib.parse.quote(msg)
         url = f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage?chat_id={TG_CHAT_ID}&text={texto}'
-        urllib.request.urlopen(url, timeout=5)
-    except:
-        pass
+        resp = urllib.request.urlopen(url, timeout=10)
+        log(f'[TG] Enviado OK ({resp.status})')
+    except Exception as e:
+        log(f'[TG] ERRO ao enviar: {e}')
 
 def start_health_server():
     class Handler(BaseHTTPRequestHandler):
