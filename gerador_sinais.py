@@ -1,63 +1,37 @@
 #!/usr/bin/env python3
 """
 GERADOR DE SINAIS — Railway
-Usa IQ Option (websocket) com timeout por threading para não travar.
+Fonte de dados: Twelve Data (M1, tempo real)
 Envia sinais aprovados via Telegram.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iqoptionapi'))
-
-import time, requests, threading
+import sys, os, time, requests, threading
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ── CONFIGURAÇÕES ────────────────────────────────────────────────────
-EMAIL    = "laiane.aline@gmail.com"
-SENHA    = "alineegui95"
-CONTA    = "PRACTICE"
+TD_KEY   = "1be0b948fb1c48bb997e350c542edafd"
 TG_TOKEN = "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg"
 TG_CHAT  = "5911742397"
 FF_URL   = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-
-PARES = [
-    "EURJPY-OTC", "EURGBP-OTC", "USDJPY-OTC",
-    "AUDUSD-OTC", "EURUSD-OTC", "GBPUSD-OTC"
-]
 MIN_CONF = 75
 
-import logging; logging.disable(logging.CRITICAL)
+PARES = {
+    "EURJPY-OTC": "EUR/JPY",
+    "EURGBP-OTC": "EUR/GBP",
+    "USDJPY-OTC": "USD/JPY",
+    "AUDUSD-OTC": "AUD/USD",
+    "EURUSD-OTC": "EUR/USD",
+    "GBPUSD-OTC": "GBP/USD"
+}
 
-from iqoptionapi.stable_api import IQ_Option
-iq = IQ_Option(EMAIL, SENHA)
-_conectado = False
-
-# ── KEEP-ALIVE HTTP (Railway exige porta aberta) ─────────────────────
+# ── KEEP-ALIVE HTTP ──────────────────────────────────────────────────
 class _H(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers()
         self.wfile.write(b"Gerador OK")
     def log_message(self, *a): pass
 
-def _http():
-    port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), _H).serve_forever()
-
-threading.Thread(target=_http, daemon=True).start()
-
-# ── CONEXÃO ──────────────────────────────────────────────────────────
-def conecta():
-    global _conectado
-    try:
-        ok, _ = iq.connect()
-        if ok:
-            iq.change_balance(CONTA)
-            _conectado = True
-            print(f"=== CONECTADO | {CONTA} | saldo: {iq.get_balance()} ===")
-            return True
-    except Exception as e:
-        print(f"ERRO CONEXÃO: {e}")
-    _conectado = False
-    return False
+threading.Thread(target=lambda: HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), _H).serve_forever(), daemon=True).start()
 
 # ── TELEGRAM ─────────────────────────────────────────────────────────
 def tg(msg):
@@ -89,23 +63,33 @@ def tem_noticia(p):
         pass
     return False
 
-# ── BUSCA VELAS COM TIMEOUT ──────────────────────────────────────────
-def get_candles_safe(par, n=55, timeout=10):
-    resultado = [None]
-    def _f():
-        try:
-            resultado[0] = iq.get_candles(par, 60, n, time.time())
-        except:
-            pass
-    t = threading.Thread(target=_f, daemon=True)
-    t.start()
-    t.join(timeout)
-    return resultado[0]
+# ── BUSCA VELAS TWELVE DATA ──────────────────────────────────────────
+def get_velas(simbolo, n=55):
+    try:
+        url = (f"https://api.twelvedata.com/time_series"
+               f"?symbol={simbolo}&interval=1min&outputsize={n}"
+               f"&apikey={TD_KEY}")
+        r = requests.get(url, timeout=10)
+        vals = r.json().get("values", [])
+        if not vals:
+            return []
+        velas = []
+        for v in reversed(vals):
+            velas.append({
+                "open":  float(v["open"]),
+                "close": float(v["close"]),
+                "max":   float(v["high"]),
+                "min":   float(v["low"])
+            })
+        return velas
+    except:
+        return []
 
 # ── CÁLCULO DE SINAL ─────────────────────────────────────────────────
-def calcular_sinal(p):
+def calcular_sinal(par):
     try:
-        v = get_candles_safe(p, 55, timeout=10)
+        simbolo = PARES[par]
+        v = get_velas(simbolo, 55)
         if not v or len(v) < 50:
             return None
 
@@ -121,7 +105,7 @@ def calcular_sinal(p):
             pt += 18; ps += 18
 
         corpo  = abs(v[-1]["close"] - v[-1]["open"])
-        sombra = v[-1]["max"]  - v[-1]["min"]
+        sombra = v[-1]["max"] - v[-1]["min"]
         if sombra > 0 and corpo / sombra > 0.7:
             if v[-1]["close"] > v[-1]["open"]: pt += 20
             else: ps += 20
@@ -141,22 +125,22 @@ def calcular_sinal(p):
         if conf < MIN_CONF: return None
 
         hora_exec = (datetime.utcnow() - timedelta(hours=3) + timedelta(seconds=120)).strftime("%H:%M")
-        return {"p": p, "d": dir_, "c": conf, "h": hora_exec}
+        return {"p": par, "d": dir_, "c": conf, "h": hora_exec}
     except:
         return None
 
-# ── CICLO PRINCIPAL ──────────────────────────────────────────────────
+# ── CICLO ────────────────────────────────────────────────────────────
 env = set()
 
 def ciclo():
     agora = datetime.utcnow() - timedelta(hours=3)
-    print(f"\n🔍 {agora.strftime('%H:%M:%S')} — analisando {len(PARES)} pares...")
+    print(f"\n🔍 {agora.strftime('%H:%M:%S')} — analisando...")
     sinais = []
-    for p in PARES:
-        if tem_noticia(p):
-            print(f"  {p}: bloqueado notícia")
+    for par in PARES:
+        if tem_noticia(par):
+            print(f"  {par}: bloqueado notícia")
             continue
-        x = calcular_sinal(p)
+        x = calcular_sinal(par)
         if not x: continue
         chave = f"{x['h']}{x['p']}"
         if chave in env: continue
@@ -169,27 +153,22 @@ def ciclo():
 
     for x in sinais:
         marca = "⭐" if x["c"] >= 80 else "✅"
-        linha = f"M1;{x['p']};{x['h']};{x['d']} | {x['c']}% {marca}"
-        print(linha)
+        print(f"M1;{x['p']};{x['h']};{x['d']} | {x['c']}% {marca}")
 
-    # Envia pro Telegram em bloco
-    bloco = "\n".join([f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c']>=80 else '✅'}" for x in sinais])
+    bloco = "\n".join([
+        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c']>=80 else '✅'}"
+        for x in sinais
+    ])
     tg(f"🎯 <b>GERADOR — {agora.strftime('%H:%M')}</b>\n\n{bloco}")
 
     if len(env) > 300:
         env.clear()
 
+# ── MAIN ─────────────────────────────────────────────────────────────
 def main():
-    if not conecta():
-        print("Falha na conexão. Tentando em 30s...")
-        time.sleep(30)
-        if not conecta():
-            print("Sem conexão. Encerrando.")
-            return
-
+    print("🟢 Gerador de Sinais iniciado! (Twelve Data)\n")
+    tg("🟢 <b>Gerador de Sinais online!</b>")
     ultimo = ""
-    print("🟢 Gerador rodando!\n")
-
     while True:
         try:
             agora = datetime.utcnow() - timedelta(hours=3)
@@ -198,18 +177,16 @@ def main():
                 ultimo = chave
                 t = threading.Thread(target=ciclo, daemon=True)
                 t.start()
-                t.join(55)  # timeout total do ciclo
+                t.join(55)
                 if t.is_alive():
-                    print(f"  ⚠️ Ciclo {chave} excedeu 55s — continuando...")
+                    print(f"  ⚠️ Ciclo {chave} excedeu 55s")
             time.sleep(5)
         except KeyboardInterrupt:
             print("\n⛔ Encerrado.")
             break
         except Exception as e:
-            print(f"⚠️ Erro loop: {e}")
+            print(f"⚠️ Erro: {e}")
             time.sleep(10)
-            if not _conectado:
-                conecta()
 
 if __name__ == "__main__":
     main()
