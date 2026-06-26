@@ -87,11 +87,62 @@ def get_velas(simbolo, n=55):
     except:
         return []
 
+# ── RSI ──────────────────────────────────────────────────────────────
+def calcular_rsi(closes, periodo=14):
+    if len(closes) < periodo + 1:
+        return 50
+    gains, losses = [], []
+    for i in range(-periodo, 0):
+        diff = closes[i] - closes[i-1]
+        gains.append(max(diff, 0))
+        losses.append(max(-diff, 0))
+    ag = sum(gains) / periodo
+    al = sum(losses) / periodo
+    if al == 0: return 100
+    return round(100 - (100 / (1 + ag/al)), 1)
+
+# ── ADX ──────────────────────────────────────────────────────────────
+def calcular_adx(v, periodo=14):
+    try:
+        if len(v) < periodo + 2: return 0
+        tr_list, pdm_list, mdm_list = [], [], []
+        for i in range(-periodo, 0):
+            h, l, pc = v[i]["max"], v[i]["min"], v[i-1]["close"]
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            pdm = max(v[i]["max"] - v[i-1]["max"], 0)
+            mdm = max(v[i-1]["min"] - v[i]["min"], 0)
+            if pdm > mdm: mdm = 0
+            elif mdm > pdm: pdm = 0
+            else: pdm = mdm = 0
+            tr_list.append(tr); pdm_list.append(pdm); mdm_list.append(mdm)
+        atr = sum(tr_list) / periodo
+        if atr == 0: return 0
+        pdi = (sum(pdm_list)/periodo / atr) * 100
+        mdi = (sum(mdm_list)/periodo / atr) * 100
+        dx  = abs(pdi - mdi) / (pdi + mdi) * 100 if (pdi + mdi) > 0 else 0
+        return round(dx, 1)
+    except:
+        return 0
+
 # ── CÁLCULO ──────────────────────────────────────────────────────────
 def calcular_sinal(par):
     try:
         v = get_velas(PARES[par], 55)
         if not v or len(v) < 50:
+            return None
+
+        closes = [x["close"] for x in v]
+        rsi = calcular_rsi(closes)
+        adx = calcular_adx(v)
+
+        # Filtro RSI neutro — mercado sem força
+        if 45 <= rsi <= 55:
+            print(f"  {par}: bloqueado RSI neutro ({rsi})")
+            return None
+
+        # Filtro ADX fraco — mercado lateral
+        if adx < 20:
+            print(f"  {par}: bloqueado ADX fraco ({adx})")
             return None
 
         c20 = sum(x["close"] for x in v[-20:]) / 20
@@ -126,7 +177,7 @@ def calcular_sinal(par):
         if conf < MIN_CONF: return None
 
         hora_exec = (datetime.utcnow() - timedelta(hours=3) + timedelta(seconds=120)).strftime("%H:%M")
-        return {"p": par, "d": dir_, "c": conf, "h": hora_exec}
+        return {"p": par, "d": dir_, "c": conf, "h": hora_exec, "rsi": rsi, "adx": adx}
     except:
         return None
 
@@ -159,7 +210,7 @@ def ciclo():
         print(f"M1;{x['p']};{x['h']};{x['d']} | {x['c']}% {marca}")
 
     bloco = "\n".join([
-        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'}"
+        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'} | RSI:{x.get('rsi','?')} ADX:{x.get('adx','?')}"
         for x in sinais
     ])
     tg(f"🎯 <b>GERADOR — {agora.strftime('%H:%M')}</b>\n\n{bloco}")
