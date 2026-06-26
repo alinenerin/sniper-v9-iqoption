@@ -600,16 +600,7 @@ def rodar_ciclo(iq, estado):
     resultado  = round(saldo_novo - saldo_antes, 2)
     log(f'Resultado por saldo: antes={saldo_antes:.2f} depois={saldo_novo:.2f} diff={resultado:.2f}')
 
-    # Tenta enriquecer com check_win_v3 mas não bloqueia se falhar
-    try:
-        r = iq.check_win_v3(id_op)
-        log(f'check_win_v3 raw: {r!r}')
-        if r is not None and isinstance(r, (int, float)) and r != resultado:
-            log(f'check_win_v3 confirmou: {r:.2f} (usando este)')
-            resultado = r
-    except Exception as e:
-        log(f'check_win_v3 ignorado: {e}')
-
+    # Resultado final por variação de saldo (mais confiável que check_win_v3)
     if resultado > 0:
         estado['wins'] += 1
         estado['losses_seq'] = 0
