@@ -11,6 +11,53 @@ Correções aplicadas:
 """
 import sys, time, json, os, datetime, urllib.request, urllib.parse, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# ── FILTRO DE NOTÍCIAS (ForexFactory) ────────────────────────────────
+_cache_news = {'ts': 0, 'bloqueios': []}
+
+def get_bloqueios_news():
+    """Retorna lista de (inicio_brt, fim_brt) com janelas bloqueadas por notícias."""
+    agora = time.time()
+    if agora - _cache_news['ts'] < 600:  # cache 10min
+        return _cache_news['bloqueios']
+    try:
+        url = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
+        with urllib.request.urlopen(url, timeout=8) as r:
+            eventos = json.loads(r.read())
+        now_brt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)
+        hoje = now_brt.strftime('%Y-%m-%d')
+        bloqueios = []
+        for e in eventos:
+            if e.get('impact') not in ('High', 'Medium'):
+                continue
+            dt_str = e.get('date', '')
+            if not dt_str.startswith(hoje):
+                continue
+            try:
+                # FF retorna em ET (UTC-4 no verão) → +1h = BRT
+                dt_et = datetime.datetime.fromisoformat(dt_str.replace('Z', ''))
+                dt_brt = dt_et + datetime.timedelta(hours=1)
+                mins = 45 if e.get('impact') == 'High' else 15
+                inicio = dt_brt - datetime.timedelta(minutes=mins)
+                fim    = dt_brt + datetime.timedelta(minutes=mins)
+                bloqueios.append((inicio, fim, e.get('title', '?'), e.get('impact')))
+            except:
+                pass
+        _cache_news['bloqueios'] = bloqueios
+        _cache_news['ts'] = agora
+        return bloqueios
+    except Exception as ex:
+        log(f'[NEWS] Erro ao buscar calendário: {ex}')
+        return _cache_news['bloqueios']
+
+def check_news_bloqueio(now_brt):
+    """Retorna (bloqueado: bool, motivo: str)"""
+    bloqueios = get_bloqueios_news()
+    for (inicio, fim, titulo, impacto) in bloqueios:
+        if inicio <= now_brt <= fim:
+            return True, f'🚫 NEWS {impacto}: {titulo} ({inicio.strftime("%H:%M")}–{fim.strftime("%H:%M")})'
+    return False, ''
+
 sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
 
 IQ_EMAIL     = 'laiane.aline@gmail.com'
@@ -311,6 +358,12 @@ def rodar_ciclo(iq, estado):
     # Minuto bloqueado
     if minuto_bloqueado(now_brt.minute):
         log(f'Minuto bloqueado: :{now_brt.minute:02d}')
+        return None
+
+    # Filtro de notícias (ForexFactory)
+    bloqueado_news, motivo_news = check_news_bloqueio(now_brt)
+    if bloqueado_news:
+        log(f'[{now_brt.strftime("%H:%M")}] {motivo_news}')
         return None
 
     # Stop por losses seguidos — DESATIVADO (validação)
