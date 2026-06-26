@@ -79,7 +79,7 @@ VALOR_PCT    = 0.02
 TG_TOKEN     = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
 TG_CHAT_ID   = '5911742397'
 
-SCORE_MIN    = 150         # Forex: mais exigente que OTC (120)
+SCORE_MIN    = 150         # Forex: mínimo 150 (máx 170 com bônus OB/FVG)
 COOLDOWN     = 120
 
 LOG_FILE    = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/logs/forex_job.log'
@@ -378,7 +378,8 @@ def analisar_sinal(iq, par_base):
 
         # ── SCORE ───────────────────────────────────────────────────
         # ══════════════════════════════════════════════════════════════
-        # TABELA DE SCORE — SNIPER V9 FOREX REAL  (máx 150 pts | mín 150)
+        # TABELA DE SCORE — SNIPER V9 FOREX REAL  (máx 170 pts | mín 150)
+        # Bônus +20pts: Price Action Institucional (Order Block / FVG)
         # ══════════════════════════════════════════════════════════════
         score = 0
 
@@ -434,11 +435,43 @@ def analisar_sinal(iq, par_base):
         if corpo_medio >= pip * 3:     score += 20
         elif corpo_medio >= pip * 1.5: score += 10
 
+        # ── BLOCO D: PRICE ACTION INSTITUCIONAL — bônus +20 pts ──────
+        # Order Block: vela anterior oposta ao movimento atual (reversão institucional)
+        # FVG: gap entre c[-3] e o[-1] (desequilíbrio de liquidez)
+        ob_ok = False
+        fvg_ok = False
+        if len(closes) >= 3 and len(opens) >= 3:
+            # Order Block: vela [-2] contrária + vela [-1] a favor
+            vela_ob_contraria = (direction == 'CALL' and closes[-2] < opens[-2]) or \
+                                (direction == 'PUT'  and closes[-2] > opens[-2])
+            vela_ob_favor     = (direction == 'CALL' and closes[-1] > opens[-1]) or \
+                                (direction == 'PUT'  and closes[-1] < opens[-1])
+            if vela_ob_contraria and vela_ob_favor:
+                ob_ok = True
+
+            # FVG: gap entre high de [-3] e low de [-1] (CALL) ou inverso (PUT)
+            if direction == 'CALL':
+                high_m3 = max(closes[-3], opens[-3])
+                low_m1  = min(closes[-1], opens[-1])
+                if low_m1 > high_m3:
+                    fvg_ok = True
+            elif direction == 'PUT':
+                low_m3  = min(closes[-3], opens[-3])
+                high_m1 = max(closes[-1], opens[-1])
+                if high_m1 < low_m3:
+                    fvg_ok = True
+
+        if ob_ok or fvg_ok:
+            score += 20
+            motivo_bonus = 'OB' if ob_ok else 'FVG'
+        else:
+            motivo_bonus = None
+
         # ── VETO FINAL ────────────────────────────────────────────────
         if score < SCORE_MIN:
             return None, 0, f'Score {score} < {SCORE_MIN} (RSI={rsi:.1f} EMA50={e50_ok} RSI_ok={rsi_ok})'
 
-        return direction, score, {'rsi': rsi, 'corpo_medio': corpo_medio / pip, 'e50_ok': e50_ok, 'rsi_ok': rsi_ok}
+        return direction, score, {'rsi': rsi, 'corpo_medio': corpo_medio / pip, 'e50_ok': e50_ok, 'rsi_ok': rsi_ok, 'bonus': motivo_bonus}
 
     except Exception as ex:
         return None, 0, f'Exceção: {ex}'
