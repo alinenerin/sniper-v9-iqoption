@@ -182,8 +182,15 @@ def save_estado(e):
 def janela_ok(now_brt):
     h = now_brt.hour
     m = now_brt.minute
-    # Mercado real: Londres 09h-16h BRT | NY 14h-16h BRT | Tokyo 21h-01h BRT
-    # Safety Hour: para 60min antes do fechamento de cada sessão
+    dia = now_brt.weekday()  # 0=seg ... 4=sex, 5=sab, 6=dom
+
+    # Sexta, sábado e domingo — OTC 24h sem Safety Hour
+    if dia in (4, 5, 6):
+        if m in [59, 0, 1]:
+            return False, 'Minuto bloqueado (virada de vela)'
+        return True, 'OTC fim de semana — 24h ativo'
+
+    # Segunda a quinta — janela normal com Safety Hour
     if 2 <= h < 9:
         return False, 'Janela pausada — retoma 09h BRT (Londres)'
     if 17 <= h < 21:
