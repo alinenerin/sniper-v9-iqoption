@@ -1,30 +1,33 @@
 #!/usr/bin/env python3
 """
 GERADOR DE SINAIS — Railway
-Fonte de dados: Twelve Data (M1)
-Filtros: RSI + ADX + Bollinger (3 filtros limpos, sem conflito)
+Fonte de dados: IQ Option (M1) — sem limite de requisições
+Filtros: RSI + ADX + Bollinger
 """
 import sys, os, subprocess
-subprocess.call([sys.executable, "-m", "pip", "install", "-q", "requests", "pytz"])
+subprocess.call([sys.executable, "-m", "pip", "install", "-q",
+                 "requests", "pytz", "websocket-client", "iqoptionapi"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 import time, requests, threading
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ── CONFIGURAÇÕES ────────────────────────────────────────────────────
-TD_KEY   = "1be0b948fb1c48bb997e350c542edafd"
-TG_TOKEN = "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg"
-TG_CHAT  = "5911742397"
-FF_URL   = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-MIN_CONF = 75
+IQ_EMAIL  = "laiane.aline@gmail.com"
+IQ_PASS   = "alineegui95"
+TG_TOKEN  = "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg"
+TG_CHAT   = "5911742397"
+FF_URL    = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+MIN_CONF  = 75
 
+# Par gerador : nome IQ Option
 PARES = {
-    "EURJPY-OTC": "EUR/JPY",
-    "EURGBP-OTC": "EUR/GBP",
-    "USDJPY-OTC": "USD/JPY",
-    "AUDUSD-OTC": "AUD/USD",
-    "EURUSD-OTC": "EUR/USD",
-    "GBPUSD-OTC": "GBP/USD"
+    "EURJPY-OTC": "EURJPY-OTC",
+    "EURGBP-OTC": "EURGBP-OTC",
+    "USDJPY-OTC": "USDJPY-OTC",
+    "AUDUSD-OTC": "AUDUSD-OTC",
+    "EURUSD-OTC": "EURUSD-OTC",
+    "GBPUSD-OTC": "GBPUSD-OTC",
 }
 
 # ── KEEP-ALIVE HTTP ──────────────────────────────────────────────────
@@ -50,6 +53,49 @@ def tg(msg):
     except:
         pass
 
+# ── IQ OPTION — CONEXÃO GLOBAL ───────────────────────────────────────
+_iq = None
+_iq_lock = threading.Lock()
+
+def get_iq():
+    global _iq
+    with _iq_lock:
+        try:
+            if _iq is None:
+                sys.path.insert(0, "/app/libs/api_faria")
+                from iqoptionapi.stable_api import IQ_Option
+                _iq = IQ_Option(IQ_EMAIL, IQ_PASS)
+                check, reason = _iq.connect()
+                if not check:
+                    print(f"  IQ connect falhou: {reason}")
+                    _iq = None
+                    return None
+                _iq.change_balance("PRACTICE")
+                print("  IQ Option conectado ✅")
+            return _iq
+        except Exception as e:
+            print(f"  IQ erro: {e}")
+            _iq = None
+            return None
+
+def get_velas(par, n=55):
+    try:
+        iq = get_iq()
+        if not iq:
+            return []
+        velas = iq.get_candles(par, 60, n, time.time())
+        if not velas:
+            return []
+        velas.sort(key=lambda x: x["from"])
+        return [{"open": float(v["open"]), "close": float(v["close"]),
+                 "max": float(v["max"]),   "min": float(v["min"])}
+                for v in velas]
+    except Exception as e:
+        print(f"  get_velas {par}: {e}")
+        global _iq
+        _iq = None  # força reconexão no próximo ciclo
+        return []
+
 # ── NOTÍCIAS ─────────────────────────────────────────────────────────
 _ff_cache = {"ts": 0, "data": []}
 def tem_noticia(p):
@@ -58,32 +104,16 @@ def tem_noticia(p):
             r = requests.get(FF_URL, timeout=5)
             _ff_cache["data"] = r.json()
             _ff_cache["ts"] = time.time()
-        m = p[:3]
+        moeda = p[:3]
         agora = datetime.utcnow()
         for e in _ff_cache["data"]:
-            if e["impact"] == "High" and e["country"] == m:
+            if e.get("impact") == "High" and e.get("country") == moeda:
                 d = datetime.fromisoformat(e["date"].replace("Z", ""))
                 if abs((d - agora).total_seconds()) <= 1800:
                     return True
     except:
         pass
     return False
-
-# ── BUSCA VELAS ──────────────────────────────────────────────────────
-def get_velas(simbolo, n=55):
-    try:
-        url = (f"https://api.twelvedata.com/time_series"
-               f"?symbol={simbolo}&interval=1min&outputsize={n}"
-               f"&apikey={TD_KEY}")
-        r = requests.get(url, timeout=10)
-        vals = r.json().get("values", [])
-        if not vals:
-            return []
-        return [{"open": float(v["open"]), "close": float(v["close"]),
-                 "max": float(v["high"]), "min": float(v["low"])}
-                for v in reversed(vals)]
-    except:
-        return []
 
 # ── RSI ──────────────────────────────────────────────────────────────
 def calcular_rsi(closes, periodo=14):
@@ -131,9 +161,9 @@ def calcular_adx(v, periodo=14):
 def calcular_bollinger(closes, periodo=20, desvios=2.0):
     if len(closes) < periodo:
         return None, None, None
-    serie  = closes[-periodo:]
-    media  = sum(serie) / periodo
-    std    = (sum((x - media)**2 for x in serie) / periodo) ** 0.5
+    serie = closes[-periodo:]
+    media = sum(serie) / periodo
+    std   = (sum((x - media)**2 for x in serie) / periodo) ** 0.5
     return media + desvios * std, media, media - desvios * std
 
 # ── CÁLCULO ──────────────────────────────────────────────────────────
@@ -141,7 +171,7 @@ def calcular_sinal(par):
     try:
         v = get_velas(PARES[par], 55)
         if not v:
-            print(f"  {par}: sem velas retornadas")
+            print(f"  {par}: sem velas")
             return None
         if len(v) < 25:
             print(f"  {par}: velas insuficientes ({len(v)})")
@@ -150,22 +180,21 @@ def calcular_sinal(par):
         closes = [x["close"] for x in v]
         pc     = closes[-1]
 
-        # ── Indicadores ──────────────────────────────────────────────
         rsi               = calcular_rsi(closes)
         adx               = calcular_adx(v)
         bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
 
-        # ── FILTRO 1: RSI neutro (mercado sem força) ──────────────────
+        # FILTRO 1 — RSI neutro
         if 43 <= rsi <= 57:
             print(f"  {par}: bloqueado RSI neutro ({rsi})")
             return None
 
-        # ── FILTRO 2: ADX fraco (mercado lateral) ────────────────────
+        # FILTRO 2 — ADX fraco
         if adx < 18:
             print(f"  {par}: bloqueado ADX fraco ({adx})")
             return None
 
-        # ── FILTRO 3: Bollinger — preço no meio da banda ─────────────
+        # FILTRO 3 — Bollinger range
         if bb_sup and bb_inf:
             banda = bb_sup - bb_inf
             if banda > 0:
@@ -176,41 +205,34 @@ def calcular_sinal(par):
 
         print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} — calculando score...")
 
-        # ── SCORE DIRECIONAL ─────────────────────────────────────────
+        # SCORE DIRECIONAL
         c20 = sum(closes[-20:]) / 20
-        c50 = sum(closes[-min(50,len(closes)):]) / min(50,len(closes))
+        c50 = sum(closes[-min(50, len(closes)):]) / min(50, len(closes))
         pt = ps = 0
 
-        # Tendência de médias
         if pc > c20 > c50:   pt += 25
         elif pc < c20 < c50: ps += 25
 
-        # Distância entre médias (força da tendência)
         sep = abs(c20 - c50) / c50 * 100
         if sep > 0.025:
             if pc > c20: pt += 18
             else:        ps += 18
 
-        # Corpo da última vela
-        corpo = abs(closes[-1] - v[-1]["open"])
+        corpo  = abs(closes[-1] - v[-1]["open"])
         sombra = v[-1]["max"] - v[-1]["min"]
         if sombra > 0 and corpo / sombra > 0.6:
             if closes[-1] > v[-1]["open"]: pt += 20
             else:                          ps += 20
 
-        # 3 velas consecutivas na mesma direção
         if all(v[-i]["close"] > v[-i]["open"] for i in range(1, 4)): pt += 17
         elif all(v[-i]["close"] < v[-i]["open"] for i in range(1, 4)): ps += 17
 
-        # RSI como bônus direcional
         if rsi > 60:   pt += 10
         elif rsi < 40: ps += 10
 
-        # ADX como bônus de força
         if adx >= 25:
             pt += 8; ps += 8
 
-        # ── DIREÇÃO E CONFIANÇA ──────────────────────────────────────
         total = pt + ps
         if total == 0 or abs(pt - ps) < 10:
             return None
@@ -231,12 +253,10 @@ def calcular_sinal(par):
 env = {}
 def janela_ok(agora):
     h, m = agora.hour, agora.minute
-    # Bloqueia viradas de hora e minutos de manipulação
-    if m in (2, 17, 32, 47):   return False
-    if 58 <= m or m <= 2:      return False
-    # Janela BRT: 04:00-17:00 e 21:00-02:00
-    if 4 <= h < 17:            return True
-    if h >= 21 or h < 2:       return True
+    if m in (2, 17, 32, 47):  return False
+    if 58 <= m or m <= 2:     return False
+    if 4 <= h < 17:           return True
+    if h >= 21 or h < 2:      return True
     return False
 
 # ── CICLO ────────────────────────────────────────────────────────────
@@ -260,17 +280,13 @@ def ciclo():
         if s:
             env[chave] = True
             sinais.append(s)
-            print(f"  M1;{s['p']};{s['h']};{s['d']} | {s['c']}% | RSI:{s['rsi']} ADX:{s['adx']}")
+            print(f"  ✅ M1;{s['p']};{s['h']};{s['d']} | {s['c']}% | RSI:{s['rsi']} ADX:{s['adx']}")
 
     if not sinais:
         print("  Sem sinal.")
         return
 
     sinais.sort(key=lambda x: x["c"], reverse=True)
-
-    for x in sinais:
-        marca = "⭐" if x["c"] >= 80 else "✅"
-        print(f"M1;{x['p']};{x['h']};{x['d']} | {x['c']}% {marca}")
 
     bloco = "\n".join([
         f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'} | RSI:{x['rsi']} ADX:{x['adx']}"
@@ -283,8 +299,10 @@ def ciclo():
 
 # ── MAIN ─────────────────────────────────────────────────────────────
 def main():
-    print("🟢 Gerador de Sinais iniciado!")
-    tg("🟢 <b>Gerador de Sinais online! (filtros RSI+ADX+BB)</b>")
+    print("🟢 Gerador de Sinais iniciado! (fonte: IQ Option)")
+    tg("🟢 <b>Gerador online! Fonte: IQ Option — sem limite de requisições</b>")
+    # Pré-conecta ao IQ Option
+    get_iq()
     ultimo = ""
     while True:
         try:
