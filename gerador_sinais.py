@@ -239,12 +239,11 @@ def calcular_sinal(par):
         # Recalcula direção após penalidade
         dir_provisoria = "CALL" if pt > ps else "PUT"
 
-        # Filtro Stochastic — bloqueia só se claramente contra
-        if dir_provisoria == "CALL" and not stoch_call:
-            print(f"  {par}: bloqueado Stoch sobrecompra (K:{stoch_k})")
-            return None
-        if dir_provisoria == "PUT" and not stoch_put:
-            print(f"  {par}: bloqueado Stoch sobrevenda (K:{stoch_k})")
+        # Filtro Stochastic — bloqueia só na zona neutra (sem momentum)
+        # Extremos (K<20 ou K>80) = momentum forte = PERMITIDO
+        # Zona neutra (40-60) = sem força = BLOQUEAR
+        if 40 <= stoch_k <= 60:
+            print(f"  {par}: bloqueado Stoch neutro (K:{stoch_k})")
             return None
 
         vol = (max(x["max"] for x in v[-10:]) - min(x["min"] for x in v[-10:])) / pc * 100
