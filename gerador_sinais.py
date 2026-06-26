@@ -279,17 +279,7 @@ def calcular_sinal(par):
                 print(f"  {par}: bloqueado Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)")
                 return None
 
-        # FILTRO 6 — TAXA REDONDA INSTITUCIONAL (rejeição algorítmica)
-        pip = 0.01 if pc > 50 else 0.0001
-        preco_mod = pc % (pip * 100)
-        dist_redonda = min(preco_mod, abs(preco_mod - pip * 50))
-        if dist_redonda < pip * 1.5:
-            taxa_redonda = round(pc / (pip * 50)) * (pip * 50)
-            indo_contra = (cruzamento == "CALL" and pc > taxa_redonda) or \
-                          (cruzamento == "PUT"  and pc < taxa_redonda)
-            if indo_contra:
-                print(f"  {par}: bloqueado Taxa Redonda Institucional ({dist_redonda/pip:.1f}p da zona)")
-                return None
+        # FILTRO 6 — reservado para Forex real (taxa redonda não se aplica a OTC)
 
         print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} MACD:{cruzamento}")
 
