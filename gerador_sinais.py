@@ -140,7 +140,11 @@ def calcular_bollinger(closes, periodo=20, desvios=2.0):
 def calcular_sinal(par):
     try:
         v = get_velas(PARES[par], 55)
-        if not v or len(v) < 52:
+        if not v:
+            print(f"  {par}: sem velas retornadas")
+            return None
+        if len(v) < 25:
+            print(f"  {par}: velas insuficientes ({len(v)})")
             return None
 
         closes = [x["close"] for x in v]
@@ -170,9 +174,11 @@ def calcular_sinal(par):
                     print(f"  {par}: bloqueado BB range ({pos:.2f})")
                     return None
 
+        print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} — calculando score...")
+
         # ── SCORE DIRECIONAL ─────────────────────────────────────────
         c20 = sum(closes[-20:]) / 20
-        c50 = sum(closes[-50:]) / 50
+        c50 = sum(closes[-min(50,len(closes)):]) / min(50,len(closes))
         pt = ps = 0
 
         # Tendência de médias
