@@ -157,6 +157,62 @@ def calcular_adx(v, periodo=14):
     except:
         return 0
 
+# ── MACD ─────────────────────────────────────────────────────────────
+def ema(closes, periodo):
+    """EMA usando multiplicador padrão"""
+    if len(closes) < periodo:
+        return None
+    k = 2 / (periodo + 1)
+    val = sum(closes[:periodo]) / periodo  # SMA inicial
+    for c in closes[periodo:]:
+        val = c * k + val * (1 - k)
+    return val
+
+def calcular_macd(closes, rapida=12, lenta=26, sinal=9):
+    """Retorna (macd_linha, macd_sinal, histograma, cruzamento)"""
+    try:
+        if len(closes) < lenta + sinal + 2:
+            return None, None, None, None
+
+        # Calcula MACD linha para as últimas (sinal+2) velas
+        macd_serie = []
+        for i in range(sinal + 2):
+            idx = len(closes) - (sinal + 2) + i + 1
+            sub = closes[:idx]
+            e_rap = ema(sub, rapida)
+            e_len = ema(sub, lenta)
+            if e_rap and e_len:
+                macd_serie.append(e_rap - e_len)
+
+        if len(macd_serie) < sinal:
+            return None, None, None, None
+
+        # Linha de sinal = EMA do MACD
+        linha_sinal = ema(macd_serie, sinal)
+        if linha_sinal is None:
+            return None, None, None, None
+
+        macd_atual  = macd_serie[-1]
+        macd_prev   = macd_serie[-2]
+        hist        = round(macd_atual - linha_sinal, 6)
+
+        # Detecta cruzamento fresco
+        # CALL: MACD cruzou para cima da linha de sinal
+        # PUT:  MACD cruzou para baixo da linha de sinal
+        sinal_prev = ema(macd_serie[:-1], sinal)
+        if sinal_prev is None:
+            cruzamento = None
+        elif macd_prev < sinal_prev and macd_atual > linha_sinal:
+            cruzamento = "CALL"
+        elif macd_prev > sinal_prev and macd_atual < linha_sinal:
+            cruzamento = "PUT"
+        else:
+            cruzamento = None
+
+        return round(macd_atual, 6), round(linha_sinal, 6), hist, cruzamento
+    except:
+        return None, None, None, None
+
 # ── BOLLINGER BANDS ──────────────────────────────────────────────────
 def calcular_bollinger(closes, periodo=20, desvios=2.0):
     if len(closes) < periodo:
@@ -173,16 +229,17 @@ def calcular_sinal(par):
         if not v:
             print(f"  {par}: sem velas")
             return None
-        if len(v) < 25:
+        if len(v) < 40:
             print(f"  {par}: velas insuficientes ({len(v)})")
             return None
 
         closes = [x["close"] for x in v]
         pc     = closes[-1]
 
-        rsi               = calcular_rsi(closes)
-        adx               = calcular_adx(v)
+        rsi                    = calcular_rsi(closes)
+        adx                    = calcular_adx(v)
         bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
+        macd_l, macd_s, hist, cruzamento = calcular_macd(closes)
 
         # FILTRO 1 — RSI neutro
         if 43 <= rsi <= 57:
@@ -203,48 +260,61 @@ def calcular_sinal(par):
                     print(f"  {par}: bloqueado BB range ({pos:.2f})")
                     return None
 
-        print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} — calculando score...")
-
-        # SCORE DIRECIONAL
-        c20 = sum(closes[-20:]) / 20
-        c50 = sum(closes[-min(50, len(closes)):]) / min(50, len(closes))
-        pt = ps = 0
-
-        if pc > c20 > c50:   pt += 25
-        elif pc < c20 < c50: ps += 25
-
-        sep = abs(c20 - c50) / c50 * 100
-        if sep > 0.025:
-            if pc > c20: pt += 18
-            else:        ps += 18
-
-        corpo  = abs(closes[-1] - v[-1]["open"])
-        sombra = v[-1]["max"] - v[-1]["min"]
-        if sombra > 0 and corpo / sombra > 0.6:
-            if closes[-1] > v[-1]["open"]: pt += 20
-            else:                          ps += 20
-
-        if all(v[-i]["close"] > v[-i]["open"] for i in range(1, 4)): pt += 17
-        elif all(v[-i]["close"] < v[-i]["open"] for i in range(1, 4)): ps += 17
-
-        if rsi > 60:   pt += 10
-        elif rsi < 40: ps += 10
-
-        if adx >= 25:
-            pt += 8; ps += 8
-
-        total = pt + ps
-        if total == 0 or abs(pt - ps) < 10:
+        # FILTRO 4 — MACD: exige cruzamento fresco
+        if cruzamento is None:
+            print(f"  {par}: bloqueado MACD sem cruzamento (L:{macd_l} S:{macd_s})")
             return None
 
-        dir_ = "CALL" if pt > ps else "PUT"
-        conf = round(max(pt, ps) / total * 100, 1)
+        print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} MACD:{cruzamento}")
 
+        # SCORE — MACD define a direção, demais confirmam
+        dir_ = cruzamento
+        pt = ps = 0
+
+        # MACD como base (peso alto)
+        if dir_ == "CALL": pt += 35
+        else:              ps += 35
+
+        # RSI confirma direção
+        if dir_ == "CALL" and rsi < 50:   pt += 20
+        elif dir_ == "PUT" and rsi > 50:  ps += 20
+
+        # ADX — força da tendência
+        if adx >= 25:
+            if dir_ == "CALL": pt += 15
+            else:              ps += 15
+
+        # Vela atual confirma
+        vela = v[-1]
+        corpo  = abs(vela["close"] - vela["open"])
+        sombra = vela["max"] - vela["min"]
+        if sombra > 0 and corpo / sombra > 0.5:
+            if vela["close"] > vela["open"] and dir_ == "CALL": pt += 15
+            elif vela["close"] < vela["open"] and dir_ == "PUT": ps += 15
+
+        # Vela anterior confirma
+        vela_ant = v[-2]
+        if vela_ant["close"] > vela_ant["open"] and dir_ == "CALL": pt += 10
+        elif vela_ant["close"] < vela_ant["open"] and dir_ == "PUT": ps += 10
+
+        # Bollinger — preço na extremidade confirma
+        if bb_sup and bb_inf:
+            pos = (pc - bb_inf) / (bb_sup - bb_inf) if (bb_sup - bb_inf) > 0 else 0.5
+            if pos <= 0.30 and dir_ == "CALL": pt += 5
+            elif pos >= 0.70 and dir_ == "PUT": ps += 5
+
+        total = pt + ps
+        if total == 0:
+            return None
+
+        conf = round(max(pt, ps) / total * 100, 1)
         if conf < MIN_CONF:
+            print(f"  {par}: conf baixa ({conf}%)")
             return None
 
         hora_exec = (datetime.utcnow() - timedelta(hours=3) + timedelta(seconds=120)).strftime("%H:%M")
-        return {"p": par, "d": dir_, "c": conf, "h": hora_exec, "rsi": rsi, "adx": adx}
+        return {"p": par, "d": dir_, "c": conf, "h": hora_exec,
+                "rsi": rsi, "adx": adx, "macd": cruzamento}
     except Exception as e:
         print(f"  {par}: erro — {e}")
         return None
@@ -289,7 +359,7 @@ def ciclo():
     sinais.sort(key=lambda x: x["c"], reverse=True)
 
     bloco = "\n".join([
-        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'} | RSI:{x['rsi']} ADX:{x['adx']}"
+        f"<code>M1;{x['p']};{x['h']};{x['d']}</code>  {x['c']}% {'⭐' if x['c'] >= 80 else '✅'} | RSI:{x['rsi']} ADX:{x['adx']} MACD:{x['macd']}"
         for x in sinais
     ])
     tg(f"🎯 <b>GERADOR — {agora.strftime('%H:%M')}</b>\n\n{bloco}")
