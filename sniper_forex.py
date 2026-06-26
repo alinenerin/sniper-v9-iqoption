@@ -461,9 +461,14 @@ def analisar_sinal(iq, par_base):
                 if high_m1 < low_m3:
                     fvg_ok = True
 
-        if ob_ok or fvg_ok:
+        # TRAVA DE PISO OPERACIONAL: bônus só liberado se score base >= 135
+        # Impede que sinais médios entrem pela porta dos fundos
+        score_base = score
+        if (ob_ok or fvg_ok) and score_base >= 135:
             score += 20
             motivo_bonus = 'OB' if ob_ok else 'FVG'
+        elif (ob_ok or fvg_ok) and score_base < 135:
+            motivo_bonus = f'BONUS_BLOQUEADO (base {score_base} < 135)'
         else:
             motivo_bonus = None
 
