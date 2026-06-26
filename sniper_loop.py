@@ -85,8 +85,8 @@ SCORE_MIN    = 150
 COOLDOWN     = 120
 
 LOG_FILE    = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/logs/sniper_job.log'
-ESTADO_FILE = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/estado.json'
-LOCK_FILE   = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/bot.lock'
+ESTADO_FILE = '/tmp/estado_sniper_otc.json'
+LOCK_FILE   = '/tmp/bot_sniper_otc.lock'
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
