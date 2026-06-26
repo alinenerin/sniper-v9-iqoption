@@ -80,11 +80,8 @@ VALOR_PCT    = 0.02
 TG_TOKEN     = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
 TG_CHAT_ID   = '5911742397'
 
-# ── SCORE: mínimo rebaixado de 120 para 100
-# (score real máximo é 150; a barreira 120 bloqueava >80% dos sinais
-#  mas os que passavam não eram necessariamente mais fortes —
-#  apenas tinham RSI numa faixa favorável por coincidência)
-SCORE_MIN    = 120
+# ── SCORE mínimo: 150 (DIAMANTE obrigatório para OTC)
+SCORE_MIN    = 150
 COOLDOWN     = 120
 
 LOG_FILE    = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/logs/sniper_job.log'
