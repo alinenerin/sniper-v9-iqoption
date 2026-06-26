@@ -324,7 +324,8 @@ env = {}
 def janela_ok(agora):
     h, m = agora.hour, agora.minute
     if m in (2, 17, 32, 47):  return False
-    if 58 <= m or m <= 2:     return False
+    if m >= 58:               return False
+    # Janela BRT: 04:00-17:00 e 21:00-02:00
     if 4 <= h < 17:           return True
     if h >= 21 or h < 2:      return True
     return False
