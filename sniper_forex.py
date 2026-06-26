@@ -359,6 +359,26 @@ def analisar_sinal(iq, par_base):
         else:
             return None, 0, f'EMA9/EMA25 sem consenso'
 
+        # ── FILTRO: INCLINAÇÃO DA EMA9 ────────────────────────────────
+        e9_prev = ema(closes[-26:-1], 9) if len(closes) >= 26 else e9
+        inclinacao = e9 - e9_prev
+        limiar_inclinacao = pip * 0.2
+        if direction == 'CALL' and inclinacao < limiar_inclinacao:
+            return None, 0, f'Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)'
+        if direction == 'PUT' and inclinacao > -limiar_inclinacao:
+            return None, 0, f'Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)'
+
+        # ── FILTRO: TAXA REDONDA INSTITUCIONAL (Forex real) ───────────
+        # Bancos e algoritmos rejeitam zonas .000 / .050 / .100
+        preco_mod = c_atual % (pip * 100)
+        dist_redonda = min(preco_mod, abs(preco_mod - pip * 50))
+        if dist_redonda < pip * 1.5:
+            taxa_redonda = round(c_atual / (pip * 50)) * (pip * 50)
+            indo_contra = (direction == 'CALL' and c_atual > taxa_redonda) or \
+                          (direction == 'PUT'  and c_atual < taxa_redonda)
+            if indo_contra:
+                return None, 0, f'Taxa Redonda Institucional ({dist_redonda/pip:.1f}p da zona — risco rejeição)'
+
         # RSI — bloqueia só exaustão EXTREMA (OTC surfa tendências longas)
         rsi = calcular_rsi(closes)
         if direction == 'CALL' and rsi > 85:
