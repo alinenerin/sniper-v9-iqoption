@@ -246,6 +246,21 @@ def calcular_sinal(par):
             print(f"  {par}: bloqueado RSI neutro ({rsi})")
             return None
 
+        # FILTRO 1B — RSI DINÂMICO (exaustão extrema)
+        # ADX > 40 (tendência forte): libera até RSI 80 / 20
+        # ADX <= 40: bloqueia RSI > 75 (CALL) ou < 25 (PUT)
+        # Acima de 80 / abaixo de 20: bloqueia sob qualquer condição
+        if cruzamento == "CALL" or (cruzamento is None and rsi > 57):
+            teto_rsi = 80 if adx > 40 else 75
+            if rsi > teto_rsi:
+                print(f"  {par}: bloqueado RSI exaustão CALL ({rsi} > {teto_rsi}, ADX:{adx:.1f})")
+                return None
+        if cruzamento == "PUT" or (cruzamento is None and rsi < 43):
+            piso_rsi = 20 if adx > 40 else 25
+            if rsi < piso_rsi:
+                print(f"  {par}: bloqueado RSI exaustão PUT ({rsi} < {piso_rsi}, ADX:{adx:.1f})")
+                return None
+
         # FILTRO 2 — ADX fraco
         if adx < 18:
             print(f"  {par}: bloqueado ADX fraco ({adx})")
@@ -341,13 +356,15 @@ def janela_ok(agora):
     h, m = agora.hour, agora.minute
     dia = agora.weekday()  # 0=seg ... 4=sex, 5=sab, 6=dom
 
-    # Sexta, sábado e domingo — OTC 24h
+    # Sexta, sábado e domingo — OTC 24h (com Janela Morta 17h-20h59 BRT)
     if dia in (4, 5, 6):
+        if 17 <= h <= 20: return False  # Janela Morta — sem liquidez
         if m in (2, 17, 32, 47): return False
         if m >= 58:              return False
         return True
 
     # Segunda a quinta — janela BRT: 04:00-17:00 e 21:00-02:00
+    if 17 <= h <= 20: return False  # Janela Morta
     if m in (2, 17, 32, 47):  return False
     if m >= 58:               return False
     if 4 <= h < 17:           return True
