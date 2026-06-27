@@ -244,7 +244,7 @@ def calcular_sinal(par):
         macd_l, macd_s, hist, cruzamento, hist_prev = calcular_macd(closes)
 
         # FILTRO 1 — RSI neutro
-        if 43 <= rsi <= 57:
+        if 42 <= rsi <= 58:
             print(f"  {par}: bloqueado RSI neutro ({rsi})")
             return None
 
