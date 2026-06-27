@@ -280,7 +280,7 @@ def analisar_sinal(iq, par_base):
         # ── FILTRO 1: INCLINAÇÃO DA EMA9 ─────────────────────────────
         # EMA9 precisa estar em movimento — não apenas posicionada
         inclinacao = e9 - e9_prev
-        limiar_inclinacao = pip * 0.2  # 0.2 pip mínimo de inclinação
+        limiar_inclinacao = pip * 0.1  # 0.1 pip mínimo de inclinação (EMA 9/25 é mais lenta que MACD)
         if direction == 'CALL' and inclinacao < limiar_inclinacao:
             return None, 0, f'Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)'
         if direction == 'PUT' and inclinacao > -limiar_inclinacao:
