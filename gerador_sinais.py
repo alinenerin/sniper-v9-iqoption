@@ -430,8 +430,11 @@ def janela_ok(agora):
         if h == 11 and m >= 45: return False
         if h == 12: return False
         if h == 13 and m < 15: return False
-        if m in (2, 17, 32, 47): return False
-        if m >= 58:              return False
+        # Minutos da Despedida (SFI V6 — bloqueio rígido)
+        if m in (2, 47): return False
+        # :17 e :32 liberados (meio da hora — momentum limpo)
+        # Virada de vela/hora
+        if m >= 58 or m == 0 or m == 1: return False
         return True
 
     # Segunda a quinta — janela BRT: 04:00-17:00 e 21:00-02:00
@@ -439,8 +442,11 @@ def janela_ok(agora):
     if h == 11 and m >= 45: return False  # Virada servidores
     if h == 12: return False
     if h == 13 and m < 15: return False
-    if m in (2, 17, 32, 47):  return False
-    if m >= 58:               return False
+    # Minutos da Despedida (SFI V6 — bloqueio rígido)
+    if m in (2, 47): return False
+    # :17 e :32 liberados (meio da hora — momentum limpo)
+    # Virada de vela/hora
+    if m >= 58 or m == 0 or m == 1: return False
     if 4 <= h < 17:           return True
     if h >= 21 or h < 2:      return True
     return False
