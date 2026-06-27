@@ -22,12 +22,13 @@ MIN_CONF  = 75
 
 # Par gerador : nome IQ Option
 PARES = {
-    "EURJPY-OTC": "EURJPY-OTC",
-    "EURGBP-OTC": "EURGBP-OTC",
-    "USDJPY-OTC": "USDJPY-OTC",
-    "AUDUSD-OTC": "AUDUSD-OTC",
-    "EURUSD-OTC": "EURUSD-OTC",
-    "GBPUSD-OTC": "GBPUSD-OTC",
+    "EURUSD-OTC": "EURUSD-OTC",   # 🥈 Maior liquidez fim de semana
+    "USDJPY-OTC": "USDJPY-OTC",   # 🥉 Movimentos direcionais longos
+    "USDCHF-OTC": "USDCHF-OTC",   # 🥇 Mais estável e previsível
+    "AUDUSD-OTC": "AUDUSD-OTC",   # Secundário
+    "EURJPY-OTC": "EURJPY-OTC",   # Secundário
+    # EURGBP-OTC → REMOVIDO (sequências falsas agressivas)
+    # GBPUSD-OTC → REMOVIDO (GBP instável em OTC)
 }
 
 # ── KEEP-ALIVE HTTP ──────────────────────────────────────────────────
@@ -425,12 +426,19 @@ def janela_ok(agora):
     # Sexta, sábado e domingo — OTC 24h (com Janela Morta 17h-20h59 BRT)
     if dia in (4, 5, 6):
         if 17 <= h <= 20: return False  # Janela Morta — sem liquidez
+        # Virada de servidores OTC — recalibragem algorítmica
+        if h == 11 and m >= 45: return False
+        if h == 12: return False
+        if h == 13 and m < 15: return False
         if m in (2, 17, 32, 47): return False
         if m >= 58:              return False
         return True
 
     # Segunda a quinta — janela BRT: 04:00-17:00 e 21:00-02:00
     if 17 <= h <= 20: return False  # Janela Morta
+    if h == 11 and m >= 45: return False  # Virada servidores
+    if h == 12: return False
+    if h == 13 and m < 15: return False
     if m in (2, 17, 32, 47):  return False
     if m >= 58:               return False
     if 4 <= h < 17:           return True
