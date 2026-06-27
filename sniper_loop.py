@@ -243,6 +243,55 @@ def calcular_rsi(closes, periodo=14):
     al = sum(losses) / periodo
     return 100 - (100 / (1 + ag / al)) if al > 0 else 50
 
+def calcular_macd(closes, rapida=12, lenta=26, sinal=9):
+    """Retorna (hist_atual, hist_prev) para F4A"""
+    try:
+        if len(closes) < lenta + sinal + 2:
+            return None, None
+        macd_serie = []
+        for i in range(sinal + 2):
+            idx = len(closes) - (sinal + 2) + i + 1
+            sub = closes[:idx]
+            e_rap = ema(sub[-rapida:], rapida)
+            e_len = ema(sub[-lenta:],  lenta)
+            macd_serie.append(e_rap - e_len)
+        if len(macd_serie) < sinal:
+            return None, None
+        linha_sinal      = ema(macd_serie, sinal)
+        linha_sinal_prev = ema(macd_serie[:-1], sinal)
+        hist      = round(macd_serie[-1] - linha_sinal,      6)
+        hist_prev = round(macd_serie[-2] - (linha_sinal_prev or linha_sinal), 6)
+        return hist, hist_prev
+    except:
+        return None, None
+
+def calcular_adx(velas, periodo=14):
+    """ADX simplificado para RSI Dinâmico"""
+    try:
+        if len(velas) < periodo + 1:
+            return 0
+        trs, pdms, mdms = [], [], []
+        for i in range(1, len(velas)):
+            h  = velas[i].get('max', velas[i]['close'])
+            l  = velas[i].get('min', velas[i]['open'])
+            ph = velas[i-1].get('max', velas[i-1]['close'])
+            pl = velas[i-1].get('min', velas[i-1]['open'])
+            pc = velas[i-1]['close']
+            tr  = max(h - l, abs(h - pc), abs(l - pc))
+            pdm = max(h - ph, 0) if (h - ph) > (pl - l) else 0
+            mdm = max(pl - l, 0) if (pl - l) > (h - ph) else 0
+            trs.append(tr); pdms.append(pdm); mdms.append(mdm)
+        atr  = sum(trs[-periodo:])  / periodo
+        apdi = sum(pdms[-periodo:]) / periodo
+        amdi = sum(mdms[-periodo:]) / periodo
+        if atr == 0: return 0
+        pdi = 100 * apdi / atr
+        mdi = 100 * amdi / atr
+        dx  = 100 * abs(pdi - mdi) / (pdi + mdi) if (pdi + mdi) > 0 else 0
+        return dx
+    except:
+        return 0
+
 # ── ANÁLISE DE SINAL ─────────────────────────────────────────────────
 def analisar_sinal(iq, par_base):
     """
@@ -289,12 +338,15 @@ def analisar_sinal(iq, par_base):
         # ── FILTRO 2: TAXA REDONDA INSTITUCIONAL — reservado para Forex real ──
         # (no OTC o preço é gerado pela corretora, zonas redondas não se aplicam)
 
-        # RSI — bloqueia só exaustão EXTREMA (OTC surfa tendências longas)
+        # RSI Dinâmico — bloqueia exaustão extrema (OTC surfa tendências longas)
         rsi = calcular_rsi(closes)
-        if direction == 'CALL' and rsi > 85:
-            return None, 0, f'RSI extremo ({rsi:.1f}) — exaustão CALL'
-        if direction == 'PUT' and rsi < 15:
-            return None, 0, f'RSI extremo ({rsi:.1f}) — exaustão PUT'
+        adx = calcular_adx(v)
+        teto_rsi = 80 if adx > 40 else 75
+        piso_rsi = 20 if adx > 40 else 25
+        if direction == 'CALL' and rsi > teto_rsi:
+            return None, 0, f'RSI extremo ({rsi:.1f}) — exaustão CALL (teto={teto_rsi}, ADX={adx:.1f})'
+        if direction == 'PUT' and rsi < piso_rsi:
+            return None, 0, f'RSI extremo ({rsi:.1f}) — exaustão PUT (piso={piso_rsi}, ADX={adx:.1f})'
 
         # Velas consecutivas — bloqueia momentum excessivo (≥5 seguidas)
         consec = 1
@@ -305,6 +357,29 @@ def analisar_sinal(iq, par_base):
                 break
         if consec >= 5:
             return None, 0, f'{consec} velas consecutivas — exaustão direcional'
+
+        # ── FILTRO F4A: HISTOGRAMA MACD CRESCENTE ────────────────────
+        hist, hist_prev = calcular_macd(closes)
+        if hist is not None and hist_prev is not None:
+            if direction == 'CALL' and hist < hist_prev:
+                return None, 0, f'MACD histograma enfraquecendo CALL ({hist} < {hist_prev})'
+            if direction == 'PUT' and hist > hist_prev:
+                return None, 0, f'MACD histograma enfraquecendo PUT ({hist} > {hist_prev})'
+
+        # ── FILTRO F4B: CONFIRMAÇÃO DE VELA PÓS-CRUZAMENTO ───────────
+        vela_dir = 'CALL' if closes[-1] > opens[-1] else 'PUT'
+        if vela_dir != direction:
+            return None, 0, f'Vela pós-cruzamento contrária ao {direction} ({vela_dir})'
+
+        # ── FILTRO F6: DOMINÂNCIA DE CONTEXTO (anti-pullback) ────────
+        ultimas_5 = v[-6:-1]
+        if len(ultimas_5) >= 5:
+            puts_ctx  = sum(1 for c in ultimas_5 if c['close'] < c['open'])
+            calls_ctx = sum(1 for c in ultimas_5 if c['close'] >= c['open'])
+            if direction == 'CALL' and puts_ctx >= 4:
+                return None, 0, f'Dominância PUT ({puts_ctx}/5) — pullback, não reversão'
+            if direction == 'PUT' and calls_ctx >= 4:
+                return None, 0, f'Dominância CALL ({calls_ctx}/5) — pullback, não reversão'
 
         # ── SCORE ───────────────────────────────────────────────────
         # ══════════════════════════════════════════════════════════════
