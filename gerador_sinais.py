@@ -395,6 +395,8 @@ def registrar_loss(par):
     """Chamado externamente ou via resultado — ativa cooldown de 5min no par."""
     cooldown_loss[par] = time.time()
     print(f"  🔴 {par}: cooldown de 5min ativado por loss")
+
+def janela_ok(agora):
     h, m = agora.hour, agora.minute
     dia = agora.weekday()  # 0=seg ... 4=sex, 5=sab, 6=dom
 
