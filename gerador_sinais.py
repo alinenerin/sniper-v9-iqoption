@@ -486,6 +486,29 @@ def ciclo():
             if sequencia_bloqueada(par, s['d'], agora):
                 print(f"  {par}: bloqueado Trava de Sequência ({s['d']} 2x em 10min ou cooldown pós-loss)")
                 continue
+
+            # REVALIDAÇÃO PRÉ-ENVIO — aguarda ~90s e re-checa F4B + F6 na vela mais recente
+            # Evita lag de 2min: o mercado pode ter mudado entre análise e entrada
+            time.sleep(90)
+            v_reval = get_velas(par, 10)
+            if v_reval and len(v_reval) >= 6:
+                pip_rv = 0.01 if v_reval[-1]['close'] > 50 else 0.0001
+                # F4B — vela mais recente ainda confirma a direção?
+                v_atual = v_reval[-1]
+                dir_atual = "CALL" if v_atual['close'] > v_atual['open'] else "PUT"
+                if dir_atual != s['d']:
+                    print(f"  {par}: REVALIDAÇÃO bloqueada F4B — vela virou {dir_atual} (sinal era {s['d']})")
+                    continue
+                # F6 — dominância de contexto ainda favorece a direção?
+                ult5_rv = v_reval[-6:-1]
+                puts_rv  = sum(1 for c in ult5_rv if c['close'] < c['open'])
+                calls_rv = sum(1 for c in ult5_rv if c['close'] >= c['open'])
+                dom_contra = (s['d'] == "CALL" and puts_rv >= 4) or (s['d'] == "PUT" and calls_rv >= 4)
+                if dom_contra:
+                    print(f"  {par}: REVALIDAÇÃO bloqueada F6 — dominância contrária ({puts_rv}P/{calls_rv}C)")
+                    continue
+                print(f"  {par}: REVALIDAÇÃO OK — {s['d']} confirmado na entrada")
+            
             registrar_sinal(par, s['d'], agora)
             env[chave] = True
             sinais.append(s)
