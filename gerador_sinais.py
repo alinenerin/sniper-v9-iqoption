@@ -352,7 +352,28 @@ def calcular_sinal(par):
 
 # ── JANELA OPERACIONAL ───────────────────────────────────────────────
 env = {}
-def janela_ok(agora):
+# ── TRAVA DE SEQUÊNCIA ───────────────────────────────────────────────
+# Registra os últimos sinais aprovados por par: {par: [(direcao, timestamp)]}
+historico_sinais = {}
+
+def sequencia_bloqueada(par, direcao, agora):
+    """Bloqueia se o mesmo par+direção apareceu 2x nos últimos 30 minutos."""
+    chave = f"{par}_{direcao}"
+    agora_ts = agora.timestamp()
+    if chave not in historico_sinais:
+        historico_sinais[chave] = []
+    # Limpa entradas antigas (> 30 min)
+    historico_sinais[chave] = [t for t in historico_sinais[chave] if agora_ts - t < 1800]
+    # Bloqueia se já entrou 2x ou mais
+    if len(historico_sinais[chave]) >= 2:
+        return True
+    return False
+
+def registrar_sinal(par, direcao, agora):
+    chave = f"{par}_{direcao}"
+    if chave not in historico_sinais:
+        historico_sinais[chave] = []
+    historico_sinais[chave].append(agora.timestamp())
     h, m = agora.hour, agora.minute
     dia = agora.weekday()  # 0=seg ... 4=sex, 5=sab, 6=dom
 
@@ -390,6 +411,11 @@ def ciclo():
             continue
         s = calcular_sinal(par)
         if s:
+            # TRAVA DE SEQUÊNCIA — bloqueia mesmo par+direção 2x em 30min
+            if sequencia_bloqueada(par, s['d'], agora):
+                print(f"  {par}: bloqueado Sequência ({s['d']} já entrou 2x nos últimos 30min)")
+                continue
+            registrar_sinal(par, s['d'], agora)
             env[chave] = True
             sinais.append(s)
             print(f"  ✅ M1;{s['p']};{s['h']};{s['d']} | {s['c']}% | RSI:{s['rsi']} ADX:{s['adx']}")
