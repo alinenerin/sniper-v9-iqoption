@@ -355,16 +355,32 @@ env = {}
 # ── TRAVA DE SEQUÊNCIA ───────────────────────────────────────────────
 # Registra os últimos sinais aprovados por par: {par: [(direcao, timestamp)]}
 historico_sinais = {}
+cooldown_loss = {}  # {par: timestamp_do_loss}
 
 def sequencia_bloqueada(par, direcao, agora):
-    """Bloqueia se o mesmo par+direção apareceu 2x nos últimos 30 minutos."""
-    chave = f"{par}_{direcao}"
+    """
+    Bloqueia se:
+    1. Mesmo par+direção já entrou 2x nos últimos 10 minutos
+    2. Par tomou loss e ainda está em cooldown de 5 minutos
+    """
     agora_ts = agora.timestamp()
+
+    # REGRA 2 — Cooldown pós-loss (5 minutos)
+    if par in cooldown_loss:
+        diff = agora_ts - cooldown_loss[par]
+        if diff < 300:  # 5 minutos
+            restante = int((300 - diff) / 60) + 1
+            print(f"  {par}: cooldown pós-loss ({restante}min restantes)")
+            return True
+        else:
+            del cooldown_loss[par]  # cooldown expirou
+
+    # REGRA 1 — Máximo 2 entradas na mesma direção em 10 minutos
+    chave = f"{par}_{direcao}"
     if chave not in historico_sinais:
         historico_sinais[chave] = []
-    # Limpa entradas antigas (> 30 min)
-    historico_sinais[chave] = [t for t in historico_sinais[chave] if agora_ts - t < 1800]
-    # Bloqueia se já entrou 2x ou mais
+    # Limpa entradas antigas (> 10 min)
+    historico_sinais[chave] = [t for t in historico_sinais[chave] if agora_ts - t < 600]
     if len(historico_sinais[chave]) >= 2:
         return True
     return False
@@ -374,6 +390,11 @@ def registrar_sinal(par, direcao, agora):
     if chave not in historico_sinais:
         historico_sinais[chave] = []
     historico_sinais[chave].append(agora.timestamp())
+
+def registrar_loss(par):
+    """Chamado externamente ou via resultado — ativa cooldown de 5min no par."""
+    cooldown_loss[par] = time.time()
+    print(f"  🔴 {par}: cooldown de 5min ativado por loss")
     h, m = agora.hour, agora.minute
     dia = agora.weekday()  # 0=seg ... 4=sex, 5=sab, 6=dom
 
@@ -411,9 +432,9 @@ def ciclo():
             continue
         s = calcular_sinal(par)
         if s:
-            # TRAVA DE SEQUÊNCIA — bloqueia mesmo par+direção 2x em 30min
+            # TRAVA DE SEQUÊNCIA — bloqueia mesmo par+direção 2x em 10min + cooldown pós-loss
             if sequencia_bloqueada(par, s['d'], agora):
-                print(f"  {par}: bloqueado Sequência ({s['d']} já entrou 2x nos últimos 30min)")
+                print(f"  {par}: bloqueado Trava de Sequência ({s['d']} 2x em 10min ou cooldown pós-loss)")
                 continue
             registrar_sinal(par, s['d'], agora)
             env[chave] = True
