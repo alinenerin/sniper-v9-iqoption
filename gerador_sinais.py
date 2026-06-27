@@ -195,6 +195,7 @@ def calcular_macd(closes, rapida=12, lenta=26, sinal=9):
         macd_atual  = macd_serie[-1]
         macd_prev   = macd_serie[-2]
         hist        = round(macd_atual - linha_sinal, 6)
+        hist_prev   = round(macd_prev - (ema(macd_serie[:-1], sinal) or linha_sinal), 6)
 
         # Detecta cruzamento fresco
         # CALL: MACD cruzou para cima da linha de sinal
@@ -209,7 +210,7 @@ def calcular_macd(closes, rapida=12, lenta=26, sinal=9):
         else:
             cruzamento = None
 
-        return round(macd_atual, 6), round(linha_sinal, 6), hist, cruzamento
+        return round(macd_atual, 6), round(linha_sinal, 6), hist, cruzamento, hist_prev
     except:
         return None, None, None, None
 
@@ -239,7 +240,7 @@ def calcular_sinal(par):
         rsi                    = calcular_rsi(closes)
         adx                    = calcular_adx(v)
         bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
-        macd_l, macd_s, hist, cruzamento = calcular_macd(closes)
+        macd_l, macd_s, hist, cruzamento, hist_prev = calcular_macd(closes)
 
         # FILTRO 1 — RSI neutro
         if 43 <= rsi <= 57:
@@ -278,6 +279,27 @@ def calcular_sinal(par):
         # FILTRO 4 — MACD: exige cruzamento fresco
         if cruzamento is None:
             print(f"  {par}: bloqueado MACD sem cruzamento (L:{macd_l} S:{macd_s})")
+            return None
+
+        # FILTRO 4A — HISTOGRAMA CRESCENTE (momentum real, não lag)
+        # Histograma deve estar crescendo — força aumentando, não diminuindo
+        if hist is not None and hist_prev is not None:
+            if cruzamento == "CALL" and hist < hist_prev:
+                print(f"  {par}: bloqueado MACD histograma enfraquecendo CALL ({hist} < {hist_prev})")
+                return None
+            if cruzamento == "PUT" and hist > hist_prev:
+                print(f"  {par}: bloqueado MACD histograma enfraquecendo PUT ({hist} > {hist_prev})")
+                return None
+
+        # FILTRO 4B — CONFIRMAÇÃO DE VELA PÓS-CRUZAMENTO
+        # A vela mais recente fechada deve confirmar a direção do cruzamento
+        vela_confirmacao = closes[-1]
+        abertura_confirmacao = [c['open'] for c in v[:-1]][-1]
+        if cruzamento == "CALL" and vela_confirmacao < abertura_confirmacao:
+            print(f"  {par}: bloqueado vela pós-cruzamento contrária ao CALL")
+            return None
+        if cruzamento == "PUT" and vela_confirmacao > abertura_confirmacao:
+            print(f"  {par}: bloqueado vela pós-cruzamento contrária ao PUT")
             return None
 
         # FILTRO 5 — INCLINAÇÃO DA EMA9 (tendência precisa estar em movimento)
