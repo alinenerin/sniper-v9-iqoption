@@ -317,7 +317,19 @@ def calcular_sinal(par):
                 print(f"  {par}: bloqueado Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)")
                 return None
 
-        # FILTRO 6 — reservado para Forex real (taxa redonda não se aplica a OTC)
+        # FILTRO 6 — DOMINÂNCIA DE CONTEXTO (anti-pullback)
+        # Se 4 das últimas 5 velas forem contrárias ao sinal → é pullback, não reversão real
+        pip_ctx = 0.01 if pc > 50 else 0.0001
+        ultimas_5 = v[-6:-1]  # 5 velas fechadas antes da atual
+        if len(ultimas_5) >= 5:
+            puts_ctx  = sum(1 for c in ultimas_5 if c['close'] < c['open'])
+            calls_ctx = sum(1 for c in ultimas_5 if c['close'] >= c['open'])
+            if cruzamento == "CALL" and puts_ctx >= 4:
+                print(f"  {par}: bloqueado Dominância PUT ({puts_ctx}/5 velas PUT) — pullback, não reversão")
+                return None
+            if cruzamento == "PUT" and calls_ctx >= 4:
+                print(f"  {par}: bloqueado Dominância CALL ({calls_ctx}/5 velas CALL) — pullback, não reversão")
+                return None
 
         print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} MACD:{cruzamento}")
 
