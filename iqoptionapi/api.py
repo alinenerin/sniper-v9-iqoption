@@ -885,10 +885,13 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
             self.session.cookies, {"ssid": global_value.SSID})
 
         self.timesync.server_timestamp = None
+        _t0 = time.time()
         while True:
             try:
                 if self.timesync.server_timestamp != None:
                     break
+                if time.time() - _t0 > 20:
+                    break  # timeout
             except:
                 pass
         return True, None
