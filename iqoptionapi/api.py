@@ -866,14 +866,30 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
 
         # the ssid is None need get ssid
         else:
-            response = self.get_ssid()
-            try:
-                global_value.SSID = response.cookies["ssid"]
-            except:
-                self.close()
-                return False, response.text
-            atexit.register(self.logout)
-            self.send_ssid()
+            # Tenta primeiro SSID da variável de ambiente (Railway não consegue logar via HTTP)
+            import os as _os
+            env_ssid = _os.environ.get("IQ_SSID", "")
+            if env_ssid:
+                global_value.SSID = env_ssid
+                self.start_websocket()
+                if not self.send_ssid():
+                    # SSID expirado — tenta login HTTP
+                    response = self.get_ssid()
+                    try:
+                        global_value.SSID = response.cookies["ssid"]
+                    except:
+                        self.close()
+                        return False, response.text
+                atexit.register(self.logout)
+            else:
+                response = self.get_ssid()
+                try:
+                    global_value.SSID = response.cookies["ssid"]
+                except:
+                    self.close()
+                    return False, response.text
+                atexit.register(self.logout)
+                self.send_ssid()
 
         # set ssis cookie
         requests.utils.add_dict_to_cookiejar(
