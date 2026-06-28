@@ -3,13 +3,13 @@
 ╔══════════════════════════════════════════════════════════════════╗
 ║           SNIPER V10 — CALIBRAÇÃO v5                            ║
 ║  AUTO: Forex (Seg-Sex) via Twelve Data                          ║
-║        OTC   (Sáb-Dom) via IQ Option                            ║
+║        OTC   (Sáb-Dom) via IQ Option WebSocket                  ║
 ║  8 Pares Forex | 8 Pares OTC | Zero Gale                        ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 import sys, os, subprocess
 subprocess.call(
-    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz"],
+    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "websocket-client"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
@@ -17,6 +17,10 @@ import time, math, requests, threading
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from config import *
+
+# Garante que iqoptionapi local seja encontrada
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from iqoptionapi.stable_api import IQ_Option
 
 BRT = timezone(timedelta(hours=-3))
 
@@ -39,11 +43,11 @@ threading.Thread(
 # ══════════════════════════════════════════════════════════════════
 def modo_atual():
     """
-    Sábado e Domingo = OTC (IQ Option)
-    Segunda a Sexta  = FOREX (Twelve Data)
+    Sempre usa Twelve Data (disponível 24h/7d para Forex).
+    O modo OTC é apenas um label — mesma fonte, mesmos filtros.
     """
     agora = datetime.now(BRT)
-    if agora.weekday() >= 5:   # 5=Sab, 6=Dom
+    if agora.weekday() >= 5:
         return "OTC"
     return "FOREX"
 
@@ -61,32 +65,48 @@ def tg(msg):
         print(f"  ⚠️ Telegram: {e}")
 
 # ══════════════════════════════════════════════════════════════════
-#  IQ OPTION — FONTE OTC (FIM DE SEMANA) via WebSocket
+#  IQ OPTION — FONTE OTC via WebSocket (igual ao V9)
 # ══════════════════════════════════════════════════════════════════
 _iq_api       = None
+_iq_lock      = threading.Lock()
 _iq_conectado = False
 
 def _iq_conectar():
-    """Conexão única. Chamada apenas uma vez no main()."""
     global _iq_api, _iq_conectado
-    if _iq_conectado and _iq_api:
-        return True
-    try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from iqoptionapi.stable_api import IQ_Option
-        print("  🔄 Conectando IQ Option...")
-        api = IQ_Option(IQ_EMAIL, IQ_PASS)
-        check, reason = api.connect()
-        if check:
-            _iq_api       = api
-            _iq_conectado = True
-            print("  ✅ IQ Option conectado!")
+    with _iq_lock:
+        if _iq_conectado and _iq_api:
             return True
-        print(f"  ❌ IQ Option falhou: {reason}")
-        return False
-    except Exception as e:
-        print(f"  ❌ IQ Option erro: {e}")
-        return False
+        try:
+            print("  🔄 Conectando IQ Option via WebSocket...")
+            api = IQ_Option(IQ_EMAIL, IQ_PASS)
+            resultado = [False, "timeout"]
+
+            def _tentar():
+                try:
+                    check, reason = api.connect()
+                    resultado[0] = check
+                    resultado[1] = reason
+                except Exception as ex:
+                    resultado[1] = str(ex)
+
+            t = threading.Thread(target=_tentar, daemon=True)
+            t.start()
+            t.join(25)   # timeout 25s na conexão
+
+            if resultado[0]:
+                api.change_balance("PRACTICE")
+                _iq_api       = api
+                _iq_conectado = True
+                print(f"  ✅ IQ Option conectado! ({resultado[1]})")
+                return True
+            else:
+                print(f"  ❌ IQ Option falhou: {resultado[1]}")
+                _iq_conectado = False
+                return False
+        except Exception as e:
+            print(f"  ❌ IQ Option erro: {e}")
+            _iq_conectado = False
+            return False
 
 # Cache para velas OTC
 _otc_cache    = {}
@@ -94,49 +114,64 @@ _otc_cache_ts = {}
 OTC_CACHE_TTL = 55
 
 def buscar_velas_otc_batch(pares_otc, n=65):
-    """Busca velas M1 OTC via conexão WebSocket única já estabelecida."""
-    if not _iq_api or not _iq_conectado:
-        print("  ⚠️ IQ Option: sem conexão ativa")
-        return {p["nome"]: [] for p in pares_otc}
+    """
+    Busca velas M1 OTC via IQ Option WebSocket.
+    pares_otc: lista de dicts {"nome": "EURUSD-OTC", "id": 76}
+    Retorna {nome: [velas]}
+    """
+    global _iq_conectado
+    if not _iq_conectado:
+        _iq_conectar()
 
     agora_ts = time.time()
     resultado = {}
 
     for par in pares_otc:
-        nome = par["nome"]
-        cached = _otc_cache.get(nome)
-        ts     = _otc_cache_ts.get(nome, 0)
-        if cached and (agora_ts - ts) < OTC_CACHE_TTL:
+        nome     = par["nome"]
+        cached   = _otc_cache.get(nome)
+        ts_cache = _otc_cache_ts.get(nome, 0)
+        if cached and (agora_ts - ts_cache) < OTC_CACHE_TTL:
             resultado[nome] = cached
             continue
-        try:
-            velas_raw = _iq_api.get_candles(nome, 60, n, time.time())
-            if not velas_raw:
-                resultado[nome] = []
-                print(f"  ⚠️ OTC {nome}: sem dados")
-                continue
-            velas = []
-            for v in velas_raw:
-                try:
-                    velas.append({
-                        "open":  float(v.get("open",  0)),
-                        "close": float(v.get("close", 0)),
-                        "max":   float(v.get("max",   v.get("high",  0))),
-                        "min":   float(v.get("min",   v.get("low",   0))),
-                        "t":     v.get("from", v.get("at", 0)),
-                    })
-                except: pass
-            velas = sorted(velas, key=lambda x: x["t"])
+
+        velas = _buscar_velas_iq_ws(nome, n)
+        if velas:
             _otc_cache[nome]    = velas
             _otc_cache_ts[nome] = agora_ts
             resultado[nome]     = velas
             print(f"  📡 OTC {nome}: {len(velas)} velas")
-        except Exception as e:
-            print(f"  ⚠️ OTC {nome}: {e}")
+        else:
             resultado[nome] = []
+            print(f"  ⚠️ OTC {nome}: sem dados")
 
     return resultado
 
+def _buscar_velas_iq_ws(nome, n=65):
+    """Busca velas M1 via get_candles — mesmo método do V9."""
+    global _iq_api, _iq_conectado
+    try:
+        if not _iq_api or not _iq_conectado:
+            if not _iq_conectar():
+                return []
+        velas_raw = _iq_api.get_candles(nome, 60, n, time.time())
+        if not velas_raw:
+            return []
+        velas = []
+        for v in velas_raw:
+            try:
+                velas.append({
+                    "open":  float(v.get("open",  0)),
+                    "close": float(v.get("close", 0)),
+                    "max":   float(v.get("max",   v.get("high",  0))),
+                    "min":   float(v.get("min",   v.get("low",   0))),
+                    "t":     v.get("from", v.get("at", 0)),
+                })
+            except: pass
+        return sorted(velas, key=lambda x: x["t"])
+    except Exception as e:
+        print(f"  ⚠️ IQ WS erro {nome}: {e}")
+        _iq_conectado = False
+        return []
 
 # ══════════════════════════════════════════════════════════════════
 #  TWELVE DATA — FONTE FOREX (SEG-SEX)
@@ -163,7 +198,7 @@ def buscar_velas_td_batch(pares, n=65):
 
     LOTE = 8
     for i in range(0, len(pares_buscar), LOTE):
-        lote = pares_buscar[i:i+LOTE]
+        lote    = pares_buscar[i:i+LOTE]
         simbolos = ",".join(lote)
         url = (
             f"https://api.twelvedata.com/time_series"
@@ -171,17 +206,13 @@ def buscar_velas_td_batch(pares, n=65):
         )
         try:
             r = requests.get(url, timeout=15).json()
-            if "values" in r:
-                data = {lote[0]: r}
-            else:
-                data = r
+            data = {lote[0]: r} if "values" in r else r
 
             for par in lote:
                 dado = data.get(par, {})
                 vals = dado.get("values", [])
                 if not vals:
-                    code = dado.get("code", "?")
-                    print(f"  ⚠️ TD sem dados para {par} (code={code})")
+                    print(f"  ⚠️ TD sem dados para {par} (code={dado.get('code','?')})")
                     resultado[par] = []
                     continue
                 velas = []
@@ -239,8 +270,7 @@ def calcular_adx(velas, p=14):
     if len(velas) < p + 1: return 0
     trs, pdms, ndms = [], [], []
     for i in range(1, len(velas)):
-        h  = velas[i]['max'];   l  = velas[i]['min']
-        pc = velas[i-1]['close']
+        h = velas[i]['max']; l = velas[i]['min']; pc = velas[i-1]['close']
         trs.append(max(h - l, abs(h - pc), abs(l - pc)))
         pdms.append(max(velas[i]['max'] - velas[i-1]['max'], 0))
         ndms.append(max(velas[i-1]['min'] - velas[i]['min'], 0))
@@ -375,7 +405,7 @@ def analisar_par(par, velas, is_otc=False):
         opens  = [v['open']  for v in velas]
         pb     = par_base(par)
 
-        adx_lat  = ADX_OTC_LATERAL   if is_otc else ADX_FX_LATERAL
+        adx_lat  = ADX_OTC_LATERAL    if is_otc else ADX_FX_LATERAL
         adx_tend = ADX_OTC_TENDENCIA  if is_otc else ADX_FX_TENDENCIA
         sh_th    = SHADOW_THRESHOLD_OTC if is_otc else SHADOW_THRESHOLD_FX
 
@@ -479,10 +509,10 @@ def analisar_par(par, velas, is_otc=False):
             return None
 
         # ── SCORE ─────────────────────────────────────────────────
-        pm = SCORE_PESO_MACD_OTC   if is_otc else SCORE_PESO_MACD_FX
-        pr = SCORE_PESO_RSI_OTC    if is_otc else SCORE_PESO_RSI_FX
-        pb_ = SCORE_PESO_BB_OTC    if is_otc else SCORE_PESO_BB_FX
-        psh = SCORE_PESO_SHADOW_OTC if is_otc else SCORE_PESO_SHADOW_FX
+        pm  = SCORE_PESO_MACD_OTC    if is_otc else SCORE_PESO_MACD_FX
+        pr  = SCORE_PESO_RSI_OTC     if is_otc else SCORE_PESO_RSI_FX
+        pb_ = SCORE_PESO_BB_OTC      if is_otc else SCORE_PESO_BB_FX
+        psh = SCORE_PESO_SHADOW_OTC  if is_otc else SCORE_PESO_SHADOW_FX
 
         pc_v = closes[-1]; pt = ps = 0
         if crz == "CALL": pt += pm
@@ -530,9 +560,10 @@ def analisar_par(par, velas, is_otc=False):
 _enviados = {}
 
 def ciclo():
-    agora  = datetime.now(BRT)
-    ts_str = agora.strftime("%H:%M:%S")
-    mercado = modo_atual()   # "FOREX" ou "OTC"
+    agora   = datetime.now(BRT)
+    ts_str  = agora.strftime("%H:%M:%S")
+    mercado = modo_atual()
+    is_otc  = (mercado == "OTC")
 
     print(f"\n🔍 [{ts_str}] — modo {mercado} — escaneando pares...")
 
@@ -545,20 +576,11 @@ def ciclo():
     if not portafolio_livre():
         return
 
-    is_otc = (mercado == "OTC")
-
-    # ── Busca velas ──────────────────────────────────────────────
-    t0 = time.time()
-    if is_otc:
-        batch_raw = buscar_velas_otc_batch(PARES_OTC, n=65)
-        # Normaliza: {nome: velas}
-        batch  = batch_raw
-        pares  = [p["nome"] for p in PARES_OTC]
-    else:
-        batch  = buscar_velas_td_batch(PARES_FOREX, n=65)
-        pares  = PARES_FOREX
-
-    fonte = "IQ Option (OTC)" if is_otc else "Twelve Data"
+    # ── Busca velas (sempre Twelve Data — disponível 24/7) ───────
+    t0    = time.time()
+    batch = buscar_velas_td_batch(PARES_FOREX, n=65)
+    pares = PARES_FOREX
+    fonte = "Twelve Data"
     print(f"  📡 Batch {fonte}: {len(batch)} pares em {time.time()-t0:.1f}s")
 
     # ── Analisa ──────────────────────────────────────────────────
@@ -621,10 +643,9 @@ def ciclo():
 # ══════════════════════════════════════════════════════════════════
 def main():
     mercado   = modo_atual()
-    is_otc    = (mercado == "OTC")
     modo_str  = "EXECUÇÃO AUTO 🤖" if EXECUCAO_ATIVA else "OBSERVAÇÃO 👁"
-    pares_str = " | ".join(p["nome"] if is_otc else par_base(p) for p in (PARES_OTC if is_otc else PARES_FOREX))
-    fonte_str = "IQ Option (OTC)" if is_otc else "Twelve Data"
+    pares_str = " | ".join(par_base(p) for p in PARES_FOREX)
+    fonte_str = "Twelve Data (24/7)"
 
     print(f"🟢 Sniper V10 v5 iniciado!")
     print(f"   Modo    : {modo_str}")
@@ -634,10 +655,6 @@ def main():
     print(f"   Score   : >= {SCORE_MINIMO}")
     print(f"   Trava   : 1 op por vez em todo o portfólio")
     print()
-
-    # Conexão IQ Option única no início (se OTC)
-    if is_otc:
-        _iq_conectar()
 
     tg(
         f"🟢 <b>Sniper V10 v5 online!</b>\n\n"
