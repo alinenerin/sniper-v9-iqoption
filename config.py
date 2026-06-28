@@ -28,7 +28,17 @@ PARES_FOREX = [
     "AUD/JPY",   # Cross — alta volatilidade
     "XAU/USD",   # Ouro  — ADX>=22
 ]
-PARES_OTC = []  # OTC via IQ Option quando necessário
+PARES_OTC = [
+    # IDs dos ativos OTC na IQ Option (M1, disponíveis no FDS)
+    {"nome": "EURUSD-OTC",  "id": 76},
+    {"nome": "GBPUSD-OTC",  "id": 77},
+    {"nome": "USDJPY-OTC",  "id": 78},
+    {"nome": "AUDUSD-OTC",  "id": 79},
+    {"nome": "EURJPY-OTC",  "id": 80},
+    {"nome": "GBPJPY-OTC",  "id": 81},
+    {"nome": "AUDJPY-OTC",  "id": 82},
+    {"nome": "EURGBP-OTC",  "id": 83},
+]
 
 # ── MACD — CALIBRAÇÃO RÁPIDA SCALPING M1 ─────────────────────────
 MACD_RAPIDA = 5
