@@ -242,7 +242,8 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                                         data=data,
                                         params=params,
                                         headers=headers,
-                                        proxies=self.proxies)
+                                        proxies=self.proxies,
+                                        verify=False)
         logger.debug(response)
         logger.debug(response.text)
         logger.debug(response.headers)
