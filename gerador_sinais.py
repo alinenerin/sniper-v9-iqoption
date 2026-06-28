@@ -357,15 +357,22 @@ def calcular_sinal(par):
                 print(f"  {par}: bloqueado Dominância CALL ({calls_ctx}/5 velas CALL) — pullback, não reversão")
                 return None
 
-        # FILTRO 7 — SHADOW REJECTION (rejeição de pavio)
-        # Vela com pavio > 40% do corpo = indecisão/rejeição → bloqueado
+        # FILTRO 7 — SHADOW REJECTION (versão precisa — pavio superior e inferior separados)
+        # Bloqueia se qualquer pavio for > 40% do tamanho total da vela
         vela_atual = v[-1]
-        corpo_sv  = abs(vela_atual['close'] - vela_atual['open'])
-        sombra_sv = vela_atual.get('max', vela_atual['close']) - vela_atual.get('min', vela_atual['open'])
-        if sombra_sv > 0 and corpo_sv > 0:
-            ratio_pavio = (sombra_sv - corpo_sv) / corpo_sv
-            if ratio_pavio > 0.4:
-                print(f"  {par}: bloqueado Shadow Rejection (pavio {ratio_pavio:.1%} do corpo)")
+        high_sv  = vela_atual.get('max', vela_atual['close'])
+        low_sv   = vela_atual.get('min', vela_atual['open'])
+        open_sv  = vela_atual['open']
+        close_sv = vela_atual['close']
+        tamanho_total = high_sv - low_sv
+        if tamanho_total > 0:
+            pavio_sup = high_sv - max(open_sv, close_sv)
+            pavio_inf = min(open_sv, close_sv) - low_sv
+            if (pavio_sup / tamanho_total) > 0.4:
+                print(f"  {par}: bloqueado Shadow Rejection superior ({pavio_sup/tamanho_total:.1%})")
+                return None
+            if (pavio_inf / tamanho_total) > 0.4:
+                print(f"  {par}: bloqueado Shadow Rejection inferior ({pavio_inf/tamanho_total:.1%})")
                 return None
 
         print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} MACD:{cruzamento}")
