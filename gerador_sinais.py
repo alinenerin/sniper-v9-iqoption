@@ -2,7 +2,7 @@
 """
 GERADOR DE SINAIS — Railway
 Fonte de dados: IQ Option (M1) — sem limite de requisições
-Filtros: RSI + ADX + Bollinger
+Filtros: RSI + ADX + Bollinger + MACD + Shadow Rejection
 """
 import sys, os, subprocess
 subprocess.call([sys.executable, "-m", "pip", "install", "-q",
@@ -19,6 +19,8 @@ TG_TOKEN  = "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg"
 TG_CHAT   = "5911742397"
 FF_URL    = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 MIN_CONF  = 75
+PAYOUT_MIN = 0.82        # Payout mínimo 82%
+USE_MACD   = True        # Toggle A/B: False = desativa F4/F4A/F4B para testes
 
 # Par gerador : nome IQ Option
 PARES = {
@@ -236,7 +238,23 @@ def calcular_sinal(par):
             return None
 
         closes = [x["close"] for x in v]
+        opens  = [x["open"]  for x in v]
         pc     = closes[-1]
+
+        # VERIFICAÇÃO DE PAYOUT (82% mínimo)
+        try:
+            iq_inst = get_iq()
+            all_assets = iq_inst.get_all_open_time()
+            payout = None
+            for mercado in ['turbo', 'binary']:
+                if par in all_assets.get(mercado, {}):
+                    payout = all_assets[mercado][par].get('profit', {}).get('profit', None)
+                    if payout: break
+            if payout and payout < PAYOUT_MIN:
+                print(f"  {par}: bloqueado Payout baixo ({payout*100:.0f}% < {PAYOUT_MIN*100:.0f}%)")
+                return None
+        except:
+            pass  # se falhar na consulta, continua normalmente
 
         rsi                    = calcular_rsi(closes)
         adx                    = calcular_adx(v)
@@ -277,31 +295,39 @@ def calcular_sinal(par):
                     print(f"  {par}: bloqueado BB range ({pos:.2f})")
                     return None
 
-        # FILTRO 4 — MACD: exige cruzamento fresco
-        if cruzamento is None:
-            print(f"  {par}: bloqueado MACD sem cruzamento (L:{macd_l} S:{macd_s})")
-            return None
-
-        # FILTRO 4A — HISTOGRAMA CRESCENTE (momentum real, não lag)
-        # Histograma deve estar crescendo — força aumentando, não diminuindo
-        if hist is not None and hist_prev is not None:
-            if cruzamento == "CALL" and hist < hist_prev:
-                print(f"  {par}: bloqueado MACD histograma enfraquecendo CALL ({hist} < {hist_prev})")
-                return None
-            if cruzamento == "PUT" and hist > hist_prev:
-                print(f"  {par}: bloqueado MACD histograma enfraquecendo PUT ({hist} > {hist_prev})")
+        # FILTRO 4 — MACD (controlado por USE_MACD toggle)
+        if USE_MACD:
+            if cruzamento is None:
+                print(f"  {par}: bloqueado MACD sem cruzamento (L:{macd_l} S:{macd_s})")
                 return None
 
-        # FILTRO 4B — CONFIRMAÇÃO DE VELA PÓS-CRUZAMENTO
-        # A vela mais recente fechada deve confirmar a direção do cruzamento
-        vela_confirmacao = closes[-1]
-        abertura_confirmacao = [c['open'] for c in v[:-1]][-1]
-        if cruzamento == "CALL" and vela_confirmacao < abertura_confirmacao:
-            print(f"  {par}: bloqueado vela pós-cruzamento contrária ao CALL")
-            return None
-        if cruzamento == "PUT" and vela_confirmacao > abertura_confirmacao:
-            print(f"  {par}: bloqueado vela pós-cruzamento contrária ao PUT")
-            return None
+            # FILTRO 4A — HISTOGRAMA CRESCENTE (momentum real, não lag)
+            if hist is not None and hist_prev is not None:
+                if cruzamento == "CALL" and hist < hist_prev:
+                    print(f"  {par}: bloqueado MACD histograma enfraquecendo CALL ({hist} < {hist_prev})")
+                    return None
+                if cruzamento == "PUT" and hist > hist_prev:
+                    print(f"  {par}: bloqueado MACD histograma enfraquecendo PUT ({hist} > {hist_prev})")
+                    return None
+
+            # FILTRO 4B — CONFIRMAÇÃO DE VELA PÓS-CRUZAMENTO
+            vela_confirmacao = closes[-1]
+            abertura_confirmacao = opens[-2]
+            if cruzamento == "CALL" and vela_confirmacao < abertura_confirmacao:
+                print(f"  {par}: bloqueado vela pós-cruzamento contrária ao CALL")
+                return None
+            if cruzamento == "PUT" and vela_confirmacao > abertura_confirmacao:
+                print(f"  {par}: bloqueado vela pós-cruzamento contrária ao PUT")
+                return None
+        else:
+            # USE_MACD = False → define direção pelo RSI quando sem MACD
+            if cruzamento is None:
+                if rsi > 58:   cruzamento = "CALL"
+                elif rsi < 42: cruzamento = "PUT"
+                else:
+                    print(f"  {par}: [TESTE] sem direção RSI/MACD")
+                    return None
+            print(f"  {par}: [TESTE A/B] MACD desativado — direção via RSI+EMA")
 
         # FILTRO 5 — INCLINAÇÃO DA EMA9 (tendência precisa estar em movimento)
         pip = 0.01 if pc > 50 else 0.0001
@@ -329,6 +355,17 @@ def calcular_sinal(par):
                 return None
             if cruzamento == "PUT" and calls_ctx >= 4:
                 print(f"  {par}: bloqueado Dominância CALL ({calls_ctx}/5 velas CALL) — pullback, não reversão")
+                return None
+
+        # FILTRO 7 — SHADOW REJECTION (rejeição de pavio)
+        # Vela com pavio > 40% do corpo = indecisão/rejeição → bloqueado
+        vela_atual = v[-1]
+        corpo_sv  = abs(vela_atual['close'] - vela_atual['open'])
+        sombra_sv = vela_atual.get('max', vela_atual['close']) - vela_atual.get('min', vela_atual['open'])
+        if sombra_sv > 0 and corpo_sv > 0:
+            ratio_pavio = (sombra_sv - corpo_sv) / corpo_sv
+            if ratio_pavio > 0.4:
+                print(f"  {par}: bloqueado Shadow Rejection (pavio {ratio_pavio:.1%} do corpo)")
                 return None
 
         print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} MACD:{cruzamento}")
