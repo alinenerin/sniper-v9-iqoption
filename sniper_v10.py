@@ -3,14 +3,13 @@
 ╔══════════════════════════════════════════════════════════════════╗
 ║           SNIPER V10 — CALIBRAÇÃO v5                            ║
 ║  AUTO: Forex (Seg-Sex) via Twelve Data                          ║
-║        OTC   (Sáb-Dom) via IQ Option WebSocket                  ║
+║        OTC   (Sáb-Dom) via IQ Option                            ║
 ║  8 Pares Forex | 8 Pares OTC | Zero Gale                        ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 import sys, os, subprocess
-sys.stdout.reconfigure(line_buffering=True)  # garante flush imediato no Render/Docker
 subprocess.call(
-    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "websocket-client"],
+    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
@@ -18,10 +17,6 @@ import time, math, requests, threading
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from config import *
-
-# Garante que iqoptionapi local seja encontrada
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from iqoptionapi.stable_api import IQ_Option
 
 BRT = timezone(timedelta(hours=-3))
 
@@ -44,11 +39,11 @@ threading.Thread(
 # ══════════════════════════════════════════════════════════════════
 def modo_atual():
     """
-    Sempre usa Twelve Data (disponível 24h/7d para Forex).
-    O modo OTC é apenas um label — mesma fonte, mesmos filtros.
+    Sábado e Domingo = OTC (IQ Option)
+    Segunda a Sexta  = FOREX (Twelve Data)
     """
     agora = datetime.now(BRT)
-    if agora.weekday() >= 5:
+    if agora.weekday() >= 5:   # 5=Sab, 6=Dom
         return "OTC"
     return "FOREX"
 
@@ -66,31 +61,65 @@ def tg(msg):
         print(f"  ⚠️ Telegram: {e}")
 
 # ══════════════════════════════════════════════════════════════════
-#  IQ OPTION — CONEXÃO ÚNICA, ESTABELECIDA NO INÍCIO
+#  IQ OPTION — FONTE OTC (FIM DE SEMANA)
 # ══════════════════════════════════════════════════════════════════
-_iq_api       = None
-_iq_conectado = False
+_iq_session   = None
+_iq_ssid      = None
+_iq_lock      = threading.Lock()
 
-def _iq_conectar():
-    """Abre UMA única conexão WebSocket. Nunca chamada durante ciclos."""
-    global _iq_api, _iq_conectado
-    if _iq_conectado and _iq_api:
-        return True
+def _iq_login():
+    global _iq_session, _iq_ssid
     try:
-        print("  🔄 Conectando IQ Option...")
-        api = IQ_Option(IQ_EMAIL, IQ_PASS)
-        check, reason = api.connect()
-        if check:
-            _iq_api       = api
-            _iq_conectado = True
-            print("  ✅ IQ Option conectado!")
+        s = requests.Session()
+        r = s.post(
+            "https://auth.iqoption.com/api/v2/login",
+            json={"identifier": IQ_EMAIL, "password": IQ_PASS},
+            timeout=15
+        )
+        token = r.json().get("data", {}).get("ssid", "")
+        if not token and "ssid" in r.cookies:
+            token = r.cookies["ssid"]
+        if token:
+            _iq_session = s
+            _iq_ssid    = token
+            print(f"  ✅ IQ Option login OK (ssid={token[:12]}...)")
             return True
-        else:
-            print(f"  ❌ IQ Option falhou: {reason}")
-            return False
-    except Exception as e:
-        print(f"  ❌ IQ Option erro: {e}")
+        print(f"  ❌ IQ login falhou: {r.text[:200]}")
         return False
+    except Exception as e:
+        print(f"  ❌ IQ login erro: {e}")
+        return False
+
+def _iq_candles(ativo, n=65):
+    """Busca velas M1 do ativo OTC via IQ Option REST."""
+    global _iq_session, _iq_ssid
+    try:
+        if not _iq_ssid:
+            if not _iq_login():
+                return []
+        agora_ts = int(time.time())
+        url = (
+            f"https://api.iqoption.com/api/sockets/v3/timeframes"
+            f"?active_id={ativo}&size=60&from={agora_ts - 60*n}&to={agora_ts}"
+        )
+        # Usa endpoint de candles público (sem SSID — para ativos OTC)
+        r = _iq_session.get(url, timeout=15)
+        dados = r.json()
+        velas = []
+        for v in dados:
+            try:
+                velas.append({
+                    "open":  float(v.get("open", v.get("o", 0))),
+                    "close": float(v.get("close", v.get("c", 0))),
+                    "max":   float(v.get("max", v.get("h", 0))),
+                    "min":   float(v.get("min", v.get("l", 0))),
+                    "t":     v.get("from", v.get("t", 0)),
+                })
+            except: pass
+        return velas
+    except Exception as e:
+        print(f"  ⚠️ IQ candles erro ({ativo}): {e}")
+        return []
 
 # Cache para velas OTC
 _otc_cache    = {}
@@ -99,51 +128,81 @@ OTC_CACHE_TTL = 55
 
 def buscar_velas_otc_batch(pares_otc, n=65):
     """
-    Busca velas M1 OTC via a conexão única já estabelecida no início.
-    Nunca tenta reconectar — se não há conexão, retorna vazio.
+    Busca velas M1 dos pares OTC via IQ Option.
+    pares_otc: lista de dicts {"nome": "EURUSD-OTC", "id": 76}
+    Retorna {nome: [velas]}
     """
-    if not _iq_api or not _iq_conectado:
-        print("  ⚠️ IQ Option: sem conexão ativa")
-        return {p["nome"]: [] for p in pares_otc}
-
     agora_ts = time.time()
     resultado = {}
 
     for par in pares_otc:
-        nome     = par["nome"]
-        cached   = _otc_cache.get(nome)
-        ts_cache = _otc_cache_ts.get(nome, 0)
-        if cached and (agora_ts - ts_cache) < OTC_CACHE_TTL:
+        nome = par["nome"]
+        ativo_id = par["id"]
+        cached = _otc_cache.get(nome)
+        ts     = _otc_cache_ts.get(nome, 0)
+        if cached and (agora_ts - ts) < OTC_CACHE_TTL:
             resultado[nome] = cached
             continue
 
-        try:
-            velas_raw = _iq_api.get_candles(nome, 60, n, time.time())
-            if not velas_raw:
-                resultado[nome] = []
-                print(f"  ⚠️ OTC {nome}: sem dados")
-                continue
-            velas = []
-            for v in velas_raw:
-                try:
-                    velas.append({
-                        "open":  float(v.get("open",  0)),
-                        "close": float(v.get("close", 0)),
-                        "max":   float(v.get("max",   v.get("high",  0))),
-                        "min":   float(v.get("min",   v.get("low",   0))),
-                        "t":     v.get("from", v.get("at", 0)),
-                    })
-                except: pass
-            velas = sorted(velas, key=lambda x: x["t"])
+        velas = _buscar_velas_iq_rest(nome, ativo_id, n)
+        if velas:
             _otc_cache[nome]    = velas
             _otc_cache_ts[nome] = agora_ts
             resultado[nome]     = velas
             print(f"  📡 OTC {nome}: {len(velas)} velas")
-        except Exception as e:
-            print(f"  ⚠️ OTC {nome}: {e}")
+        else:
             resultado[nome] = []
+            print(f"  ⚠️ OTC {nome}: sem dados")
 
     return resultado
+
+def _buscar_velas_iq_rest(nome, ativo_id, n=65):
+    """Busca velas via endpoint REST público da IQ Option."""
+    global _iq_session, _iq_ssid
+    try:
+        if not _iq_session:
+            _iq_login()
+        if not _iq_session:
+            return []
+
+        agora_ts = int(time.time())
+        inicio   = agora_ts - 60 * (n + 5)
+
+        # Endpoint de candles da IQ Option
+        url = (
+            f"https://api.iqoption.com/api/sockets/v3/candles"
+            f"?active_id={ativo_id}&size=60"
+            f"&from={inicio}&to={agora_ts}&count={n}"
+        )
+        r = _iq_session.get(url, timeout=15)
+        if r.status_code == 401:
+            print(f"  🔄 IQ: sessão expirada, re-login...")
+            _iq_login()
+            r = _iq_session.get(url, timeout=15)
+
+        dados = r.json()
+        # Normaliza diferentes formatos de resposta da IQ
+        if isinstance(dados, dict):
+            dados = dados.get("data", dados.get("candles", dados.get("result", [])))
+        if not isinstance(dados, list):
+            return []
+
+        velas = []
+        for v in dados:
+            try:
+                velas.append({
+                    "open":  float(v.get("open",  v.get("o", 0))),
+                    "close": float(v.get("close", v.get("c", 0))),
+                    "max":   float(v.get("max",   v.get("h", v.get("max", 0)))),
+                    "min":   float(v.get("min",   v.get("l", v.get("min", 0)))),
+                    "t":     v.get("from", v.get("t", v.get("at", 0))),
+                })
+            except: pass
+        return sorted(velas, key=lambda x: x["t"])
+
+    except Exception as e:
+        print(f"  ⚠️ IQ REST erro {nome}: {e}")
+        return []
 
 # ══════════════════════════════════════════════════════════════════
 #  TWELVE DATA — FONTE FOREX (SEG-SEX)
@@ -170,7 +229,7 @@ def buscar_velas_td_batch(pares, n=65):
 
     LOTE = 8
     for i in range(0, len(pares_buscar), LOTE):
-        lote    = pares_buscar[i:i+LOTE]
+        lote = pares_buscar[i:i+LOTE]
         simbolos = ",".join(lote)
         url = (
             f"https://api.twelvedata.com/time_series"
@@ -178,13 +237,17 @@ def buscar_velas_td_batch(pares, n=65):
         )
         try:
             r = requests.get(url, timeout=15).json()
-            data = {lote[0]: r} if "values" in r else r
+            if "values" in r:
+                data = {lote[0]: r}
+            else:
+                data = r
 
             for par in lote:
                 dado = data.get(par, {})
                 vals = dado.get("values", [])
                 if not vals:
-                    print(f"  ⚠️ TD sem dados para {par} (code={dado.get('code','?')})")
+                    code = dado.get("code", "?")
+                    print(f"  ⚠️ TD sem dados para {par} (code={code})")
                     resultado[par] = []
                     continue
                 velas = []
@@ -242,7 +305,8 @@ def calcular_adx(velas, p=14):
     if len(velas) < p + 1: return 0
     trs, pdms, ndms = [], [], []
     for i in range(1, len(velas)):
-        h = velas[i]['max']; l = velas[i]['min']; pc = velas[i-1]['close']
+        h  = velas[i]['max'];   l  = velas[i]['min']
+        pc = velas[i-1]['close']
         trs.append(max(h - l, abs(h - pc), abs(l - pc)))
         pdms.append(max(velas[i]['max'] - velas[i-1]['max'], 0))
         ndms.append(max(velas[i-1]['min'] - velas[i]['min'], 0))
@@ -377,7 +441,7 @@ def analisar_par(par, velas, is_otc=False):
         opens  = [v['open']  for v in velas]
         pb     = par_base(par)
 
-        adx_lat  = ADX_OTC_LATERAL    if is_otc else ADX_FX_LATERAL
+        adx_lat  = ADX_OTC_LATERAL   if is_otc else ADX_FX_LATERAL
         adx_tend = ADX_OTC_TENDENCIA  if is_otc else ADX_FX_TENDENCIA
         sh_th    = SHADOW_THRESHOLD_OTC if is_otc else SHADOW_THRESHOLD_FX
 
@@ -481,10 +545,10 @@ def analisar_par(par, velas, is_otc=False):
             return None
 
         # ── SCORE ─────────────────────────────────────────────────
-        pm  = SCORE_PESO_MACD_OTC    if is_otc else SCORE_PESO_MACD_FX
-        pr  = SCORE_PESO_RSI_OTC     if is_otc else SCORE_PESO_RSI_FX
-        pb_ = SCORE_PESO_BB_OTC      if is_otc else SCORE_PESO_BB_FX
-        psh = SCORE_PESO_SHADOW_OTC  if is_otc else SCORE_PESO_SHADOW_FX
+        pm = SCORE_PESO_MACD_OTC   if is_otc else SCORE_PESO_MACD_FX
+        pr = SCORE_PESO_RSI_OTC    if is_otc else SCORE_PESO_RSI_FX
+        pb_ = SCORE_PESO_BB_OTC    if is_otc else SCORE_PESO_BB_FX
+        psh = SCORE_PESO_SHADOW_OTC if is_otc else SCORE_PESO_SHADOW_FX
 
         pc_v = closes[-1]; pt = ps = 0
         if crz == "CALL": pt += pm
@@ -532,10 +596,9 @@ def analisar_par(par, velas, is_otc=False):
 _enviados = {}
 
 def ciclo():
-    agora   = datetime.now(BRT)
-    ts_str  = agora.strftime("%H:%M:%S")
-    mercado = modo_atual()
-    is_otc  = (mercado == "OTC")
+    agora  = datetime.now(BRT)
+    ts_str = agora.strftime("%H:%M:%S")
+    mercado = modo_atual()   # "FOREX" ou "OTC"
 
     print(f"\n🔍 [{ts_str}] — modo {mercado} — escaneando pares...")
 
@@ -548,16 +611,20 @@ def ciclo():
     if not portafolio_livre():
         return
 
+    is_otc = (mercado == "OTC")
+
     # ── Busca velas ──────────────────────────────────────────────
     t0 = time.time()
     if is_otc:
-        batch = buscar_velas_otc_batch(PARES_OTC, n=65)
-        pares = [p["nome"] for p in PARES_OTC]
-        fonte = "IQ Option (OTC)"
+        batch_raw = buscar_velas_otc_batch(PARES_OTC, n=65)
+        # Normaliza: {nome: velas}
+        batch  = batch_raw
+        pares  = [p["nome"] for p in PARES_OTC]
     else:
-        batch = buscar_velas_td_batch(PARES_FOREX, n=65)
-        pares = PARES_FOREX
-        fonte = "Twelve Data"
+        batch  = buscar_velas_td_batch(PARES_FOREX, n=65)
+        pares  = PARES_FOREX
+
+    fonte = "IQ Option (OTC)" if is_otc else "Twelve Data"
     print(f"  📡 Batch {fonte}: {len(batch)} pares em {time.time()-t0:.1f}s")
 
     # ── Analisa ──────────────────────────────────────────────────
@@ -619,15 +686,11 @@ def ciclo():
 #  MAIN
 # ══════════════════════════════════════════════════════════════════
 def main():
-    mercado  = modo_atual()
-    is_otc   = (mercado == "OTC")
-    modo_str = "EXECUÇÃO AUTO 🤖" if EXECUCAO_ATIVA else "OBSERVAÇÃO 👁"
-    if is_otc:
-        pares_str = " | ".join(p["nome"] for p in PARES_OTC)
-        fonte_str = "IQ Option (OTC) WebSocket"
-    else:
-        pares_str = " | ".join(par_base(p) for p in PARES_FOREX)
-        fonte_str = "Twelve Data"
+    mercado   = modo_atual()
+    is_otc    = (mercado == "OTC")
+    modo_str  = "EXECUÇÃO AUTO 🤖" if EXECUCAO_ATIVA else "OBSERVAÇÃO 👁"
+    pares_str = " | ".join(p["nome"] if is_otc else par_base(p) for p in (PARES_OTC if is_otc else PARES_FOREX))
+    fonte_str = "IQ Option (OTC)" if is_otc else "Twelve Data"
 
     print(f"🟢 Sniper V10 v5 iniciado!")
     print(f"   Modo    : {modo_str}")
@@ -638,12 +701,9 @@ def main():
     print(f"   Trava   : 1 op por vez em todo o portfólio")
     print()
 
-    # Conexão única no início — sem thread, sem timeout externo
+    # Login IQ Option antecipado (se OTC)
     if is_otc:
-        ok = _iq_conectar()
-        if not ok:
-            print("  ⚠️ IQ Option: falhou na conexão inicial. Encerrando.")
-            return
+        _iq_login()
 
     tg(
         f"🟢 <b>Sniper V10 v5 online!</b>\n\n"
