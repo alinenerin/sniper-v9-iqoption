@@ -624,7 +624,7 @@ def main():
 
     # Login IQ Option em background (não bloqueia o loop)
     if is_otc:
-        threading.Thread(target=_iq_login, daemon=True).start()
+        _iq_conectar()
 
     tg(
         f"🟢 <b>Sniper V10 v5 online!</b>\n\n"
