@@ -613,6 +613,10 @@ def main():
     pares_str = " | ".join(p["nome"] if is_otc else par_base(p) for p in (PARES_OTC if is_otc else PARES_FOREX))
     fonte_str = "IQ Option (OTC)" if is_otc else "Twelve Data"
 
+    # Conecta IQ ANTES de qualquer log (sincrono)
+    if is_otc:
+        _iq_conectar()
+
     print(f"🟢 Sniper V10 v5 iniciado!")
     print(f"   Modo    : {modo_str}")
     print(f"   Mercado : {mercado}")
@@ -620,11 +624,8 @@ def main():
     print(f"   Fonte   : {fonte_str}")
     print(f"   Score   : >= {SCORE_MINIMO}")
     print(f"   Trava   : 1 op por vez em todo o portfólio")
+    import sys; sys.stdout.flush()
     print()
-
-    # Login IQ Option em background (não bloqueia o loop)
-    if is_otc:
-        _iq_conectar()
 
     tg(
         f"🟢 <b>Sniper V10 v5 online!</b>\n\n"
