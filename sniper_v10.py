@@ -63,7 +63,7 @@ def tg(msg):
 # ══════════════════════════════════════════════════════════════════
 #  IQ OPTION — WEBSOCKET com SSID (fonte OTC)
 # ══════════════════════════════════════════════════════════════════
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, "/app/libs/api_faria")
 from iqoptionapi.stable_api import IQ_Option
 import iqoptionapi.global_value as _gv
 
