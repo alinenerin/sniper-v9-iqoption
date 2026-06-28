@@ -61,110 +61,69 @@ def tg(msg):
         print(f"  ⚠️ Telegram: {e}")
 
 # ══════════════════════════════════════════════════════════════════
-#  IQ OPTION — WEBSOCKET com SSID (fonte OTC)
+#  IQ OPTION — FONTE OTC (FIM DE SEMANA)
 # ══════════════════════════════════════════════════════════════════
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from iqoptionapi.stable_api import IQ_Option
 
 _iq_api       = None
 _iq_conectado = False
-_iq_lock      = threading.Lock()
-_iq_tentando  = False
 
-def _iq_conectar_bg():
-    """Conecta em background — não bloqueia o loop principal."""
-    global _iq_api, _iq_conectado, _iq_tentando
-    with _iq_lock:
-        if _iq_conectado:
-            return
-        _iq_tentando = True
-        try:
-            print("  🔄 Conectando IQ Option (background)...")
-            api = IQ_Option(IQ_EMAIL, IQ_PASS)
-            check, reason = api.connect()
-            if check:
-                _iq_api       = api
-                _iq_conectado = True
-                print("  ✅ IQ Option conectado!")
-            else:
-                print(f"  ❌ IQ Option falhou: {reason}")
-        except Exception as e:
-            print(f"  ❌ IQ Option erro: {e}")
-        finally:
-            _iq_tentando = False
-
-def _iq_login():
-    """Retorna True se conectado. Dispara conexão em background se necessário."""
-    global _iq_tentando
+def _iq_conectar():
+    global _iq_api, _iq_conectado
     if _iq_conectado and _iq_api:
         return True
-    if not _iq_tentando:
-        threading.Thread(target=_iq_conectar_bg, daemon=True).start()
-    return False
-
-def _iq_candles(ativo_id, n=65):
-    """Busca velas M1 do ativo OTC via WebSocket."""
-    if not _iq_login():
-        return []
     try:
-        velas_raw = _iq_api.get_candles(ativo_id, 60, n, time.time())
-        velas = []
-        if velas_raw:
-            for v in velas_raw:
-                try:
-                    velas.append({
-                        "open":  float(v.get("open",  v.get("o", 0))),
-                        "close": float(v.get("close", v.get("c", 0))),
-                        "max":   float(v.get("max",   v.get("h", 0))),
-                        "min":   float(v.get("min",   v.get("l", 0))),
-                        "t":     v.get("from", v.get("t", 0)),
-                    })
-                except: pass
-        return sorted(velas, key=lambda x: x["t"])
+        print("  🔄 Conectando IQ Option...")
+        api = IQ_Option(IQ_EMAIL, IQ_PASS)
+        check, reason = api.connect()
+        if check:
+            _iq_api       = api
+            _iq_conectado = True
+            print("  ✅ IQ Option conectado!")
+            return True
+        print(f"  ❌ IQ Option falhou: {reason}")
+        return False
     except Exception as e:
-        print(f"  ⚠️ IQ candles erro (id={ativo_id}): {e}")
-        return []
+        print(f"  ❌ IQ Option erro: {e}")
+        return False
 
-# Cache para velas OTC
 _otc_cache    = {}
 _otc_cache_ts = {}
 OTC_CACHE_TTL = 55
 
 def buscar_velas_otc_batch(pares_otc, n=65):
-    """
-    Busca velas M1 dos pares OTC via IQ Option WebSocket.
-    pares_otc: lista de dicts {"nome": "EURUSD-OTC", "id": 76}
-    Retorna {nome: [velas]}
-    """
+    if not _iq_api or not _iq_conectado:
+        return {p["nome"]: [] for p in pares_otc}
     agora_ts = time.time()
     resultado = {}
-
-    if not _iq_login():
-        print("  ⏳ IQ Option ainda conectando, aguardando...")
-        return {par["nome"]: [] for par in pares_otc}
-
     for par in pares_otc:
-        nome     = par["nome"]
-        ativo_id = par["id"]
-
-        cached = _otc_cache.get(nome)
-        ts     = _otc_cache_ts.get(nome, 0)
-        if cached and (agora_ts - ts) < OTC_CACHE_TTL:
-            resultado[nome] = cached
+        nome = par["nome"]
+        if _otc_cache.get(nome) and (agora_ts - _otc_cache_ts.get(nome, 0)) < OTC_CACHE_TTL:
+            resultado[nome] = _otc_cache[nome]
             continue
-
-        velas = _iq_candles(ativo_id, n)
-        if velas:
-            _otc_cache[nome]    = velas
+        try:
+            velas_raw = _iq_api.get_candles(nome, 60, n, time.time())
+            velas = []
+            for v in (velas_raw or []):
+                try:
+                    velas.append({
+                        "open":  float(v.get("open", 0)),
+                        "close": float(v.get("close", 0)),
+                        "max":   float(v.get("max", v.get("high", 0))),
+                        "min":   float(v.get("min", v.get("low", 0))),
+                        "t":     v.get("from", v.get("at", 0)),
+                    })
+                except: pass
+            velas = sorted(velas, key=lambda x: x["t"])
+            _otc_cache[nome] = velas
             _otc_cache_ts[nome] = agora_ts
-            resultado[nome]     = velas
+            resultado[nome] = velas
             print(f"  📡 OTC {nome}: {len(velas)} velas")
-        else:
+        except Exception as e:
+            print(f"  ⚠️ OTC {nome}: {e}")
             resultado[nome] = []
-            print(f"  ⚠️ OTC {nome}: sem dados")
-
     return resultado
-
 
 # ══════════════════════════════════════════════════════════════════
 #  TWELVE DATA — FONTE FOREX (SEG-SEX)
