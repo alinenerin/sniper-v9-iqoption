@@ -70,40 +70,29 @@ import iqoptionapi.global_value as _gv
 _iq_api       = None
 _iq_conectado = False
 _iq_lock      = threading.Lock()
-_iq_tentando  = False
 
-def _iq_conectar_bg():
-    """Conecta em background — não bloqueia o loop principal."""
-    global _iq_api, _iq_conectado, _iq_tentando
-    with _iq_lock:
-        if _iq_conectado:
-            return
-        _iq_tentando = True
-        try:
-            print("  🔄 Conectando IQ Option (background)...")
-            api = IQ_Option(IQ_EMAIL, IQ_PASS)
-            if IQ_SSID:
-                _gv.SSID = IQ_SSID
-            check, reason = api.connect()
-            if check:
-                _iq_api       = api
-                _iq_conectado = True
-                print("  ✅ IQ Option conectado!")
-            else:
-                print(f"  ❌ IQ Option falhou: {reason}")
-        except Exception as e:
-            print(f"  ❌ IQ Option erro: {e}")
-        finally:
-            _iq_tentando = False
-
-def _iq_login():
-    """Retorna True se conectado. Dispara conexão em background se necessário."""
-    global _iq_tentando
+def _iq_conectar():
+    """Conecta de forma síncrona — igual ao gerador. Chamada uma vez no main()."""
+    global _iq_api, _iq_conectado
     if _iq_conectado and _iq_api:
         return True
-    if not _iq_tentando:
-        threading.Thread(target=_iq_conectar_bg, daemon=True).start()
-    return False
+    try:
+        print("  🔄 Conectando IQ Option...")
+        api = IQ_Option(IQ_EMAIL, IQ_PASS)
+        check, reason = api.connect()
+        if check:
+            _iq_api       = api
+            _iq_conectado = True
+            print("  ✅ IQ Option conectado!")
+            return True
+        print(f"  ❌ IQ Option falhou: {reason}")
+        return False
+    except Exception as e:
+        print(f"  ❌ IQ Option erro: {e}")
+        return False
+
+def _iq_login():
+    return _iq_conectado and _iq_api is not None
 
 def _iq_candles(ativo_id, n=65):
     """Busca velas M1 do ativo OTC via WebSocket."""
@@ -668,7 +657,7 @@ def main():
 
     # Login IQ Option em background (não bloqueia o loop)
     if is_otc:
-        threading.Thread(target=_iq_login, daemon=True).start()
+        _iq_conectar()
 
     tg(
         f"🟢 <b>Sniper V10 v5 online!</b>\n\n"
