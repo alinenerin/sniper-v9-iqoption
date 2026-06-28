@@ -555,18 +555,14 @@ def ciclo():
     sinais_candidatos.sort(key=lambda x: x['score'], reverse=True)
 
     # ── FUNIL — FASE DE VETO FINAL ───────────────────────────────
-    # Varredura concluída. Pega o melhor candidato por score,
-    # sincroniza com o segundo 50 (sleep único global) e aplica
-    # checagem final. Se falhar, tenta próximo sem novo sleep.
+    # Sleep único até segundo 50, depois veto rápido nos demais.
     sinais = []
     checagem_feita = False
     for s in sinais_candidatos:
         if not checagem_feita:
-            # Primeira vez: sincroniza com segundo 50 (único sleep do ciclo)
             aprovado = checagem_final(s['par'], s['dir'])
             checagem_feita = True
         else:
-            # Demais: segundo 50 já passou — só valida sem sleep
             v_fin = get_velas(s['par'], 5)
             if v_fin and len(v_fin) >= 2:
                 vf = v_fin[-1]
@@ -637,7 +633,7 @@ def main():
                 ultimo = chave
                 t = threading.Thread(target=ciclo, daemon=True)
                 t.start()
-                t.join(58)
+                t.join(115)
                 if t.is_alive():
                     print(f"  ⚠️ Ciclo {chave} excedeu 58s")
             time.sleep(5)
