@@ -81,11 +81,14 @@ def _iq_conectar():
             _iq_api       = api
             _iq_conectado = True
             print("  ✅ IQ Option conectado!")
+            tg("✅ IQ Option conectado com sucesso!")
             return True
         print(f"  ❌ IQ Option falhou: {reason}")
+        tg(f"❌ IQ Option falhou: {reason}")
         return False
     except Exception as e:
         print(f"  ❌ IQ Option erro: {e}")
+        tg(f"❌ IQ Option erro: {e}")
         return False
 
 _otc_cache    = {}
