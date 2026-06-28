@@ -99,7 +99,7 @@ def _iq_conectar():
 
             t = threading.Thread(target=_tentar, daemon=True)
             t.start()
-            t.join(30)
+            t.join(130)
 
             if resultado[0]:
                 _iq_api       = api
@@ -676,7 +676,7 @@ def main():
     if is_otc:
         t_iq = threading.Thread(target=_iq_conectar, daemon=True)
         t_iq.start()
-        t_iq.join(35)
+        t_iq.join(140)
         if t_iq.is_alive():
             print("  ⚠️ IQ Option: timeout na conexão — tentará no primeiro ciclo")
 
