@@ -505,17 +505,34 @@ def ciclo():
     # Ordena por score — melhor sinal primeiro
     sinais_candidatos.sort(key=lambda x: x['score'], reverse=True)
 
-    # CHECAGEM FINAL — uma única vez, sincronizada com o relógio da vela
-    # Feita APÓS selecionar candidatos para não multiplicar o tempo por par
+    # ── FUNIL — FASE DE VETO FINAL ───────────────────────────────
+    # Varredura concluída. Pega o melhor candidato por score,
+    # sincroniza com o segundo 50 (sleep único global) e aplica
+    # checagem final. Se falhar, tenta próximo sem novo sleep.
     sinais = []
+    checagem_feita = False
     for s in sinais_candidatos:
-        if checagem_final(s['par'], s['dir']):
+        if not checagem_feita:
+            # Primeira vez: sincroniza com segundo 50 (único sleep do ciclo)
+            aprovado = checagem_final(s['par'], s['dir'])
+            checagem_feita = True
+        else:
+            # Demais: segundo 50 já passou — só valida sem sleep
+            v_fin = get_velas(s['par'], 5)
+            if v_fin and len(v_fin) >= 2:
+                vf = v_fin[-1]
+                dir_fin = "CALL" if vf['close'] > vf['open'] else "PUT"
+                aprovado = (dir_fin == s['dir']) and not shadow_rejection(vf)
+                print(f"  {s['par']}: VETO rápido {'OK ✅' if aprovado else 'BLOQUEADO ❌'}")
+            else:
+                aprovado = True
+
+        if aprovado:
             chave = f"{s['par']}_{agora.strftime('%H:%M')}"
             registrar_sinal(s['par'], s['dir'], agora)
             env[chave] = True
             sinais.append(s)
-        # Só faz checagem final uma vez (já sincronizou com segundo 50)
-        break
+            break  # encontrou aprovado — encerra funil
 
     if not sinais:
         print("  Sem sinal aprovado neste ciclo.")
