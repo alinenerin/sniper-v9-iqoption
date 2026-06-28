@@ -29,6 +29,7 @@ PARES_FOREX = [
     "XAU/USD",   # Ouro  — ADX>=22
 ]
 PARES_OTC = [
+    # IDs dos ativos OTC na IQ Option (M1, disponíveis no FDS)
     {"nome": "EURUSD-OTC",  "id": 76},
     {"nome": "GBPUSD-OTC",  "id": 77},
     {"nome": "USDJPY-OTC",  "id": 78},
