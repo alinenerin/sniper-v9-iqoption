@@ -1,4 +1,43 @@
 #!/usr/bin/env python3
+# ── DIAGNÓSTICO DE CONECTIVIDADE (roda uma vez no boot) ──────────
+import socket, ssl, threading as _th, urllib.request as _ureq
+
+print("=== DIAG CONECTIVIDADE ===")
+try:
+    _ip = socket.gethostbyname("iqoption.com")
+    print(f"DNS iqoption.com -> {_ip}")
+except Exception as _e:
+    print(f"DNS FALHOU: {_e}")
+
+try:
+    _s = socket.create_connection(("iqoption.com", 443), timeout=10); _s.close()
+    print("TCP 443 OK")
+except Exception as _e:
+    print(f"TCP 443 FALHOU: {_e}")
+
+try:
+    _req = _ureq.Request("https://auth.iqoption.com/api/v2/login",
+        data=b'{"identifier":"x","password":"x"}',
+        headers={"Content-Type":"application/json"}, method="POST")
+    with _ureq.urlopen(_req, timeout=10) as _r:
+        print(f"HTTP auth: {_r.status}")
+except Exception as _e:
+    print(f"HTTP auth: {_e}")
+
+try:
+    import websocket as _ws
+    _wr = {"ok": False, "err": None}
+    def _wo(ws): _wr["ok"] = True; ws.close()
+    def _we(ws, e): _wr["err"] = str(e)
+    _wsa = _ws.WebSocketApp("wss://iqoption.com/echo/websocket", on_open=_wo, on_error=_we)
+    _wt = _th.Thread(target=lambda: _wsa.run_forever(sslopt={"check_hostname":False,"cert_reqs":ssl.CERT_NONE}), daemon=True)
+    _wt.start(); _wt.join(20)
+    print(f"WebSocket: ok={_wr['ok']} err={_wr['err']}")
+except Exception as _e:
+    print(f"WebSocket erro: {_e}")
+print("=== FIM DIAG ===")
+# ─────────────────────────────────────────────────────────────────
+
 """
 ╔══════════════════════════════════════════════════════════════════╗
 ║           SNIPER V10 — CALIBRAÇÃO v5                            ║
