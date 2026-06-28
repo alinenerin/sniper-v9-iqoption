@@ -261,56 +261,106 @@ def calcular_sinal(par):
         bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
         macd_l, macd_s, hist, cruzamento, hist_prev = calcular_macd(closes)
 
-        # FILTRO 1 — RSI neutro
-        if 42 <= rsi <= 58:
-            print(f"  {par}: bloqueado RSI neutro ({rsi})")
+        # ════════════════════════════════════════════════════════════
+        # FILTRO 0 — SELEÇÃO DE MODO DE MERCADO (ADX como árbitro)
+        # ADX >= 22  → MODO TENDÊNCIA  (filtros de força)
+        # ADX < 18   → MODO LATERAL    (filtros de contenção)
+        # 18–21      → ZONA CINZA      → abortar (mercado indefinido)
+        # ════════════════════════════════════════════════════════════
+        if adx >= 22:
+            modo = "TENDENCIA"
+        elif adx < 18:
+            modo = "LATERAL"
+        else:
+            print(f"  {par}: bloqueado Zona Cinza ADX ({adx:.1f} — entre 18 e 21)")
             return None
 
-        # FILTRO 1B — RSI DINÂMICO (exaustão extrema)
-        # ADX > 40 (tendência forte): libera até RSI 80 / 20
-        # ADX <= 40: bloqueia RSI > 75 (CALL) ou < 25 (PUT)
-        # Acima de 80 / abaixo de 20: bloqueia sob qualquer condição
-        if cruzamento == "CALL" or (cruzamento is None and rsi > 57):
-            teto_rsi = 80 if adx > 40 else 75
-            if rsi > teto_rsi:
-                print(f"  {par}: bloqueado RSI exaustão CALL ({rsi} > {teto_rsi}, ADX:{adx:.1f})")
-                return None
-        if cruzamento == "PUT" or (cruzamento is None and rsi < 43):
-            piso_rsi = 20 if adx > 40 else 25
-            if rsi < piso_rsi:
-                print(f"  {par}: bloqueado RSI exaustão PUT ({rsi} < {piso_rsi}, ADX:{adx:.1f})")
-                return None
+        print(f"  {par}: MODO {modo} (ADX:{adx:.1f})")
 
-        # FILTRO 2 — ADX fraco
-        if adx < 18:
-            print(f"  {par}: bloqueado ADX fraco ({adx})")
-            return None
+        # ════════════════════════════════════════════════════════════
+        # MODO TENDÊNCIA — ADX >= 22
+        # Filtros ativos: F1B (RSI dinâmico) + F6 (Dominância)
+        # Filtros inativos: F3 (BB centro) + F5 (EMA9 plana)
+        # Lógica: mercado está andando — não punir inclinação nem posição BB
+        # ════════════════════════════════════════════════════════════
+        if modo == "TENDENCIA":
 
-        # FILTRO 3 — Bollinger range
-        if bb_sup and bb_inf:
-            banda = bb_sup - bb_inf
-            if banda > 0:
-                pos = (pc - bb_inf) / banda
-                if 0.30 < pos < 0.70:
-                    print(f"  {par}: bloqueado BB range ({pos:.2f})")
+            # F1B — RSI DINÂMICO (exaustão extrema)
+            if cruzamento == "CALL" or (cruzamento is None and rsi > 57):
+                teto_rsi = 80 if adx > 40 else 75
+                if rsi > teto_rsi:
+                    print(f"  {par}: [T] bloqueado RSI exaustão CALL ({rsi} > {teto_rsi})")
                     return None
+            if cruzamento == "PUT" or (cruzamento is None and rsi < 43):
+                piso_rsi = 20 if adx > 40 else 25
+                if rsi < piso_rsi:
+                    print(f"  {par}: [T] bloqueado RSI exaustão PUT ({rsi} < {piso_rsi})")
+                    return None
+
+            # F6 — DOMINÂNCIA DE CONTEXTO (anti-pullback)
+            ultimas_5 = v[-6:-1]
+            if len(ultimas_5) >= 5:
+                puts_ctx  = sum(1 for c in ultimas_5 if c['close'] < c['open'])
+                calls_ctx = sum(1 for c in ultimas_5 if c['close'] >= c['open'])
+                if cruzamento == "CALL" and puts_ctx >= 4:
+                    print(f"  {par}: [T] bloqueado Dominância PUT ({puts_ctx}/5) — pullback")
+                    return None
+                if cruzamento == "PUT" and calls_ctx >= 4:
+                    print(f"  {par}: [T] bloqueado Dominância CALL ({calls_ctx}/5) — pullback")
+                    return None
+
+        # ════════════════════════════════════════════════════════════
+        # MODO LATERAL — ADX < 18
+        # Filtros ativos: F1 (RSI neutro) + F3 (BB centro) + F5 (EMA9 plana)
+        # Filtros inativos: F1B (RSI dinâmico) + F6 (Dominância)
+        # Lógica: mercado está parado — só entrar em extremos com força real
+        # ════════════════════════════════════════════════════════════
+        elif modo == "LATERAL":
+
+            # F1 — RSI NEUTRO (bloqueia meio campo)
+            if 42 <= rsi <= 58:
+                print(f"  {par}: [L] bloqueado RSI neutro ({rsi:.1f})")
+                return None
+
+            # F3 — BOLLINGER RANGE CENTRAL
+            if bb_sup and bb_inf:
+                banda = bb_sup - bb_inf
+                if banda > 0:
+                    pos = (pc - bb_inf) / banda
+                    if 0.30 < pos < 0.70:
+                        print(f"  {par}: [L] bloqueado BB centro ({pos:.2f})")
+                        return None
+
+            # F5 — EMA9 PLANA (sem inclinação = sem força)
+            pip = 0.01 if pc > 50 else 0.0001
+            if len(closes) >= 26:
+                e9_atual = ema(closes[-25:], 9)
+                e9_prev  = ema(closes[-26:-1], 9)
+                inclinacao = e9_atual - e9_prev
+                limiar = pip * 0.2
+                if cruzamento == "CALL" and inclinacao < limiar:
+                    print(f"  {par}: [L] bloqueado EMA9 plana ({inclinacao/pip:+.2f}p)")
+                    return None
+                if cruzamento == "PUT" and inclinacao > -limiar:
+                    print(f"  {par}: [L] bloqueado EMA9 plana ({inclinacao/pip:+.2f}p)")
+                    return None
+
+        # ════════════════════════════════════════════════════════════
+        # FILTROS UNIVERSAIS — aplicados em AMBOS os modos
+        # ════════════════════════════════════════════════════════════
 
         # FILTRO 4 — MACD (controlado por USE_MACD toggle)
         if USE_MACD:
             if cruzamento is None:
-                print(f"  {par}: bloqueado MACD sem cruzamento (L:{macd_l} S:{macd_s})")
+                print(f"  {par}: bloqueado MACD sem cruzamento")
                 return None
-
-            # FILTRO 4A — HISTOGRAMA CRESCENTE (momentum real, não lag)
             if hist is not None and hist_prev is not None:
                 if cruzamento == "CALL" and hist < hist_prev:
-                    print(f"  {par}: bloqueado MACD histograma enfraquecendo CALL ({hist} < {hist_prev})")
+                    print(f"  {par}: bloqueado MACD histograma enfraquecendo CALL")
                     return None
                 if cruzamento == "PUT" and hist > hist_prev:
-                    print(f"  {par}: bloqueado MACD histograma enfraquecendo PUT ({hist} > {hist_prev})")
+                    print(f"  {par}: bloqueado MACD histograma enfraquecendo PUT")
                     return None
-
-            # FILTRO 4B — CONFIRMAÇÃO DE VELA PÓS-CRUZAMENTO
             vela_confirmacao = closes[-1]
             abertura_confirmacao = opens[-2]
             if cruzamento == "CALL" and vela_confirmacao < abertura_confirmacao:
@@ -320,7 +370,6 @@ def calcular_sinal(par):
                 print(f"  {par}: bloqueado vela pós-cruzamento contrária ao PUT")
                 return None
         else:
-            # USE_MACD = False → define direção pelo RSI quando sem MACD
             if cruzamento is None:
                 if rsi > 58:   cruzamento = "CALL"
                 elif rsi < 42: cruzamento = "PUT"
@@ -329,36 +378,7 @@ def calcular_sinal(par):
                     return None
             print(f"  {par}: [TESTE A/B] MACD desativado — direção via RSI+EMA")
 
-        # FILTRO 5 — INCLINAÇÃO DA EMA9 (tendência precisa estar em movimento)
-        pip = 0.01 if pc > 50 else 0.0001
-        if len(closes) >= 26:
-            e9_atual = ema(closes[-25:], 9)
-            e9_prev  = ema(closes[-26:-1], 9)
-            inclinacao = e9_atual - e9_prev
-            limiar = pip * 0.2
-            if cruzamento == "CALL" and inclinacao < limiar:
-                print(f"  {par}: bloqueado Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)")
-                return None
-            if cruzamento == "PUT" and inclinacao > -limiar:
-                print(f"  {par}: bloqueado Tendência Sem Inclinação (EMA9 plana: {inclinacao/pip:+.2f}p)")
-                return None
-
-        # FILTRO 6 — DOMINÂNCIA DE CONTEXTO (anti-pullback)
-        # Se 4 das últimas 5 velas forem contrárias ao sinal → é pullback, não reversão real
-        pip_ctx = 0.01 if pc > 50 else 0.0001
-        ultimas_5 = v[-6:-1]  # 5 velas fechadas antes da atual
-        if len(ultimas_5) >= 5:
-            puts_ctx  = sum(1 for c in ultimas_5 if c['close'] < c['open'])
-            calls_ctx = sum(1 for c in ultimas_5 if c['close'] >= c['open'])
-            if cruzamento == "CALL" and puts_ctx >= 4:
-                print(f"  {par}: bloqueado Dominância PUT ({puts_ctx}/5 velas PUT) — pullback, não reversão")
-                return None
-            if cruzamento == "PUT" and calls_ctx >= 4:
-                print(f"  {par}: bloqueado Dominância CALL ({calls_ctx}/5 velas CALL) — pullback, não reversão")
-                return None
-
-        # FILTRO 7 — SHADOW REJECTION (versão precisa — pavio superior e inferior separados)
-        # Bloqueia se qualquer pavio for > 40% do tamanho total da vela
+        # FILTRO 7 — SHADOW REJECTION (pavio superior e inferior separados)
         vela_atual = v[-1]
         high_sv  = vela_atual.get('max', vela_atual['close'])
         low_sv   = vela_atual.get('min', vela_atual['open'])
@@ -375,7 +395,7 @@ def calcular_sinal(par):
                 print(f"  {par}: bloqueado Shadow Rejection inferior ({pavio_inf/tamanho_total:.1%})")
                 return None
 
-        print(f"  {par}: passou filtros RSI:{rsi} ADX:{adx} MACD:{cruzamento}")
+        print(f"  {par}: ✅ passou [{modo}] RSI:{rsi:.1f} ADX:{adx:.1f} MACD:{cruzamento}")
 
         # SCORE — MACD define a direção, demais confirmam
         dir_ = cruzamento
