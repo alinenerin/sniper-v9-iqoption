@@ -828,10 +828,14 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
     def send_ssid(self):
         self.profile.msg = None
         self.ssid(global_value.SSID)  # pylint: disable=not-callable
-        while self.profile.msg == None:
-            pass
+        import time as _t
+        _deadline = _t.time() + 20
+        while self.profile.msg is None and _t.time() < _deadline:
+            _t.sleep(0.05)
         if self.profile.msg == False:
             return False
+        elif self.profile.msg is None:
+            return False  # timeout
         else:
             return True
 
