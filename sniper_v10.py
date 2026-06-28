@@ -94,6 +94,9 @@ OTC_CACHE_TTL = 55
 
 def buscar_velas_otc_batch(pares_otc, n=65):
     if not _iq_api or not _iq_conectado:
+        _iq_conectar()
+    if not _iq_api or not _iq_conectado:
+        print("  ⚠️ IQ Option: sem conexao ativa")
         return {p["nome"]: [] for p in pares_otc}
     agora_ts = time.time()
     resultado = {}
@@ -612,10 +615,6 @@ def main():
     modo_str  = "EXECUÇÃO AUTO 🤖" if EXECUCAO_ATIVA else "OBSERVAÇÃO 👁"
     pares_str = " | ".join(p["nome"] if is_otc else par_base(p) for p in (PARES_OTC if is_otc else PARES_FOREX))
     fonte_str = "IQ Option (OTC)" if is_otc else "Twelve Data"
-
-    # Conecta IQ ANTES de qualquer log (sincrono)
-    if is_otc:
-        _iq_conectar()
 
     print(f"🟢 Sniper V10 v5 iniciado!")
     print(f"   Modo    : {modo_str}")
