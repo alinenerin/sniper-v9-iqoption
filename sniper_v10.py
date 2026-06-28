@@ -66,49 +66,31 @@ def tg(msg):
         print(f"  ⚠️ Telegram: {e}")
 
 # ══════════════════════════════════════════════════════════════════
-#  IQ OPTION — FONTE OTC via WebSocket (igual ao V9)
+#  IQ OPTION — CONEXÃO ÚNICA, ESTABELECIDA NO INÍCIO
 # ══════════════════════════════════════════════════════════════════
 _iq_api       = None
-_iq_lock      = threading.Lock()
 _iq_conectado = False
 
 def _iq_conectar():
+    """Abre UMA única conexão WebSocket. Nunca chamada durante ciclos."""
     global _iq_api, _iq_conectado
-    with _iq_lock:
-        if _iq_conectado and _iq_api:
+    if _iq_conectado and _iq_api:
+        return True
+    try:
+        print("  🔄 Conectando IQ Option...")
+        api = IQ_Option(IQ_EMAIL, IQ_PASS)
+        check, reason = api.connect()
+        if check:
+            _iq_api       = api
+            _iq_conectado = True
+            print("  ✅ IQ Option conectado!")
             return True
-        try:
-            print("  🔄 Conectando IQ Option...")
-
-            api = IQ_Option(IQ_EMAIL, IQ_PASS)
-
-            resultado = [False, "timeout"]
-
-            def _tentar():
-                try:
-                    check, reason = api.connect()
-                    resultado[0] = check
-                    resultado[1] = reason
-                except Exception as ex:
-                    resultado[1] = str(ex)
-
-            t = threading.Thread(target=_tentar, daemon=True)
-            t.start()
-            t.join(60)
-
-            if resultado[0]:
-                _iq_api       = api
-                _iq_conectado = True
-                print(f"  ✅ IQ Option conectado!")
-                return True
-            else:
-                print(f"  ❌ IQ Option falhou: {resultado[1]}")
-                _iq_conectado = False
-                return False
-        except Exception as e:
-            print(f"  ❌ IQ Option erro: {e}")
-            _iq_conectado = False
+        else:
+            print(f"  ❌ IQ Option falhou: {reason}")
             return False
+    except Exception as e:
+        print(f"  ❌ IQ Option erro: {e}")
+        return False
 
 # Cache para velas OTC
 _otc_cache    = {}
@@ -117,13 +99,12 @@ OTC_CACHE_TTL = 55
 
 def buscar_velas_otc_batch(pares_otc, n=65):
     """
-    Busca velas M1 OTC via IQ Option WebSocket.
-    pares_otc: lista de dicts {"nome": "EURUSD-OTC", "id": 76}
-    Retorna {nome: [velas]}
+    Busca velas M1 OTC via a conexão única já estabelecida no início.
+    Nunca tenta reconectar — se não há conexão, retorna vazio.
     """
-    global _iq_conectado
-    if not _iq_conectado:
-        _iq_conectar()
+    if not _iq_api or not _iq_conectado:
+        print("  ⚠️ IQ Option: sem conexão ativa")
+        return {p["nome"]: [] for p in pares_otc}
 
     agora_ts = time.time()
     resultado = {}
@@ -136,44 +117,33 @@ def buscar_velas_otc_batch(pares_otc, n=65):
             resultado[nome] = cached
             continue
 
-        velas = _buscar_velas_iq_ws(nome, n)
-        if velas:
+        try:
+            velas_raw = _iq_api.get_candles(nome, 60, n, time.time())
+            if not velas_raw:
+                resultado[nome] = []
+                print(f"  ⚠️ OTC {nome}: sem dados")
+                continue
+            velas = []
+            for v in velas_raw:
+                try:
+                    velas.append({
+                        "open":  float(v.get("open",  0)),
+                        "close": float(v.get("close", 0)),
+                        "max":   float(v.get("max",   v.get("high",  0))),
+                        "min":   float(v.get("min",   v.get("low",   0))),
+                        "t":     v.get("from", v.get("at", 0)),
+                    })
+                except: pass
+            velas = sorted(velas, key=lambda x: x["t"])
             _otc_cache[nome]    = velas
             _otc_cache_ts[nome] = agora_ts
             resultado[nome]     = velas
             print(f"  📡 OTC {nome}: {len(velas)} velas")
-        else:
+        except Exception as e:
+            print(f"  ⚠️ OTC {nome}: {e}")
             resultado[nome] = []
-            print(f"  ⚠️ OTC {nome}: sem dados")
 
     return resultado
-
-def _buscar_velas_iq_ws(nome, n=65):
-    """Busca velas M1 via get_candles — mesmo método do V9."""
-    global _iq_api, _iq_conectado
-    try:
-        if not _iq_api or not _iq_conectado:
-            if not _iq_conectar():
-                return []
-        velas_raw = _iq_api.get_candles(nome, 60, n, time.time())
-        if not velas_raw:
-            return []
-        velas = []
-        for v in velas_raw:
-            try:
-                velas.append({
-                    "open":  float(v.get("open",  0)),
-                    "close": float(v.get("close", 0)),
-                    "max":   float(v.get("max",   v.get("high",  0))),
-                    "min":   float(v.get("min",   v.get("low",   0))),
-                    "t":     v.get("from", v.get("at", 0)),
-                })
-            except: pass
-        return sorted(velas, key=lambda x: x["t"])
-    except Exception as e:
-        print(f"  ⚠️ IQ WS erro {nome}: {e}")
-        _iq_conectado = False
-        return []
 
 # ══════════════════════════════════════════════════════════════════
 #  TWELVE DATA — FONTE FOREX (SEG-SEX)
@@ -668,12 +638,12 @@ def main():
     print(f"   Trava   : 1 op por vez em todo o portfólio")
     print()
 
+    # Conexão única no início — sem thread, sem timeout externo
     if is_otc:
-        t_iq = threading.Thread(target=_iq_conectar, daemon=True)
-        t_iq.start()
-        t_iq.join(140)
-        if t_iq.is_alive():
-            print("  ⚠️ IQ Option: timeout na conexão — tentará no primeiro ciclo")
+        ok = _iq_conectar()
+        if not ok:
+            print("  ⚠️ IQ Option: falhou na conexão inicial. Encerrando.")
+            return
 
     tg(
         f"🟢 <b>Sniper V10 v5 online!</b>\n\n"
