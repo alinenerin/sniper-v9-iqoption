@@ -80,13 +80,13 @@ def _iq_conectar():
             print("  🔄 Conectando IQ Option via WebSocket...")
             from iqoptionapi import global_value
 
-            # Injeta SSID pré-capturado para evitar login HTTP (bloqueado no Railway)
+            api = IQ_Option(IQ_EMAIL, IQ_PASS)
+
+            # Injeta SSID pré-capturado DEPOIS de instanciar (lib reseta no __init__)
             ssid_env = os.environ.get("IQ_SSID", "")
             if ssid_env:
                 global_value.SSID = ssid_env
                 print(f"  🔑 SSID injetado: {ssid_env[:12]}...")
-
-            api = IQ_Option(IQ_EMAIL, IQ_PASS)
             resultado = [False, "timeout"]
 
             def _tentar():
