@@ -1,1 +1,1 @@
-worker: cp iqoptionapi/constants.py $(python3 -c "import iqoptionapi,os; print(os.path.dirname(iqoptionapi.__file__))")/constants.py && python3 sniper_loop.py
+worker: python sniper_v10.py
