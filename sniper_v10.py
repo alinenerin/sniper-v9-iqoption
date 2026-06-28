@@ -65,7 +65,6 @@ def tg(msg):
 # ══════════════════════════════════════════════════════════════════
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from iqoptionapi.stable_api import IQ_Option
-import iqoptionapi.global_value as _gv
 
 _iq_api       = None
 _iq_conectado = False
@@ -82,8 +81,6 @@ def _iq_conectar_bg():
         try:
             print("  🔄 Conectando IQ Option (background)...")
             api = IQ_Option(IQ_EMAIL, IQ_PASS)
-            if IQ_SSID:
-                _gv.SSID = IQ_SSID
             check, reason = api.connect()
             if check:
                 _iq_api       = api
