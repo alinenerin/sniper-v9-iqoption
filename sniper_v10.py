@@ -78,6 +78,14 @@ def _iq_conectar():
             return True
         try:
             print("  🔄 Conectando IQ Option via WebSocket...")
+            from iqoptionapi import global_value
+
+            # Injeta SSID pré-capturado para evitar login HTTP (bloqueado no Railway)
+            ssid_env = os.environ.get("IQ_SSID", "")
+            if ssid_env:
+                global_value.SSID = ssid_env
+                print(f"  🔑 SSID injetado: {ssid_env[:12]}...")
+
             api = IQ_Option(IQ_EMAIL, IQ_PASS)
             resultado = [False, "timeout"]
 
@@ -91,10 +99,9 @@ def _iq_conectar():
 
             t = threading.Thread(target=_tentar, daemon=True)
             t.start()
-            t.join(25)   # timeout 25s na conexão
+            t.join(30)
 
             if resultado[0]:
-                api.change_balance("PRACTICE")
                 _iq_api       = api
                 _iq_conectado = True
                 print(f"  ✅ IQ Option conectado! ({resultado[1]})")
@@ -576,11 +583,16 @@ def ciclo():
     if not portafolio_livre():
         return
 
-    # ── Busca velas (sempre Twelve Data — disponível 24/7) ───────
-    t0    = time.time()
-    batch = buscar_velas_td_batch(PARES_FOREX, n=65)
-    pares = PARES_FOREX
-    fonte = "Twelve Data"
+    # ── Busca velas ──────────────────────────────────────────────
+    t0 = time.time()
+    if is_otc:
+        batch = buscar_velas_otc_batch(PARES_OTC, n=65)
+        pares = [p["nome"] for p in PARES_OTC]
+        fonte = "IQ Option (OTC)"
+    else:
+        batch = buscar_velas_td_batch(PARES_FOREX, n=65)
+        pares = PARES_FOREX
+        fonte = "Twelve Data"
     print(f"  📡 Batch {fonte}: {len(batch)} pares em {time.time()-t0:.1f}s")
 
     # ── Analisa ──────────────────────────────────────────────────
@@ -642,10 +654,15 @@ def ciclo():
 #  MAIN
 # ══════════════════════════════════════════════════════════════════
 def main():
-    mercado   = modo_atual()
-    modo_str  = "EXECUÇÃO AUTO 🤖" if EXECUCAO_ATIVA else "OBSERVAÇÃO 👁"
-    pares_str = " | ".join(par_base(p) for p in PARES_FOREX)
-    fonte_str = "Twelve Data (24/7)"
+    mercado  = modo_atual()
+    is_otc   = (mercado == "OTC")
+    modo_str = "EXECUÇÃO AUTO 🤖" if EXECUCAO_ATIVA else "OBSERVAÇÃO 👁"
+    if is_otc:
+        pares_str = " | ".join(p["nome"] for p in PARES_OTC)
+        fonte_str = "IQ Option (OTC) WebSocket"
+    else:
+        pares_str = " | ".join(par_base(p) for p in PARES_FOREX)
+        fonte_str = "Twelve Data"
 
     print(f"🟢 Sniper V10 v5 iniciado!")
     print(f"   Modo    : {modo_str}")
@@ -655,6 +672,13 @@ def main():
     print(f"   Score   : >= {SCORE_MINIMO}")
     print(f"   Trava   : 1 op por vez em todo o portfólio")
     print()
+
+    if is_otc:
+        t_iq = threading.Thread(target=_iq_conectar, daemon=True)
+        t_iq.start()
+        t_iq.join(35)
+        if t_iq.is_alive():
+            print("  ⚠️ IQ Option: timeout na conexão — tentará no primeiro ciclo")
 
     tg(
         f"🟢 <b>Sniper V10 v5 online!</b>\n\n"
