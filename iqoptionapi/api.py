@@ -779,10 +779,12 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.websocket_client = WebsocketClient(self)
 
         self.websocket_thread = threading.Thread(target=self.websocket.run_forever, kwargs={'sslopt': {
-                                                 "check_hostname": False, "cert_reqs": ssl.CERT_NONE, "ca_certs": "cacert.pem"}})  # for fix pyinstall error: cafile, capath and cadata cannot be all omitted
+                                                 "check_hostname": False, "cert_reqs": ssl.CERT_NONE}})  # cert_reqs=CERT_NONE dispensa cacert.pem
         self.websocket_thread.daemon = True
         self.websocket_thread.start()
-        while True:
+        import time as _time
+        _deadline = _time.time() + 45  # timeout 45s no WebSocket
+        while _time.time() < _deadline:
             try:
                 if global_value.check_websocket_if_error:
                     return False, global_value.websocket_error_reason
@@ -792,8 +794,8 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                     return True, None
             except:
                 pass
-
-            pass
+            _time.sleep(0.1)
+        return False, "WebSocket connect timeout (45s)"
 
     # @tokensms.setter
     def setTokenSMS(self, response):
