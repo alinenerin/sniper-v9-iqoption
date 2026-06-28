@@ -8,6 +8,7 @@
 ╚══════════════════════════════════════════════════════════════════╝
 """
 import sys, os, subprocess
+sys.stdout.reconfigure(line_buffering=True)  # garante flush imediato no Render/Docker
 subprocess.call(
     [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "websocket-client"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
