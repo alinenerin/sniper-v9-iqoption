@@ -76,6 +76,21 @@ def get_velas(par, n=55):
         print(f"  ⚠️ Velas {par}: {e}")
         return []
 
+def get_velas_batch(pares, n=55):
+    """Busca velas de múltiplos pares em paralelo — retorna {par: velas}."""
+    resultado = {}
+    lock = threading.Lock()
+
+    def _fetch(par):
+        v = get_velas(par, n)
+        with lock:
+            resultado[par] = v
+
+    threads = [threading.Thread(target=_fetch, args=(p,), daemon=True) for p in pares]
+    for t in threads: t.start()
+    for t in threads: t.join(timeout=20)  # máx 20s por par
+    return resultado
+
 _payout_cache = {}       # {par: valor}
 _payout_cache_ts = 0     # timestamp da última atualização
 PAYOUT_CACHE_TTL = 300   # 5 minutos
@@ -239,14 +254,16 @@ def registrar_loss(par):
 # ══════════════════════════════════════════════════════════════════
 #  MOTOR DE ANÁLISE — CICLO COMPLETO
 # ══════════════════════════════════════════════════════════════════
-def analisar_par(par):
+def analisar_par(par, v=None):
     """
     Retorna dict com sinal aprovado ou None se bloqueado.
     Fluxo: Pré-filtros → Modo ADX → Filtros → Universais → Score
+    v: velas já buscadas (opcional — evita chamada dupla)
     """
     try:
         # ── Coleta de velas ──────────────────────────────────────
-        v = get_velas(par, 55)
+        if v is None:
+            v = get_velas(par, 55)
         if not v or len(v) < 40:
             print(f"  {par}: velas insuficientes ({len(v) if v else 0})")
             return None
@@ -493,16 +510,29 @@ def ciclo():
 
     sinais_candidatos = []
 
-    for par in pares:
-        chave = f"{par}_{agora.strftime('%H:%M')}"
-        if env.get(chave):
+    # Filtra pares já enviados ou em cooldown antes do batch
+    pares_ativos = [
+        p for p in pares
+        if not env.get(f"{p}_{agora.strftime('%H:%M')}")
+        and not sequencia_bloqueada(p, "", agora)
+    ]
+
+    if not pares_ativos:
+        print("  Todos os pares em cooldown/enviados neste ciclo.")
+        return
+
+    # Busca velas de todos os pares em paralelo (batch)
+    t0 = time.time()
+    velas_batch = get_velas_batch(pares_ativos, 55)
+    print(f"  Batch velas: {len(velas_batch)} pares em {time.time()-t0:.1f}s")
+
+    for par in pares_ativos:
+        v_cache = velas_batch.get(par, [])
+        if not v_cache or len(v_cache) < 40:
+            print(f"  {par}: velas insuficientes ({len(v_cache)})")
             continue
 
-        if sequencia_bloqueada(par, "", agora):
-            print(f"  {par}: bloqueado Cooldown/Sequência")
-            continue
-
-        resultado = analisar_par(par)
+        resultado = analisar_par(par, v_cache)
         if not resultado:
             continue
 
