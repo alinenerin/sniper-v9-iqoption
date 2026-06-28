@@ -434,28 +434,23 @@ def analisar_par(par, v=None):
 # ══════════════════════════════════════════════════════════════════
 def checagem_final(par, direcao):
     """
-    Sincroniza com o relógio real da vela.
-    Roda nos segundos 50-59 antes do fechamento.
+    Veto final — sem sleep. O ciclo já roda no início do minuto.
+    Valida direção da última vela fechada + Shadow Rejection.
     Retorna True se entrada confirmada, False se cancelada.
     """
-    seg = datetime.now(timezone.utc).second
-    if seg < 50:
-        espera = 50 - seg
-        print(f"  {par}: aguardando segundo 50 ({espera}s)...")
-        time.sleep(espera)
-
     v_fin = get_velas(par, 5)
     if not v_fin or len(v_fin) < 2:
         return True  # sem dados = não cancela
 
-    vf = v_fin[-1]
+    # Usa a penúltima vela (já fechada) para validar
+    vf = v_fin[-2]
 
     # Shadow Rejection final
     if shadow_rejection(vf):
         print(f"  {par}: CHECAGEM FINAL — bloqueado Shadow Rejection")
         return False
 
-    # Direção da vela ainda confirma?
+    # Direção confirma?
     dir_atual = "CALL" if vf['close'] > vf['open'] else "PUT"
     if dir_atual != direcao:
         print(f"  {par}: CHECAGEM FINAL — bloqueado reversão ({dir_atual} vs {direcao})")
