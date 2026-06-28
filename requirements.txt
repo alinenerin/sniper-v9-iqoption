@@ -1,2 +1,2 @@
-git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git
-requests
+requests>=2.31.0
+pytz>=2024.1
