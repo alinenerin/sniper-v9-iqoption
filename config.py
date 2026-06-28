@@ -43,10 +43,11 @@ MACD_SINAL  = 4    # era 9
 # Calibrado individualmente por par via backtest 30 dias
 # Pares sem entrada no dict = CI desativado
 CI_CONFIG = {
-    "EURUSD": {"ci_max": 61.8, "ci_per": 8},   # +21pp vs v1 (64.3%)
-    "GBPUSD": {"ci_max": 57,   "ci_per": 14},  # +25pp vs v1 (70.0%)
-    # USDJPY: sem CI — ADX≥30 já filtra o ruído
-    # AUDUSD: sem CI — comportamento diferente
+    "EURUSD": {"ci_max": 61.8, "ci_per": 8},   # FINAL: 64.3% (+21pp vs v1)
+    "GBPUSD": {"ci_max": 57,   "ci_per": 14},  # FINAL: 70.0% (+25pp vs v1)
+    # USDJPY: sem CI — ADX≥30 já filtra o ruído (66.7%)
+    # AUDUSD: sem CI — CI não gerou ganho neste par (63.0%)
+    # Testado: CI_MAX=60 piorou EURUSD (61.5%) → 61.8 é o ótimo confirmado
 }
 
 # ── FILTROS DE QUALIDADE ──────────────────────────────────────────
