@@ -827,9 +827,11 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
     def send_ssid(self):
         self.profile.msg = None
         self.ssid(global_value.SSID)  # pylint: disable=not-callable
-        while self.profile.msg == None:
-            pass
-        if self.profile.msg == False:
+        import time as _ts
+        _ts_deadline = _ts.time() + 15
+        while self.profile.msg is None and _ts.time() < _ts_deadline:
+            _ts.sleep(0.05)
+        if self.profile.msg == False or self.profile.msg is None:
             return False
         else:
             return True
@@ -896,12 +898,15 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
             self.session.cookies, {"ssid": global_value.SSID})
 
         self.timesync.server_timestamp = None
-        while True:
+        import time as _t2
+        _t2_deadline = _t2.time() + 30
+        while _t2.time() < _t2_deadline:
             try:
                 if self.timesync.server_timestamp != None:
                     break
             except:
                 pass
+            _t2.sleep(0.05)
         return True, None
 
     def connect2fa(self, sms_code):
