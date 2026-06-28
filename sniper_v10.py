@@ -73,23 +73,37 @@ def _iq_conectar():
     global _iq_api, _iq_conectado
     if _iq_conectado and _iq_api:
         return True
-    try:
-        print("  🔄 Conectando IQ Option...")
-        api = IQ_Option(IQ_EMAIL, IQ_PASS)
-        check, reason = api.connect()
-        if check:
-            _iq_api       = api
-            _iq_conectado = True
-            print("  ✅ IQ Option conectado!")
-            tg("✅ IQ Option conectado com sucesso!")
-            return True
-        print(f"  ❌ IQ Option falhou: {reason}")
-        tg(f"❌ IQ Option falhou: {reason}")
-        return False
-    except Exception as e:
-        print(f"  ❌ IQ Option erro: {e}")
-        tg(f"❌ IQ Option erro: {e}")
-        return False
+
+    resultado = [None, None]  # [check, reason]
+
+    def _tentar():
+        try:
+            api = IQ_Option(IQ_EMAIL, IQ_PASS)
+            check, reason = api.connect()
+            if check:
+                resultado[0] = api
+                resultado[1] = "ok"
+            else:
+                resultado[1] = reason or "falhou"
+        except Exception as e:
+            resultado[1] = str(e)
+
+    print("  🔄 Conectando IQ Option...")
+    t = threading.Thread(target=_tentar, daemon=True)
+    t.start()
+    t.join(25)  # timeout externo 25s
+
+    if resultado[0] is not None:
+        _iq_api       = resultado[0]
+        _iq_conectado = True
+        print("  ✅ IQ Option conectado!")
+        tg("✅ IQ Option conectado com sucesso!")
+        return True
+
+    motivo = resultado[1] or "timeout (sem resposta em 25s)"
+    print(f"  ❌ IQ Option: {motivo}")
+    tg(f"❌ IQ Option: {motivo}")
+    return False
 
 _otc_cache    = {}
 _otc_cache_ts = {}
