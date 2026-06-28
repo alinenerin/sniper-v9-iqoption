@@ -558,36 +558,20 @@ def ciclo():
                 print(f"  {par}: bloqueado Trava de Sequência ({s['d']} 2x em 10min ou cooldown pós-loss)")
                 continue
 
-            # REVALIDAÇÃO PRÉ-ENVIO — aguarda ~90s e re-checa F4B + F6 na vela mais recente
-            # Evita lag de 2min: o mercado pode ter mudado entre análise e entrada
-            time.sleep(90)
-            v_reval = get_velas(par, 10)
-            if v_reval and len(v_reval) >= 6:
-                pip_rv = 0.01 if v_reval[-1]['close'] > 50 else 0.0001
-                # F4B — vela mais recente ainda confirma a direção?
-                v_atual = v_reval[-1]
-                dir_atual = "CALL" if v_atual['close'] > v_atual['open'] else "PUT"
-                if dir_atual != s['d']:
-                    print(f"  {par}: REVALIDAÇÃO bloqueada F4B — vela virou {dir_atual} (sinal era {s['d']})")
-                    continue
-                # F6 — dominância de contexto ainda favorece a direção?
-                ult5_rv = v_reval[-6:-1]
-                puts_rv  = sum(1 for c in ult5_rv if c['close'] < c['open'])
-                calls_rv = sum(1 for c in ult5_rv if c['close'] >= c['open'])
-                dom_contra = (s['d'] == "CALL" and puts_rv >= 4) or (s['d'] == "PUT" and calls_rv >= 4)
-                if dom_contra:
-                    print(f"  {par}: REVALIDAÇÃO bloqueada F6 — dominância contrária ({puts_rv}P/{calls_rv}C)")
-                    continue
-                print(f"  {par}: REVALIDAÇÃO OK — {s['d']} confirmado na entrada")
+            # CHECAGEM FINAL SINCRONIZADA — aguarda segundo 50 da vela atual
+            # Lógica: análise feita nos primeiros 45s, checagem nos últimos 10s
+            # Sem sleep cego — sincroniza com o relógio real da vela M1
+            seg_atual = datetime.utcnow().second
+            if seg_atual < 50:
+                espera = 50 - seg_atual
+                print(f"  {par}: aguardando segundo 50 da vela ({espera}s)...")
+                time.sleep(espera)
 
-            # CHECAGEM FINAL 10s — anti-slippage de última hora
-            # Aguarda mais 10s e re-checa Shadow Rejection + direção da vela atual
-            # Se o mercado virar nesse intervalo, cancela antes do clique
-            time.sleep(10)
+            # Busca vela atual para checagem final
             v_final = get_velas(par, 5)
             if v_final and len(v_final) >= 2:
                 vf = v_final[-1]
-                # Shadow Rejection final
+                # Shadow Rejection final (segundo 50-59)
                 hf = vf.get('max', vf['close'])
                 lf = vf.get('min', vf['open'])
                 of = vf['open']
@@ -597,14 +581,14 @@ def ciclo():
                     ps_f = hf - max(of, cf)
                     pi_f = min(of, cf) - lf
                     if (ps_f / tt) > 0.4 or (pi_f / tt) > 0.4:
-                        print(f"  {par}: CHECAGEM 10s — bloqueado Shadow Rejection final (pavio excessivo)")
+                        print(f"  {par}: CHECAGEM FINAL — bloqueado Shadow Rejection (pavio excessivo)")
                         continue
-                # Direção da vela atual ainda confirma?
-                dir_10s = "CALL" if cf > of else "PUT"
-                if dir_10s != s['d']:
-                    print(f"  {par}: CHECAGEM 10s — bloqueado reversão de vela ({dir_10s} vs {s['d']})")
+                # Direção da vela ainda confirma?
+                dir_fin = "CALL" if cf > of else "PUT"
+                if dir_fin != s['d']:
+                    print(f"  {par}: CHECAGEM FINAL — bloqueado reversão ({dir_fin} vs {s['d']})")
                     continue
-                print(f"  {par}: CHECAGEM 10s OK — entrada confirmada ✅")
+                print(f"  {par}: CHECAGEM FINAL OK ✅ — entrada confirmada")
             
             registrar_sinal(par, s['d'], agora)
             env[chave] = True
@@ -641,9 +625,9 @@ def main():
                 ultimo = chave
                 t = threading.Thread(target=ciclo, daemon=True)
                 t.start()
-                t.join(55)
+                t.join(58)
                 if t.is_alive():
-                    print(f"  ⚠️ Ciclo {chave} excedeu 55s")
+                    print(f"  ⚠️ Ciclo {chave} excedeu 58s")
             time.sleep(5)
         except KeyboardInterrupt:
             print("\n⛔ Encerrado.")
