@@ -37,6 +37,18 @@ MACD_RAPIDA = 5    # era 12
 MACD_LENTA  = 13   # era 26
 MACD_SINAL  = 4    # era 9
 
+# ── CHOPPINESS INDEX (CI) ─────────────────────────────────────────
+# Filtra cruzamentos MACD falsos em mercado "dente de serra"
+# CI >= ci_max → mercado choppy → BLOQUEAR entrada
+# Calibrado individualmente por par via backtest 30 dias
+# Pares sem entrada no dict = CI desativado
+CI_CONFIG = {
+    "EURUSD": {"ci_max": 61.8, "ci_per": 8},   # +21pp vs v1 (64.3%)
+    "GBPUSD": {"ci_max": 57,   "ci_per": 14},  # +25pp vs v1 (70.0%)
+    # USDJPY: sem CI — ADX≥30 já filtra o ruído
+    # AUDUSD: sem CI — comportamento diferente
+}
+
 # ── FILTROS DE QUALIDADE ──────────────────────────────────────────
 PAYOUT_MIN     = 0.82    # Payout mínimo 82%
 RSI_NEUTRO_INF = 42      # Bloqueio RSI abaixo (modo lateral)
