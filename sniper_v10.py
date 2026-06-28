@@ -172,27 +172,43 @@ def calcular_bollinger(closes, periodo=20, desvios=2):
     return media + desvios*std, media, media - desvios*std
 
 def calcular_macd(closes, rapida=12, lenta=26, sinal=9):
-    if len(closes) < lenta + sinal: return None, None, None, None, None
-    linha = ema(closes, rapida)
-    lenta_ = ema(closes, lenta)
-    if linha is None or lenta_ is None: return None, None, None, None, None
-    hist_series = []
+    if len(closes) < lenta + sinal + 2: return None, None, None, None, None
+
+    # Calcula linha MACD para cada ponto — O(n) usando EMA incremental
+    k_r = 2 / (rapida + 1)
+    k_l = 2 / (lenta + 1)
+    k_s = 2 / (sinal + 1)
+
+    # Inicializa EMAs com SMA dos primeiros períodos
+    ema_r = sum(closes[:rapida]) / rapida
+    ema_l = sum(closes[:lenta])  / lenta
+
+    macd_series = []
     for i in range(lenta, len(closes)):
-        l = ema(closes[:i+1], rapida)
-        s = ema(closes[:i+1], lenta)
-        if l and s: hist_series.append(l - s)
-    if len(hist_series) < sinal: return None, None, None, None, None
-    sig = ema(hist_series, sinal)
-    if sig is None: return None, None, None, None, None
-    hist = hist_series[-1] - sig
-    hist_prev_series = hist_series[:-1]
-    sig_prev = ema(hist_prev_series, sinal) if len(hist_prev_series) >= sinal else sig
-    hist_prev = hist_prev_series[-1] - sig_prev if sig_prev else hist
+        ema_r = closes[i] * k_r + ema_r * (1 - k_r)
+        ema_l = closes[i] * k_l + ema_l * (1 - k_l)
+        macd_series.append(ema_r - ema_l)
+
+    if len(macd_series) < sinal + 2: return None, None, None, None, None
+
+    # Linha de sinal (EMA do MACD)
+    sig = sum(macd_series[:sinal]) / sinal
+    for v in macd_series[sinal:]:
+        sig = v * k_s + sig * (1 - k_s)
+
+    # Sinal anterior (penúltimo ponto)
+    sig_prev = sum(macd_series[:sinal]) / sinal
+    for v in macd_series[sinal:-1]:
+        sig_prev = v * k_s + sig_prev * (1 - k_s)
+
+    hist      = macd_series[-1] - sig
+    hist_prev = macd_series[-2] - sig_prev
+
     cruzamento = None
-    if len(hist_series) >= 2:
-        if hist_series[-2] < 0 and hist_series[-1] >= 0: cruzamento = "CALL"
-        elif hist_series[-2] > 0 and hist_series[-1] <= 0: cruzamento = "PUT"
-    return linha, lenta_, hist, cruzamento, hist_prev
+    if macd_series[-2] < 0 and macd_series[-1] >= 0: cruzamento = "CALL"
+    elif macd_series[-2] > 0 and macd_series[-1] <= 0: cruzamento = "PUT"
+
+    return ema_r, ema_l, hist, cruzamento, hist_prev
 
 def shadow_rejection(vela, threshold=None):
     """Retorna True se a vela deve ser bloqueada por pavio excessivo."""
