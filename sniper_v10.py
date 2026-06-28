@@ -1,35 +1,36 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║              SNIPER V10 — MOTOR UNIFICADO                       ║
-║  OTC + Forex | Modo Duplo | Execução Controlada                 ║
-║  Fonte: IQ Option (tempo real) | Railway 24/7                   ║
+║           SNIPER V10 — CALIBRAÇÃO v4                            ║
+║  8 Pares | Twelve Data (tempo real) | Zero Gale                 ║
+║  EURUSD GBPUSD USDJPY AUDUSD EURJPY GBPJPY AUDJPY XAUUSD        ║
+║  Trava Única: 1 operação por vez em todo o portfólio            ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 import sys, os, subprocess
-subprocess.call([sys.executable, "-m", "pip", "install", "-q",
-                 "requests", "pytz", "websocket-client", "iqoptionapi"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.call(
+    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz"],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+)
 
-import time, requests, threading
+import time, math, requests, threading
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from config import *
 
 # ══════════════════════════════════════════════════════════════════
-#  KEEP-ALIVE HTTP (Railway precisa de porta ativa)
+#  KEEP-ALIVE (Railway exige porta ativa)
 # ══════════════════════════════════════════════════════════════════
 class _H(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Sniper V10 online")
+        self.send_response(200); self.end_headers()
+        self.wfile.write(b"Sniper V10 v4 online")
     def log_message(self, *a): pass
 
-def _keepalive():
-    HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), _H).serve_forever()
-
-threading.Thread(target=_keepalive, daemon=True).start()
+threading.Thread(
+    target=lambda: HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), _H).serve_forever(),
+    daemon=True
+).start()
 
 # ══════════════════════════════════════════════════════════════════
 #  TELEGRAM
@@ -39,227 +40,228 @@ def tg(msg):
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
             json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "HTML"},
-            timeout=6
+            timeout=8
         )
     except Exception as e:
-        print(f"  ⚠️ Telegram erro: {e}")
+        print(f"  ⚠️ Telegram: {e}")
 
 # ══════════════════════════════════════════════════════════════════
-#  CONEXÃO IQ OPTION
+#  TWELVE DATA — FONTE PRINCIPAL DE VELAS
 # ══════════════════════════════════════════════════════════════════
-_iq_instance = None
-_iq_lock = threading.Lock()
+_td_cache      = {}   # {simbolo: [velas]}
+_td_cache_ts   = {}   # {simbolo: timestamp}
+TD_CACHE_TTL   = 55   # segundos — renova a cada ciclo de 1 min
 
-def get_iq():
-    global _iq_instance
-    with _iq_lock:
-        try:
-            if _iq_instance is None:
-                from iqoptionapi.stable_api import IQ_Option
-                _iq_instance = IQ_Option(IQ_EMAIL, IQ_PASS)
-                _iq_instance.connect()
-                time.sleep(3)
-                print("  ✅ IQ Option conectado")
-            elif not _iq_instance.check_connect():
-                _iq_instance.connect()
-                time.sleep(2)
-        except Exception as e:
-            print(f"  ⚠️ IQ reconexão: {e}")
-        return _iq_instance
+def _td_simbolo(par):
+    """EURUSD → EUR/USD | XAUUSD → XAU/USD"""
+    # Já vem no formato EUR/USD do config
+    return par
 
-def get_velas(par, n=55):
-    try:
-        iq = get_iq()
-        velas = iq.get_candles(par, 60, n, time.time())
-        return velas if velas else []
-    except Exception as e:
-        print(f"  ⚠️ Velas {par}: {e}")
-        return []
-
-def get_velas_batch(pares, n=55):
-    """Busca velas de múltiplos pares em paralelo — retorna {par: velas}."""
+def buscar_velas_td_batch(pares, n=65):
+    """
+    Busca velas M1 de múltiplos pares via Twelve Data em 1 ou 2 requests.
+    Limite: 8 créditos/minuto → batch de 8 pares por request.
+    Retorna {par: [velas_dict]} no formato interno.
+    """
+    agora_ts = time.time()
     resultado = {}
-    lock = threading.Lock()
+    pares_buscar = []
 
-    def _fetch(par):
-        v = get_velas(par, n)
-        with lock:
-            resultado[par] = v
+    # Verifica cache primeiro
+    for par in pares:
+        cached = _td_cache.get(par)
+        ts     = _td_cache_ts.get(par, 0)
+        if cached and (agora_ts - ts) < TD_CACHE_TTL:
+            resultado[par] = cached
+        else:
+            pares_buscar.append(par)
 
-    threads = [threading.Thread(target=_fetch, args=(p,), daemon=True) for p in pares]
-    for t in threads: t.start()
-    for t in threads: t.join(timeout=20)  # máx 20s por par
+    if not pares_buscar:
+        return resultado
+
+    # Twelve Data: até 8 simbolos por req no plano free
+    LOTE = 8
+    for i in range(0, len(pares_buscar), LOTE):
+        lote = pares_buscar[i:i+LOTE]
+        simbolos = ",".join(lote)
+        url = (
+            f"https://api.twelvedata.com/time_series"
+            f"?symbol={simbolos}&interval=1min&outputsize={n}&apikey={TWELVE_API}"
+        )
+        try:
+            r = requests.get(url, timeout=15).json()
+            # Se só 1 par → resposta direta; se N pares → dict por símbolo
+            if "values" in r:
+                # 1 par só
+                data = {lote[0]: r}
+            else:
+                data = r
+
+            for par in lote:
+                dado = data.get(par, {})
+                vals = dado.get("values", [])
+                if not vals:
+                    code = dado.get("code", "?")
+                    print(f"  ⚠️ TD sem dados para {par} (code={code})")
+                    resultado[par] = []
+                    continue
+                # Converte para formato interno (igual ao IQ Option)
+                velas = []
+                for v in reversed(vals):   # TD retorna newest first
+                    try:
+                        velas.append({
+                            "open":  float(v["open"]),
+                            "close": float(v["close"]),
+                            "max":   float(v["high"]),
+                            "min":   float(v["low"]),
+                            "t":     v["datetime"],
+                        })
+                    except: pass
+                _td_cache[par]    = velas
+                _td_cache_ts[par] = agora_ts
+                resultado[par]    = velas
+                print(f"  📡 TD {par}: {len(velas)} velas (ultima: {vals[0]['datetime']})")
+
+        except Exception as e:
+            print(f"  ⚠️ TD batch erro: {e}")
+            for par in lote:
+                resultado[par] = []
+
+        # Se tiver mais de 1 lote, aguarda 1 ciclo para não estourar limite
+        if i + LOTE < len(pares_buscar):
+            time.sleep(62)
+
     return resultado
 
-_payout_cache = {}       # {par: valor}
-_payout_cache_ts = 0     # timestamp da última atualização
-PAYOUT_CACHE_TTL = 300   # 5 minutos
-
-def get_payout(par):
-    global _payout_cache, _payout_cache_ts
-    agora_ts = time.time()
-
-    # Retorna cache se ainda válido
-    if par in _payout_cache and (agora_ts - _payout_cache_ts) < PAYOUT_CACHE_TTL:
-        return _payout_cache[par]
-
-    # Busca todos os pares de uma vez e armazena no cache
-    try:
-        iq = get_iq()
-        assets = iq.get_all_open_time()
-        todos = PARES_OTC + PARES_FOREX
-        for p in todos:
-            for mercado in ['turbo', 'binary']:
-                if p in assets.get(mercado, {}):
-                    val = assets[mercado][p].get('profit', {}).get('profit', None)
-                    if val:
-                        _payout_cache[p] = val
-                        break
-        _payout_cache_ts = agora_ts
-        print(f"  💰 Cache payout atualizado ({len(_payout_cache)} pares)")
-    except Exception as e:
-        print(f"  ⚠️ Payout cache erro: {e}")
-
-    return _payout_cache.get(par, 1.0)  # se falhar, não bloqueia
+# ══════════════════════════════════════════════════════════════════
+#  NORMALIZAÇÃO DE NOME DO PAR
+# ══════════════════════════════════════════════════════════════════
+def par_base(par):
+    """EUR/USD → EURUSD (para lookup em dicts)"""
+    return par.replace("/", "").replace("-OTC", "").upper()
 
 # ══════════════════════════════════════════════════════════════════
-#  INDICADORES MANUAIS
+#  INDICADORES
 # ══════════════════════════════════════════════════════════════════
 def ema(data, n):
     if len(data) < n: return None
-    k = 2 / (n + 1)
-    e = sum(data[:n]) / n
-    for p in data[n:]:
-        e = p * k + e * (1 - k)
+    k = 2 / (n + 1); e = sum(data[:n]) / n
+    for p in data[n:]: e = p * k + e * (1 - k)
     return e
 
-def calcular_rsi(closes, periodo=14):
-    if len(closes) < periodo + 1: return 50
-    gains, losses = [], []
+def calcular_rsi(closes, p=14):
+    if len(closes) < p + 1: return 50
+    g, l = [], []
     for i in range(1, len(closes)):
         d = closes[i] - closes[i-1]
-        gains.append(max(d, 0))
-        losses.append(max(-d, 0))
-    ag = sum(gains[-periodo:]) / periodo
-    al = sum(losses[-periodo:]) / periodo
-    if al == 0: return 100
-    rs = ag / al
-    return 100 - (100 / (1 + rs))
+        g.append(max(d, 0)); l.append(max(-d, 0))
+    ag = sum(g[-p:]) / p; al = sum(l[-p:]) / p
+    return 50 if al == 0 else 100 - (100 / (1 + ag / al))
 
-def calcular_adx(velas, periodo=14):
-    if len(velas) < periodo + 1: return 0
+def calcular_adx(velas, p=14):
+    if len(velas) < p + 1: return 0
     trs, pdms, ndms = [], [], []
     for i in range(1, len(velas)):
-        h, l, pc = velas[i]['max'], velas[i]['min'], velas[i-1]['close']
-        trs.append(max(h-l, abs(h-pc), abs(l-pc)))
+        h  = velas[i]['max'];   l  = velas[i]['min']
+        pc = velas[i-1]['close']
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
         pdms.append(max(velas[i]['max'] - velas[i-1]['max'], 0))
         ndms.append(max(velas[i-1]['min'] - velas[i]['min'], 0))
     def smma(lst):
-        s = sum(lst[:periodo])
-        for v in lst[periodo:]: s = s - s/periodo + v
+        if len(lst) < p: return sum(lst) / len(lst) if lst else 0
+        s = sum(lst[:p])
+        for v in lst[p:]: s = s - s / p + v
         return s
-    atr = smma(trs[-periodo*2:])
-    pdi = 100 * smma(pdms[-periodo*2:]) / atr if atr else 0
-    ndi = 100 * smma(ndms[-periodo*2:]) / atr if atr else 0
-    dx  = 100 * abs(pdi - ndi) / (pdi + ndi) if (pdi + ndi) else 0
-    return dx
+    atr = smma(trs)
+    if atr == 0: return 0
+    pdi = 100 * smma(pdms) / atr; ndi = 100 * smma(ndms) / atr
+    return 100 * abs(pdi - ndi) / (pdi + ndi) if (pdi + ndi) else 0
 
-def calcular_bollinger(closes, periodo=20, desvios=2):
-    if len(closes) < periodo: return None, None, None
-    serie = closes[-periodo:]
-    media = sum(serie) / periodo
-    std   = (sum((x - media)**2 for x in serie) / periodo) ** 0.5
-    return media + desvios*std, media, media - desvios*std
+def calcular_bollinger(closes, p=20, d=2):
+    if len(closes) < p: return None, None, None
+    s = closes[-p:]; m = sum(s) / p
+    std = (sum((x - m)**2 for x in s) / p) ** 0.5
+    return m + d*std, m, m - d*std
 
-def calcular_choppiness(velas, periodo):
-    """
-    Choppiness Index = 100 * log10(SUM(ATR1,n) / (MaxHigh-MinLow)) / log10(n)
-    >= ci_max → mercado choppy (dente de serra) → BLOQUEAR
-    < ci_max  → mercado direcional              → LIBERAR
-    Calibrado por par (veja CI_CONFIG no config.py).
-    """
-    import math
-    if len(velas) < periodo + 1: return 50.0
-    janela = velas[-(periodo+1):]
+def calcular_ci(velas, p):
+    if len(velas) < p + 1: return 50.0
+    j = velas[-(p+1):]
     atr_sum = sum(
-        max(janela[i]['max'] - janela[i]['min'],
-            abs(janela[i]['max'] - janela[i-1]['close']),
-            abs(janela[i]['min'] - janela[i-1]['close']))
-        for i in range(1, len(janela))
+        max(j[i]['max'] - j[i]['min'],
+            abs(j[i]['max'] - j[i-1]['close']),
+            abs(j[i]['min'] - j[i-1]['close']))
+        for i in range(1, len(j))
     )
-    max_h = max(v['max'] for v in janela[1:])
-    min_l = min(v['min'] for v in janela[1:])
-    rng   = max_h - min_l
+    mh = max(v['max'] for v in j[1:]); ml = min(v['min'] for v in j[1:])
+    rng = mh - ml
     if rng == 0 or atr_sum == 0: return 50.0
-    return round(100.0 * math.log10(atr_sum / rng) / math.log10(periodo), 2)
+    return round(100.0 * math.log10(atr_sum / rng) / math.log10(p), 2)
 
-def calcular_macd(closes, rapida=None, lenta=None, sinal=None):
-    # Usa períodos do config (padrão rápido M1: 5,13,4)
-    rapida = rapida or MACD_RAPIDA
-    lenta  = lenta  or MACD_LENTA
-    sinal  = sinal  or MACD_SINAL
+def calcular_macd(closes):
+    r, l, s = MACD_RAPIDA, MACD_LENTA, MACD_SINAL
+    if len(closes) < l + s + 2: return None, None, None
+    kr = 2/(r+1); kl = 2/(l+1); ks = 2/(s+1)
+    er = sum(closes[:r]) / r; el = sum(closes[:l]) / l
+    ms = []
+    for i in range(l, len(closes)):
+        er = closes[i] * kr + er * (1 - kr)
+        el = closes[i] * kl + el * (1 - kl)
+        ms.append(er - el)
+    if len(ms) < s + 2: return None, None, None
+    sig = sum(ms[:s]) / s
+    for v in ms[s:]:   sig = v * ks + sig * (1 - ks)
+    sigp = sum(ms[:s]) / s
+    for v in ms[s:-1]: sigp = v * ks + sigp * (1 - ks)
+    hist = ms[-1] - sig; hist_prev = ms[-2] - sigp
+    cr = None
+    if ms[-2] < 0 and ms[-1] >= 0: cr = "CALL"
+    elif ms[-2] > 0 and ms[-1] <= 0: cr = "PUT"
+    return cr, hist, hist_prev
 
-    if len(closes) < lenta + sinal + 2: return None, None, None, None, None
-
-    # EMA incremental O(n) — zero lag extra
-    k_r = 2 / (rapida + 1)
-    k_l = 2 / (lenta + 1)
-    k_s = 2 / (sinal + 1)
-
-    ema_r = sum(closes[:rapida]) / rapida
-    ema_l = sum(closes[:lenta])  / lenta
-
-    macd_series = []
-    for i in range(lenta, len(closes)):
-        ema_r = closes[i] * k_r + ema_r * (1 - k_r)
-        ema_l = closes[i] * k_l + ema_l * (1 - k_l)
-        macd_series.append(ema_r - ema_l)
-
-    if len(macd_series) < sinal + 2: return None, None, None, None, None
-
-    sig = sum(macd_series[:sinal]) / sinal
-    for v in macd_series[sinal:]:
-        sig = v * k_s + sig * (1 - k_s)
-
-    sig_prev = sum(macd_series[:sinal]) / sinal
-    for v in macd_series[sinal:-1]:
-        sig_prev = v * k_s + sig_prev * (1 - k_s)
-
-    hist      = macd_series[-1] - sig
-    hist_prev = macd_series[-2] - sig_prev
-
-    cruzamento = None
-    if macd_series[-2] < 0 and macd_series[-1] >= 0: cruzamento = "CALL"
-    elif macd_series[-2] > 0 and macd_series[-1] <= 0: cruzamento = "PUT"
-
-    return ema_r, ema_l, hist, cruzamento, hist_prev
-
-def shadow_rejection(vela, threshold=None, is_otc=False):
-    """Retorna True se a vela deve ser bloqueada por pavio excessivo.
-    OTC: threshold menor (0.35) — mais sensível às zonas de retração.
-    FX:  threshold padrão (0.40).
-    """
-    if threshold is None:
-        threshold = SHADOW_THRESHOLD_OTC if is_otc else SHADOW_THRESHOLD_FX
-    h  = vela.get('max', vela['close'])
-    l  = vela.get('min', vela['open'])
-    o, c = vela['open'], vela['close']
+def shadow_rejection(vela, th=0.40):
+    h = vela.get('max', vela['close']); l = vela.get('min', vela['open'])
+    o = vela['open']; c = vela['close']
     total = h - l
     if total == 0: return False
-    sup = h - max(o, c)
-    inf = min(o, c) - l
-    return (sup / total) > threshold or (inf / total) > threshold
+    sup = h - max(o, c); inf = min(o, c) - l
+    return (sup / total) > th or (inf / total) > th
+
+# ══════════════════════════════════════════════════════════════════
+#  TRAVA DE OPERAÇÃO ÚNICA — 1 op por vez em TODO o portfólio
+# ══════════════════════════════════════════════════════════════════
+_trava_global = threading.Lock()
+_op_ativa     = {"par": None, "expira": 0}   # par em execução + ts expiração
+
+def portafolio_livre():
+    """True se nenhuma operação está ativa no portfólio."""
+    agora = time.time()
+    if _op_ativa["par"] and agora < _op_ativa["expira"]:
+        restante = int(_op_ativa["expira"] - agora)
+        print(f"  🔒 TRAVA ATIVA: {_op_ativa['par']} — libera em {restante}s")
+        return False
+    return True
+
+def travar_portafolio(par, segundos=65):
+    """Bloqueia todo o portfólio por 'segundos' (= duração da vela M1 + buffer)."""
+    with _trava_global:
+        _op_ativa["par"]    = par
+        _op_ativa["expira"] = time.time() + segundos
+    print(f"  🔒 PORTFÓLIO TRAVADO: {par} por {segundos}s")
+
+def liberar_portafolio():
+    with _trava_global:
+        _op_ativa["par"]    = None
+        _op_ativa["expira"] = 0
+    print("  🔓 Portfólio liberado")
 
 # ══════════════════════════════════════════════════════════════════
 #  CONTROLE DE JANELA E MINUTOS
 # ══════════════════════════════════════════════════════════════════
 def janela_ativa(agora):
-    h, m = agora.hour, agora.minute
-    hm = h * 60 + m
-    for (hi, mi, hf, mf) in JANELAS_ATIVAS:
-        ini = hi * 60 + mi
-        fim = hf * 60 + mf
-        if fim < ini:  # passa meia-noite
+    hm = agora.hour * 60 + agora.minute
+    for hi, mi, hf, mf in JANELAS_ATIVAS:
+        ini = hi * 60 + mi; fim = hf * 60 + mf
+        if fim < ini:
             if hm >= ini or hm <= fim: return True
         else:
             if ini <= hm <= fim: return True
@@ -269,231 +271,200 @@ def minuto_bloqueado(agora):
     return agora.minute in MINUTOS_BLOQUEADOS
 
 # ══════════════════════════════════════════════════════════════════
-#  CONTROLE DE SEQUÊNCIA E COOLDOWN
+#  COOLDOWN E SEQUÊNCIA
 # ══════════════════════════════════════════════════════════════════
-historico   = {}   # {par: [(dir, timestamp)]}
-cooldown    = {}   # {par: timestamp_liberacao}
+historico = {}
+cooldown  = {}
 
-def sequencia_bloqueada(par, direcao, agora):
-    ts = agora.timestamp()
-    # Cooldown pós-loss
-    if par in cooldown and ts < cooldown[par]:
-        return True
-    # Sequência igual em 10 min
-    h = historico.get(par, [])
-    h = [(d, t) for d, t in h if ts - t < 600]
-    iguais = sum(1 for d, t in h if d == direcao)
-    historico[par] = h
-    return iguais >= MAX_SEQUENCIA_IGUAL
+def em_cooldown(par, agora):
+    return par in cooldown and agora.timestamp() < cooldown[par]
 
 def registrar_sinal(par, direcao, agora):
     h = historico.get(par, [])
     h.append((direcao, agora.timestamp()))
-    historico[par] = h
+    historico[par] = [(d, t) for d, t in h if agora.timestamp() - t < 600]
+
+def sequencia_bloqueada(par, direcao, agora):
+    if em_cooldown(par, agora): return True
+    h = [(d, t) for d, t in historico.get(par, []) if agora.timestamp() - t < 600]
+    return sum(1 for d, t in h if d == direcao) >= MAX_SEQUENCIA_IGUAL
 
 def registrar_loss(par):
     cooldown[par] = time.time() + COOLDOWN_POS_LOSS
-    print(f"  ⏳ Cooldown ativado para {par} por {COOLDOWN_POS_LOSS}s")
+    print(f"  ⏳ Cooldown {par}: {COOLDOWN_POS_LOSS}s")
 
 # ══════════════════════════════════════════════════════════════════
-#  MOTOR DE ANÁLISE — CICLO COMPLETO
+#  MOTOR DE ANÁLISE — PAR ÚNICO
 # ══════════════════════════════════════════════════════════════════
-def analisar_par(par, v=None):
+def analisar_par(par, velas):
     """
-    Retorna dict com sinal aprovado ou None se bloqueado.
-    Fluxo: Pré-filtros → Modo ADX → Filtros → Universais → Score
-    v: velas já buscadas (opcional — evita chamada dupla)
+    Recebe velas já buscadas (formato interno).
+    Retorna dict com sinal ou None se bloqueado.
     """
     try:
-        # ── Coleta de velas ──────────────────────────────────────
-        if v is None:
-            v = get_velas(par, 55)
-        if not v or len(v) < 40:
-            print(f"  {par}: velas insuficientes ({len(v) if v else 0})")
+        if not velas or len(velas) < 40:
+            print(f"  {par}: velas insuficientes ({len(velas) if velas else 0})")
             return None
 
-        closes = [x["close"] for x in v]
-        opens  = [x["open"]  for x in v]
-        pc     = closes[-1]
+        closes = [v['close'] for v in velas]
+        opens  = [v['open']  for v in velas]
+        pb     = par_base(par)   # "EURUSD", "GBPUSD", etc.
 
-        # ── PRÉ-FILTRO: Payout ───────────────────────────────────
-        payout = get_payout(par)
-        if payout < PAYOUT_MIN:
-            print(f"  {par}: bloqueado Payout ({payout*100:.0f}% < {PAYOUT_MIN*100:.0f}%)")
+        # ── ADX ──────────────────────────────────────────────────
+        adx = calcular_adx(velas)
+
+        # ADX mínimo especial por par
+        adx_min_esp = ADX_MINIMO_ESPECIAL.get(pb, 0)
+        if adx_min_esp and adx < adx_min_esp:
+            print(f"  {par}: ❌ ADX especial {adx:.1f} < {adx_min_esp}")
             return None
 
-        # ── Indicadores ──────────────────────────────────────────
-        rsi                    = calcular_rsi(closes)
-        adx                    = calcular_adx(v)
-        bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
-        macd_l, macd_s, hist, cruzamento, hist_prev = calcular_macd(closes)
-
-        # ── FILTRO 0: MODO DE MERCADO (ADX árbitro) ──────────────
-        is_otc = "-OTC" in par
-        adx_lat = ADX_OTC_LATERAL   if is_otc else ADX_FX_LATERAL
-        adx_ten = ADX_OTC_TENDENCIA if is_otc else ADX_FX_TENDENCIA
-
-        # Tratamento especial USDJPY — par ruidoso, exige ADX >= 30
-        par_base = par.replace("-OTC","")
-        if "USDJPY" in par_base and adx < ADX_USDJPY_MIN:
-            print(f"  {par}: bloqueado ADX USDJPY especial ({adx:.1f} < {ADX_USDJPY_MIN})")
+        # Zona cinza
+        if ADX_FX_LATERAL <= adx < ADX_FX_TENDENCIA:
+            print(f"  {par}: ❌ Zona Cinza ADX {adx:.1f}")
             return None
 
-        if adx >= adx_ten:
-            modo = "TENDENCIA"
-        elif adx < adx_lat:
-            modo = "LATERAL"
-        else:
-            print(f"  {par}: bloqueado Zona Cinza ADX ({adx:.1f} | {adx_lat}-{adx_ten})")
-            return None
+        modo = "TENDENCIA" if adx >= ADX_FX_TENDENCIA else "LATERAL"
 
-        print(f"  {par}: MODO {modo} (ADX:{adx:.1f})")
-
-        # ── F_CI: CHOPPINESS INDEX (EURUSD e GBPUSD) ─────────────
-        ci_cfg = CI_CONFIG.get(par_base)
+        # ── CI ────────────────────────────────────────────────────
+        ci_cfg = CI_CONFIG.get(pb)
+        ci_val = None
         if ci_cfg:
-            ci_val = calcular_choppiness(v, ci_cfg["ci_per"])
+            ci_val = calcular_ci(velas, ci_cfg["ci_per"])
             if ci_val >= ci_cfg["ci_max"]:
-                print(f"  {par}: bloqueado CI={ci_val} >= {ci_cfg['ci_max']} (mercado choppy)")
+                print(f"  {par}: ❌ CI={ci_val:.1f} >= {ci_cfg['ci_max']} (choppy)")
                 return None
-            print(f"  {par}: CI={ci_val} OK (< {ci_cfg['ci_max']})")
 
-        # ── FILTROS MODO TENDÊNCIA ────────────────────────────────
-        if modo == "TENDENCIA":
-            # F1B — RSI Dinâmico
-            if cruzamento == "CALL" or (cruzamento is None and rsi > 57):
-                teto = RSI_EXAUST_SUP_FORTE if adx > 40 else RSI_EXAUST_SUP
-                if rsi > teto:
-                    print(f"  {par}: [T] bloqueado RSI exaustão CALL ({rsi:.1f}>{teto})")
-                    return None
-            if cruzamento == "PUT" or (cruzamento is None and rsi < 43):
-                piso = RSI_EXAUST_INF_FORTE if adx > 40 else RSI_EXAUST_INF
-                if rsi < piso:
-                    print(f"  {par}: [T] bloqueado RSI exaustão PUT ({rsi:.1f}<{piso})")
-                    return None
-            # F6 — Dominância de contexto
-            ult5 = v[-6:-1]
-            if len(ult5) >= 5:
-                puts_c  = sum(1 for c in ult5 if c['close'] < c['open'])
-                calls_c = sum(1 for c in ult5 if c['close'] >= c['open'])
-                if cruzamento == "CALL" and puts_c >= 4:
-                    print(f"  {par}: [T] bloqueado Dominância PUT ({puts_c}/5)")
-                    return None
-                if cruzamento == "PUT" and calls_c >= 4:
-                    print(f"  {par}: [T] bloqueado Dominância CALL ({calls_c}/5)")
-                    return None
+        # ── MACD ──────────────────────────────────────────────────
+        crz, hist, hist_prev = calcular_macd(closes)
+        if crz is None:
+            print(f"  {par}: ❌ MACD sem cruzamento")
+            return None
 
-        # ── FILTROS MODO LATERAL ──────────────────────────────────
-        elif modo == "LATERAL":
-            # F1 — RSI neutro
+        # Histograma enfraquecendo
+        if hist is not None and hist_prev is not None:
+            if crz == "CALL" and hist < hist_prev:
+                print(f"  {par}: ❌ Histograma enfraquece CALL")
+                return None
+            if crz == "PUT"  and hist > hist_prev:
+                print(f"  {par}: ❌ Histograma enfraquece PUT")
+                return None
+
+        # Vela contrária ao cruzamento
+        if len(opens) >= 2:
+            if crz == "CALL" and closes[-1] < opens[-2]:
+                print(f"  {par}: ❌ Vela contrária CALL")
+                return None
+            if crz == "PUT"  and closes[-1] > opens[-2]:
+                print(f"  {par}: ❌ Vela contrária PUT")
+                return None
+
+        # ── RSI ───────────────────────────────────────────────────
+        rsi = calcular_rsi(closes)
+
+        if modo == "LATERAL":
             if RSI_NEUTRO_INF <= rsi <= RSI_NEUTRO_SUP:
-                print(f"  {par}: [L] bloqueado RSI neutro ({rsi:.1f})")
+                print(f"  {par}: ❌ RSI neutro lateral {rsi:.1f}")
                 return None
-            # F3 — Bollinger centro
-            if bb_sup and bb_inf:
-                banda = bb_sup - bb_inf
-                if banda > 0:
-                    pos = (pc - bb_inf) / banda
-                    if 0.30 < pos < 0.70:
-                        print(f"  {par}: [L] bloqueado BB centro ({pos:.2f})")
-                        return None
-            # F5 — EMA9 plana
-            pip = 0.01 if pc > 50 else 0.0001
-            if len(closes) >= 26:
-                e9a = ema(closes[-25:], 9)
-                e9p = ema(closes[-26:-1], 9)
+        else:
+            teto = RSI_EXAUST_SUP_FORTE if adx > 40 else RSI_EXAUST_SUP
+            piso = RSI_EXAUST_INF_FORTE if adx > 40 else RSI_EXAUST_INF
+            if crz == "CALL" and rsi > teto:
+                print(f"  {par}: ❌ RSI exaustão CALL {rsi:.1f}>{teto}")
+                return None
+            if crz == "PUT"  and rsi < piso:
+                print(f"  {par}: ❌ RSI exaustão PUT {rsi:.1f}<{piso}")
+                return None
+
+        # ── BOLLINGER ─────────────────────────────────────────────
+        bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
+
+        if modo == "LATERAL" and bb_sup and bb_inf:
+            banda = bb_sup - bb_inf
+            if banda > 0:
+                pos_bb = (closes[-1] - bb_inf) / banda
+                if 0.30 < pos_bb < 0.70:
+                    print(f"  {par}: ❌ BB centro lateral pos={pos_bb:.2f}")
+                    return None
+
+        # ── DOMINÂNCIA (modo TENDENCIA) ───────────────────────────
+        if modo == "TENDENCIA":
+            ult5 = velas[-6:-1]
+            if len(ult5) >= 5:
+                puts_c  = sum(1 for v in ult5 if v['close'] < v['open'])
+                calls_c = sum(1 for v in ult5 if v['close'] >= v['open'])
+                if crz == "CALL" and puts_c >= 4:
+                    print(f"  {par}: ❌ Dominância PUT {puts_c}/5")
+                    return None
+                if crz == "PUT"  and calls_c >= 4:
+                    print(f"  {par}: ❌ Dominância CALL {calls_c}/5")
+                    return None
+
+        # ── EMA9 plana (modo LATERAL) ─────────────────────────────
+        if modo == "LATERAL" and len(closes) >= 26:
+            pc   = closes[-1]
+            pip  = 1.0 if pc > 500 else (0.01 if pc > 50 else 0.0001)
+            e9a  = ema(closes[-25:], 9)
+            e9p  = ema(closes[-26:-1], 9)
+            if e9a and e9p:
                 inc = e9a - e9p
                 lim = pip * 0.2
-                if cruzamento == "CALL" and inc < lim:
-                    print(f"  {par}: [L] bloqueado EMA9 plana ({inc/pip:+.2f}p)")
+                if crz == "CALL" and inc < lim:
+                    print(f"  {par}: ❌ EMA9 plana CALL")
                     return None
-                if cruzamento == "PUT" and inc > -lim:
-                    print(f"  {par}: [L] bloqueado EMA9 plana ({inc/pip:+.2f}p)")
+                if crz == "PUT"  and inc > -lim:
+                    print(f"  {par}: ❌ EMA9 plana PUT")
                     return None
 
-        # ── FILTROS UNIVERSAIS ────────────────────────────────────
-        # F4 — MACD (toggle)
-        if USE_MACD:
-            if cruzamento is None:
-                print(f"  {par}: bloqueado MACD sem cruzamento")
-                return None
-            if hist is not None and hist_prev is not None:
-                if cruzamento == "CALL" and hist < hist_prev:
-                    print(f"  {par}: bloqueado F4A histograma enfraquecendo CALL")
-                    return None
-                if cruzamento == "PUT" and hist > hist_prev:
-                    print(f"  {par}: bloqueado F4A histograma enfraquecendo PUT")
-                    return None
-            if cruzamento == "CALL" and closes[-1] < opens[-2]:
-                print(f"  {par}: bloqueado F4B vela contrária CALL")
-                return None
-            if cruzamento == "PUT" and closes[-1] > opens[-2]:
-                print(f"  {par}: bloqueado F4B vela contrária PUT")
-                return None
-        else:
-            if cruzamento is None:
-                if rsi > RSI_NEUTRO_SUP:   cruzamento = "CALL"
-                elif rsi < RSI_NEUTRO_INF: cruzamento = "PUT"
-                else:
-                    print(f"  {par}: [A/B] sem direção sem MACD")
-                    return None
-            print(f"  {par}: [A/B] MACD desativado")
-
-        # F7 — Shadow Rejection (threshold dinâmico OTC vs FX)
-        if shadow_rejection(v[-1], is_otc=is_otc):
-            print(f"  {par}: bloqueado F7 Shadow Rejection ({'OTC th=0.35' if is_otc else 'FX th=0.40'})")
+        # ── SHADOW REJECTION ──────────────────────────────────────
+        if shadow_rejection(velas[-1], SHADOW_THRESHOLD_FX):
+            print(f"  {par}: ❌ Shadow Rejection")
             return None
 
-        # ── SCORE DINÂMICO OTC vs FOREX ───────────────────────────
-        # OTC: Shadow + Bollinger pesam mais
-        # FX:  MACD + RSI pesam mais
-        dir_ = cruzamento
-        pt = ps = 0
+        # ── SCORE ─────────────────────────────────────────────────
+        pc = closes[-1]; pt = ps = 0
 
-        # MACD — peso diferenciado
-        peso_macd = SCORE_PESO_MACD_OTC if is_otc else SCORE_PESO_MACD_FX
-        if dir_ == "CALL": pt += peso_macd
-        else:              ps += peso_macd
+        if crz == "CALL": pt += SCORE_PESO_MACD_FX
+        else:             ps += SCORE_PESO_MACD_FX
 
-        # RSI — peso diferenciado
-        peso_rsi = SCORE_PESO_RSI_OTC if is_otc else SCORE_PESO_RSI_FX
-        if rsi > RSI_NEUTRO_SUP:   pt += peso_rsi
-        elif rsi < RSI_NEUTRO_INF: ps += peso_rsi
+        if rsi > RSI_NEUTRO_SUP:   pt += SCORE_PESO_RSI_FX
+        elif rsi < RSI_NEUTRO_INF: ps += SCORE_PESO_RSI_FX
 
-        # ADX tendência — igual para ambos
-        if adx > adx_ten: pt += 15; ps += 15
+        if adx >= ADX_FX_TENDENCIA: pt += 15; ps += 15
 
-        # Bollinger — peso diferenciado
-        peso_bb = SCORE_PESO_BB_OTC if is_otc else SCORE_PESO_BB_FX
         if bb_sup and bb_inf and (bb_sup - bb_inf) > 0:
-            pos = (pc - bb_inf) / (bb_sup - bb_inf)
-            if dir_ == "CALL" and pos > 0.7: pt += peso_bb
-            if dir_ == "PUT"  and pos < 0.3: ps += peso_bb
+            pos_bb = (pc - bb_inf) / (bb_sup - bb_inf)
+            if crz == "CALL" and pos_bb > 0.7: pt += SCORE_PESO_BB_FX
+            if crz == "PUT"  and pos_bb < 0.3: ps += SCORE_PESO_BB_FX
 
-        # Shadow bonus (OTC: vale mais quando passa no filtro)
-        peso_shadow = SCORE_PESO_SHADOW_OTC if is_otc else SCORE_PESO_SHADOW_FX
-        pt += peso_shadow; ps += peso_shadow  # passou no F7 = bônus
+        pt += SCORE_PESO_SHADOW_FX; ps += SCORE_PESO_SHADOW_FX
 
-        score = pt if dir_ == "CALL" else ps
+        score = pt if crz == "CALL" else ps
+
         if score < SCORE_MINIMO:
-            print(f"  {par}: bloqueado Score baixo ({score} < {SCORE_MINIMO})")
+            print(f"  {par}: ❌ Score baixo {score} < {SCORE_MINIMO}")
             return None
 
-        agora_brt = datetime.now(timezone(timedelta(hours=-3))).replace(tzinfo=None)
+        # ── APROVADO ─────────────────────────────────────────────
+        ci_str = f" CI={ci_val:.1f}" if ci_val is not None else ""
+        print(
+            f"  {par}: ✅ APROVADO [{modo}] {crz} | "
+            f"Score:{score} RSI:{rsi:.1f} ADX:{adx:.1f}{ci_str}"
+        )
+
+        agora_brt   = datetime.now(timezone(timedelta(hours=-3)))
         hora_entrada = (agora_brt + timedelta(minutes=1)).strftime("%H:%M")
 
-        tipo = "OTC" if is_otc else "FX"
-        print(f"  {par}: ✅ aprovado [{modo}/{tipo}] {dir_} | Score:{score} RSI:{rsi:.1f} ADX:{adx:.1f}")
-
         return {
-            "par":    par,
-            "dir":    dir_,
-            "hora":   hora_entrada,
-            "score":  score,
-            "rsi":    round(rsi, 1),
-            "adx":    round(adx, 1),
-            "modo":   modo,
-            "payout": round(payout * 100, 1),
+            "par":   par,
+            "pb":    pb,
+            "dir":   crz,
+            "hora":  hora_entrada,
+            "score": score,
+            "rsi":   round(rsi, 1),
+            "adx":   round(adx, 1),
+            "ci":    round(ci_val, 1) if ci_val is not None else None,
+            "modo":  modo,
         }
 
     except Exception as e:
@@ -501,199 +472,126 @@ def analisar_par(par, v=None):
         return None
 
 # ══════════════════════════════════════════════════════════════════
-#  CHECAGEM FINAL — SEGUNDOS 50-59 DA VELA
-# ══════════════════════════════════════════════════════════════════
-def checagem_final(par, direcao):
-    """
-    Veto final — sem sleep. O ciclo já roda no início do minuto.
-    Valida direção da última vela fechada + Shadow Rejection.
-    Retorna True se entrada confirmada, False se cancelada.
-    """
-    v_fin = get_velas(par, 5)
-    if not v_fin or len(v_fin) < 2:
-        return True  # sem dados = não cancela
-
-    # Usa a penúltima vela (já fechada) para validar
-    vf = v_fin[-2]
-
-    # Shadow Rejection final
-    if shadow_rejection(vf):
-        print(f"  {par}: CHECAGEM FINAL — bloqueado Shadow Rejection")
-        return False
-
-    # Direção confirma?
-    dir_atual = "CALL" if vf['close'] > vf['open'] else "PUT"
-    if dir_atual != direcao:
-        print(f"  {par}: CHECAGEM FINAL — bloqueado reversão ({dir_atual} vs {direcao})")
-        return False
-
-    print(f"  {par}: CHECAGEM FINAL OK ✅")
-    return True
-
-# ══════════════════════════════════════════════════════════════════
-#  EXECUÇÃO NA IQ OPTION
-# ══════════════════════════════════════════════════════════════════
-def executar_ordem(par, direcao, valor=1):
-    """Clica na IQ Option. Só chamado se EXECUCAO_ATIVA = True."""
-    try:
-        iq = get_iq()
-        acao = "call" if direcao == "CALL" else "put"
-        status, order_id = iq.buy(valor, par, acao, EXPIRACAO_SEGUNDOS)
-        if status:
-            print(f"  ✅ ORDEM EXECUTADA: {par} {direcao} | ID:{order_id}")
-            return order_id
-        else:
-            print(f"  ❌ ORDEM FALHOU: {par} {direcao}")
-            return None
-    except Exception as e:
-        print(f"  ⚠️ Execução erro: {e}")
-        return None
-
-# ══════════════════════════════════════════════════════════════════
 #  CICLO PRINCIPAL
 # ══════════════════════════════════════════════════════════════════
-env = {}   # controle de envios por minuto
+_enviados = {}   # {chave_minuto: True}
 
 def ciclo():
-    agora = datetime.now(timezone(timedelta(hours=-3))).replace(tzinfo=None)
-    print(f"\n🔍 {agora.strftime('%H:%M:%S')} — analisando...")
+    agora = datetime.now(timezone(timedelta(hours=-3)))
+    ts_str = agora.strftime("%H:%M:%S")
+    print(f"\n🔍 [{ts_str}] — escaneando 8 pares...")
 
-    # Pré-filtros globais
+    # ── Pré-filtros globais ───────────────────────────────────────
     if not janela_ativa(agora):
-        print(f"  Fora da janela operacional ({agora.strftime('%H:%M')})")
+        print(f"  Fora da janela operacional ({agora.strftime('%H:%M')} BRT)")
         return
+
     if minuto_bloqueado(agora):
         print(f"  Minuto bloqueado SFI V6 (:{agora.minute:02d})")
         return
 
-    # Define lista de pares pelo modo
-    if MERCADO == "OTC":
-        pares = PARES_OTC
-    elif MERCADO == "FOREX":
-        pares = PARES_FOREX
-    else:  # AUTO
-        pares = PARES_OTC + PARES_FOREX
+    # ── Trava de operação única ───────────────────────────────────
+    if not portafolio_livre():
+        return   # já tem operação ativa — aguarda expiração
 
-    sinais_candidatos = []
-
-    # Filtra pares já enviados ou em cooldown antes do batch
-    pares_ativos = [
-        p for p in pares
-        if not env.get(f"{p}_{agora.strftime('%H:%M')}")
-        and not sequencia_bloqueada(p, "", agora)
-    ]
-
-    if not pares_ativos:
-        print("  Todos os pares em cooldown/enviados neste ciclo.")
-        return
-
-    # Busca velas de todos os pares em paralelo (batch)
+    # ── Busca velas em batch (1 req = 8 pares) ───────────────────
     t0 = time.time()
-    velas_batch = get_velas_batch(pares_ativos, 55)
-    print(f"  Batch velas: {len(velas_batch)} pares em {time.time()-t0:.1f}s")
+    batch = buscar_velas_td_batch(PARES_FOREX, n=65)
+    print(f"  📡 Batch Twelve Data: {len(batch)} pares em {time.time()-t0:.1f}s")
 
-    for par in pares_ativos:
-        v_cache = velas_batch.get(par, [])
-        if not v_cache or len(v_cache) < 40:
-            print(f"  {par}: velas insuficientes ({len(v_cache)})")
+    # ── Analisa cada par ──────────────────────────────────────────
+    candidatos = []
+    for par in PARES_FOREX:
+        velas = batch.get(par, [])
+        pb    = par_base(par)
+
+        # Chave única para evitar duplicata no mesmo minuto
+        chave = f"{pb}_{agora.strftime('%H:%M')}"
+        if _enviados.get(chave):
+            print(f"  {par}: já enviado neste minuto")
             continue
 
-        resultado = analisar_par(par, v_cache)
-        if not resultado:
+        if sequencia_bloqueada(pb, "", agora):
+            print(f"  {par}: em cooldown/sequência bloqueada")
             continue
 
-        # Trava de sequência por direção
-        if sequencia_bloqueada(par, resultado['dir'], agora):
-            print(f"  {par}: bloqueado Trava de Sequência")
-            continue
+        resultado = analisar_par(par, velas)
+        if resultado:
+            candidatos.append(resultado)
 
-        sinais_candidatos.append(resultado)
+    # Limpa enviados antigos
+    if len(_enviados) > 500:
+        _enviados.clear()
 
-    # Limpa env antigo
-    if len(env) > 500:
-        env.clear()
-
-    if not sinais_candidatos:
+    if not candidatos:
         print("  Sem sinal aprovado neste ciclo.")
         return
 
-    # Ordena por score — melhor sinal primeiro
-    sinais_candidatos.sort(key=lambda x: x['score'], reverse=True)
+    # ── Seleciona o melhor score ──────────────────────────────────
+    candidatos.sort(key=lambda x: x['score'], reverse=True)
+    melhor = candidatos[0]
 
-    # ── FUNIL — FASE DE VETO FINAL ───────────────────────────────
-    # Sleep único até segundo 50, depois veto rápido nos demais.
-    sinais = []
-    checagem_feita = False
-    for s in sinais_candidatos:
-        if not checagem_feita:
-            aprovado = checagem_final(s['par'], s['dir'])
-            checagem_feita = True
-        else:
-            v_fin = get_velas(s['par'], 5)
-            if v_fin and len(v_fin) >= 2:
-                vf = v_fin[-1]
-                dir_fin = "CALL" if vf['close'] > vf['open'] else "PUT"
-                aprovado = (dir_fin == s['dir']) and not shadow_rejection(vf)
-                print(f"  {s['par']}: VETO rápido {'OK ✅' if aprovado else 'BLOQUEADO ❌'}")
-            else:
-                aprovado = True
+    # Registra e trava
+    chave = f"{melhor['pb']}_{agora.strftime('%H:%M')}"
+    _enviados[chave] = True
+    registrar_sinal(melhor['pb'], melhor['dir'], agora)
 
-        if aprovado:
-            chave = f"{s['par']}_{agora.strftime('%H:%M')}"
-            registrar_sinal(s['par'], s['dir'], agora)
-            env[chave] = True
-            sinais.append(s)
-            break  # encontrou aprovado — encerra funil
+    if EXECUCAO_ATIVA:
+        travar_portafolio(melhor['par'], segundos=65)
 
-    if not sinais:
-        print("  Sem sinal aprovado neste ciclo.")
-        return
-
-    # Ordena por score
-    sinais.sort(key=lambda x: x['score'], reverse=True)
-
-    # Monta mensagem Telegram
+    # ── Monta mensagem Telegram ───────────────────────────────────
     modo_label = "🤖 EXECUÇÃO AUTO" if EXECUCAO_ATIVA else "👁 OBSERVAÇÃO"
-    linhas = []
-    for s in sinais:
-        emoji = "⭐" if s['score'] >= 80 else "✅"
-        linhas.append(
-            f"<code>M1;{s['par']};{s['hora']};{s['dir']}</code>  "
-            f"{emoji} Score:{s['score']} | RSI:{s['rsi']} ADX:{s['adx']} "
-            f"| {s['modo']} | Payout:{s['payout']}%"
-        )
+    ci_str     = f" | CI:{melhor['ci']}" if melhor.get('ci') else ""
+    n_desc     = len(candidatos)
+    extras     = ""
+    if n_desc > 1:
+        outros = ", ".join(f"{c['pb']}({c['score']})" for c in candidatos[1:])
+        extras = f"\n<i>+{n_desc-1} outro(s) bloqueado(s) pela Trava Única: {outros}</i>"
 
-    tg(
-        f"🎯 <b>SNIPER V10 — {agora.strftime('%H:%M')} [{modo_label}]</b>\n\n"
-        + "\n".join(linhas)
+    msg = (
+        f"🎯 <b>SNIPER V10 v4 — {agora.strftime('%H:%M')} BRT [{modo_label}]</b>\n\n"
+        f"<code>M1;{melhor['pb']};{melhor['hora']};{melhor['dir']}</code>\n\n"
+        f"📊 Score: <b>{melhor['score']}</b> | RSI: {melhor['rsi']} "
+        f"| ADX: {melhor['adx']}{ci_str}\n"
+        f"📈 Modo: {melhor['modo']} | Fonte: Twelve Data\n"
+        f"🔒 Trava Única: portfólio bloqueado até {melhor['hora']}"
+        f"{extras}"
     )
 
-    # Execução (só se EXECUCAO_ATIVA = True)
-    if EXECUCAO_ATIVA:
-        for s in sinais:
-            executar_ordem(s['par'], s['dir'])
-    else:
-        print(f"  📋 {len(sinais)} sinal(is) enviado(s) ao Telegram (modo observação)")
+    tg(msg)
+    print(f"\n  📨 SINAL ENVIADO → {melhor['pb']} {melhor['dir']} Score:{melhor['score']}")
+
+    if not EXECUCAO_ATIVA:
+        print(f"  👁 Modo OBSERVAÇÃO — sem execução na IQ Option")
 
 # ══════════════════════════════════════════════════════════════════
 #  MAIN LOOP
 # ══════════════════════════════════════════════════════════════════
 def main():
-    modo_str = "EXECUÇÃO AUTO 🤖" if EXECUCAO_ATIVA else "OBSERVAÇÃO 👁"
-    print(f"🟢 Sniper V10 iniciado! Modo: {modo_str}")
+    modo_str  = "EXECUÇÃO AUTO 🤖" if EXECUCAO_ATIVA else "OBSERVAÇÃO 👁"
+    pares_str = " | ".join(par_base(p) for p in PARES_FOREX)
+
+    print(f"🟢 Sniper V10 v4 iniciado!")
+    print(f"   Modo    : {modo_str}")
+    print(f"   Pares   : {pares_str}")
+    print(f"   Fonte   : Twelve Data ({TWELVE_API[:8]}...)")
+    print(f"   Score   : >= {SCORE_MINIMO}")
+    print(f"   Trava   : 1 op por vez em todo o portfólio")
+    print()
+
     tg(
-        f"🟢 <b>Sniper V10 online!</b>\n"
+        f"🟢 <b>Sniper V10 v4 online!</b>\n\n"
         f"Modo: <b>{modo_str}</b>\n"
-        f"Mercado: <b>{MERCADO}</b>\n"
-        f"MACD: <b>{'Ativo' if USE_MACD else 'Desativado (Teste A/B)'}</b>"
+        f"Fonte: <b>Twelve Data</b>\n"
+        f"Pares: <b>{pares_str}</b>\n"
+        f"Score mínimo: <b>{SCORE_MINIMO}</b>\n"
+        f"Trava única: <b>1 op por vez em todo o portfólio</b>"
     )
 
-    get_iq()  # pré-conecta
     ultimo = ""
-
     while True:
         try:
-            agora = datetime.now(timezone(timedelta(hours=-3))).replace(tzinfo=None)
+            agora = datetime.now(timezone(timedelta(hours=-3)))
             chave = agora.strftime("%H:%M")
             if chave != ultimo:
                 ultimo = chave
@@ -701,7 +599,7 @@ def main():
                 t.start()
                 t.join(115)
                 if t.is_alive():
-                    print(f"  ⚠️ Ciclo {chave} excedeu 58s")
+                    print(f"  ⚠️ Ciclo {chave} excedeu tempo limite")
             time.sleep(5)
         except KeyboardInterrupt:
             print("\n⛔ Sniper V10 encerrado.")
