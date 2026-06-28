@@ -373,7 +373,7 @@ def analisar_par(par):
             print(f"  {par}: bloqueado Score baixo ({score} < {SCORE_MINIMO})")
             return None
 
-        agora_brt = datetime.utcnow() - timedelta(hours=3)
+        agora_brt = datetime.now(timezone(timedelta(hours=-3))).replace(tzinfo=None)
         hora_entrada = (agora_brt + timedelta(minutes=1)).strftime("%H:%M")
 
         print(f"  {par}: ✅ aprovado [{modo}] {dir_} | Score:{score} RSI:{rsi:.1f} ADX:{adx:.1f}")
@@ -402,7 +402,7 @@ def checagem_final(par, direcao):
     Roda nos segundos 50-59 antes do fechamento.
     Retorna True se entrada confirmada, False se cancelada.
     """
-    seg = datetime.utcnow().second
+    seg = datetime.now(timezone.utc).second
     if seg < 50:
         espera = 50 - seg
         print(f"  {par}: aguardando segundo 50 ({espera}s)...")
@@ -453,7 +453,7 @@ def executar_ordem(par, direcao, valor=1):
 env = {}   # controle de envios por minuto
 
 def ciclo():
-    agora = datetime.utcnow() - timedelta(hours=3)
+    agora = datetime.now(timezone(timedelta(hours=-3))).replace(tzinfo=None)
     print(f"\n🔍 {agora.strftime('%H:%M:%S')} — analisando...")
 
     # Pré-filtros globais
@@ -552,7 +552,7 @@ def main():
 
     while True:
         try:
-            agora = datetime.utcnow() - timedelta(hours=3)
+            agora = datetime.now(timezone(timedelta(hours=-3))).replace(tzinfo=None)
             chave = agora.strftime("%H:%M")
             if chave != ultimo:
                 ultimo = chave
