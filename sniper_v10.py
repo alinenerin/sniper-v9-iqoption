@@ -76,17 +76,36 @@ def get_velas(par, n=55):
         print(f"  ⚠️ Velas {par}: {e}")
         return []
 
+_payout_cache = {}       # {par: valor}
+_payout_cache_ts = 0     # timestamp da última atualização
+PAYOUT_CACHE_TTL = 300   # 5 minutos
+
 def get_payout(par):
+    global _payout_cache, _payout_cache_ts
+    agora_ts = time.time()
+
+    # Retorna cache se ainda válido
+    if par in _payout_cache and (agora_ts - _payout_cache_ts) < PAYOUT_CACHE_TTL:
+        return _payout_cache[par]
+
+    # Busca todos os pares de uma vez e armazena no cache
     try:
         iq = get_iq()
         assets = iq.get_all_open_time()
-        for mercado in ['turbo', 'binary']:
-            if par in assets.get(mercado, {}):
-                p = assets[mercado][par].get('profit', {}).get('profit', None)
-                if p: return p
-    except:
-        pass
-    return 1.0  # se falhar, não bloqueia
+        todos = PARES_OTC + PARES_FOREX
+        for p in todos:
+            for mercado in ['turbo', 'binary']:
+                if p in assets.get(mercado, {}):
+                    val = assets[mercado][p].get('profit', {}).get('profit', None)
+                    if val:
+                        _payout_cache[p] = val
+                        break
+        _payout_cache_ts = agora_ts
+        print(f"  💰 Cache payout atualizado ({len(_payout_cache)} pares)")
+    except Exception as e:
+        print(f"  ⚠️ Payout cache erro: {e}")
+
+    return _payout_cache.get(par, 1.0)  # se falhar, não bloqueia
 
 # ══════════════════════════════════════════════════════════════════
 #  INDICADORES MANUAIS
