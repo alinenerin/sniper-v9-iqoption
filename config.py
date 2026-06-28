@@ -5,8 +5,10 @@
 # ══════════════════════════════════════════════════════════════════
 
 # ── CREDENCIAIS ───────────────────────────────────────────────────
-IQ_EMAIL      = "laiane.aline@gmail.com"
-IQ_PASS       = "alineegui95"
+import os
+IQ_EMAIL      = os.environ.get("IQ_EMAIL", "laiane.aline@gmail.com")
+IQ_PASS       = os.environ.get("IQ_PASS",  "alineegui95")
+IQ_SSID       = os.environ.get("IQ_SSID",  "")   # token de sessão pré-autenticado
 TG_TOKEN      = "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg"
 TG_CHAT       = "5911742397"
 TWELVE_API    = "1be0b948fb1c48bb997e350c542edafd"
