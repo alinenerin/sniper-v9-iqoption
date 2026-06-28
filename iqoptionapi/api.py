@@ -211,8 +211,7 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                                         data=data,
                                         params=params,
                                         headers=headers,
-                                        proxies=self.proxies,
-                                        timeout=30)
+                                        proxies=self.proxies)
         logger.debug(response)
         logger.debug(response.text)
         logger.debug(response.headers)
@@ -243,8 +242,7 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                                         data=data,
                                         params=params,
                                         headers=headers,
-                                        proxies=self.proxies,
-                                        timeout=30)
+                                        proxies=self.proxies)
         logger.debug(response)
         logger.debug(response.text)
         logger.debug(response.headers)
@@ -781,12 +779,12 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.websocket_client = WebsocketClient(self)
 
         self.websocket_thread = threading.Thread(target=self.websocket.run_forever, kwargs={'sslopt': {
-                                                 "check_hostname": False, "cert_reqs": ssl.CERT_NONE}})  # cert_reqs=CERT_NONE dispensa cacert.pem
+                                                 "check_hostname": False, "cert_reqs": ssl.CERT_NONE, "ca_certs": "cacert.pem"}})  # for fix pyinstall error: cafile, capath and cadata cannot be all omitted
         self.websocket_thread.daemon = True
         self.websocket_thread.start()
-        import time as _time
-        _deadline = _time.time() + 120  # timeout 120s no WebSocket
-        while _time.time() < _deadline:
+        import time as _ts
+        _ts_deadline = _ts.time() + 20
+        while _ts.time() < _ts_deadline:
             try:
                 if global_value.check_websocket_if_error:
                     return False, global_value.websocket_error_reason
@@ -796,8 +794,8 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                     return True, None
             except:
                 pass
-            _time.sleep(0.1)
-        return False, f"WebSocket connect timeout (120s) — connect={global_value.check_websocket_if_connect} err={global_value.check_websocket_if_error}"
+            _ts.sleep(0.1)
+        return False, "websocket connect timeout"
 
     # @tokensms.setter
     def setTokenSMS(self, response):
@@ -827,11 +825,9 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
     def send_ssid(self):
         self.profile.msg = None
         self.ssid(global_value.SSID)  # pylint: disable=not-callable
-        import time as _ts
-        _ts_deadline = _ts.time() + 15
-        while self.profile.msg is None and _ts.time() < _ts_deadline:
-            _ts.sleep(0.05)
-        if self.profile.msg == False or self.profile.msg is None:
+        while self.profile.msg == None:
+            pass
+        if self.profile.msg == False:
             return False
         else:
             return True
@@ -868,45 +864,31 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
 
         # the ssid is None need get ssid
         else:
-            # Tenta primeiro SSID da variável de ambiente (Railway não consegue logar via HTTP)
-            import os as _os
-            env_ssid = _os.environ.get("IQ_SSID", "")
-            if env_ssid:
-                global_value.SSID = env_ssid
-                self.start_websocket()
-                if not self.send_ssid():
-                    # SSID expirado — tenta login HTTP
-                    response = self.get_ssid()
-                    try:
-                        global_value.SSID = response.cookies["ssid"]
-                    except:
-                        self.close()
-                        return False, response.text
-                atexit.register(self.logout)
-            else:
-                response = self.get_ssid()
-                try:
-                    global_value.SSID = response.cookies["ssid"]
-                except:
-                    self.close()
-                    return False, response.text
-                atexit.register(self.logout)
-                self.send_ssid()
+            response = self.get_ssid()
+            try:
+                global_value.SSID = response.cookies["ssid"]
+            except:
+                self.close()
+                return False, response.text
+            atexit.register(self.logout)
+            self.send_ssid()
 
         # set ssis cookie
         requests.utils.add_dict_to_cookiejar(
             self.session.cookies, {"ssid": global_value.SSID})
 
         self.timesync.server_timestamp = None
-        import time as _t2
-        _t2_deadline = _t2.time() + 30
-        while _t2.time() < _t2_deadline:
+        import time as _t
+        _deadline = _t.time() + 30
+        while _t.time() < _deadline:
             try:
                 if self.timesync.server_timestamp != None:
                     break
             except:
                 pass
-            _t2.sleep(0.05)
+            _t.sleep(0.1)
+        if self.timesync.server_timestamp is None:
+            return False, "timesync timeout"
         return True, None
 
     def connect2fa(self, sms_code):
