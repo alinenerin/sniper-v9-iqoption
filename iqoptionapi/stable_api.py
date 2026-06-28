@@ -107,11 +107,15 @@ class IQ_Option:
             self.re_subscribe_stream()
 
             # ---------for async get name: "position-changed", microserviceName
+            _t0 = time.time()
             while global_value.balance_id == None:
+                if time.time() - _t0 > 20:
+                    break  # timeout: não travar indefinidamente
                 pass
 
-            self.position_change_all(
-                "subscribeMessage", global_value.balance_id)
+            if global_value.balance_id:
+                self.position_change_all(
+                    "subscribeMessage", global_value.balance_id)
 
             self.order_changed_all("subscribeMessage")
             self.api.setOptions(1, True)
