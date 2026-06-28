@@ -78,21 +78,9 @@ def _iq_conectar():
         if _iq_conectado and _iq_api:
             return True
         try:
-            print("  🔄 Conectando IQ Option via WebSocket...")
-
-            # Injeta SSID pré-autorizado ANTES de instanciar (bypassa login HTTP bloqueado no Railway)
-            ssid_env = os.environ.get("IQ_SSID", "")
-            if ssid_env:
-                import iqoptionapi.global_value as _gv
-                _gv.SSID = ssid_env
-                print(f"  🔑 SSID: {ssid_env[:16]}...")
+            print("  🔄 Conectando IQ Option...")
 
             api = IQ_Option(IQ_EMAIL, IQ_PASS)
-
-            # Reinjeta após instanciar (o __init__ pode resetar)
-            if ssid_env:
-                import iqoptionapi.global_value as _gv
-                _gv.SSID = ssid_env
 
             resultado = [False, "timeout"]
 
@@ -106,7 +94,7 @@ def _iq_conectar():
 
             t = threading.Thread(target=_tentar, daemon=True)
             t.start()
-            t.join(130)
+            t.join(60)
 
             if resultado[0]:
                 _iq_api       = api
