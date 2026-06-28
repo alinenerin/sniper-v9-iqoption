@@ -13,7 +13,7 @@ TWELVE_API    = "1be0b948fb1c48bb997e350c542edafd"
 
 # ── MODO DE OPERAÇÃO ──────────────────────────────────────────────
 EXECUCAO_ATIVA = False   # False = só avisa Telegram | True = clica IQ Option
-MERCADO        = "FOREX" # "OTC" | "FOREX" | "AUTO"
+MERCADO        = "AUTO"  # "OTC" | "FOREX" | "AUTO"
 USE_MACD       = True
 
 # ── PARES MONITORADOS (8 pares — Twelve Data) ─────────────────────
@@ -101,6 +101,7 @@ SCORE_MINIMO = 80
 JANELAS_ATIVAS = [
     (6,  0, 11, 44),   # Manhã — Londres
     (13, 15, 17,  0),  # Tarde — NY
+    (17, 30, 20, 30),  # Tarde — Teste OTC domingo
     (21,  0,  2,  0),  # Noite — Tokyo
 ]
 
