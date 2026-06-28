@@ -168,9 +168,6 @@ def buscar_velas_otc_batch(pares_otc, n=65):
 
     return resultado
 
-    except Exception as e:
-        print(f"  ⚠️ IQ REST erro {nome}: {e}")
-        return []
 
 # ══════════════════════════════════════════════════════════════════
 #  TWELVE DATA — FONTE FOREX (SEG-SEX)
