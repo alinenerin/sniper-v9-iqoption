@@ -171,15 +171,19 @@ def calcular_bollinger(closes, periodo=20, desvios=2):
     std   = (sum((x - media)**2 for x in serie) / periodo) ** 0.5
     return media + desvios*std, media, media - desvios*std
 
-def calcular_macd(closes, rapida=12, lenta=26, sinal=9):
+def calcular_macd(closes, rapida=None, lenta=None, sinal=None):
+    # Usa períodos do config (padrão rápido M1: 5,13,4)
+    rapida = rapida or MACD_RAPIDA
+    lenta  = lenta  or MACD_LENTA
+    sinal  = sinal  or MACD_SINAL
+
     if len(closes) < lenta + sinal + 2: return None, None, None, None, None
 
-    # Calcula linha MACD para cada ponto — O(n) usando EMA incremental
+    # EMA incremental O(n) — zero lag extra
     k_r = 2 / (rapida + 1)
     k_l = 2 / (lenta + 1)
     k_s = 2 / (sinal + 1)
 
-    # Inicializa EMAs com SMA dos primeiros períodos
     ema_r = sum(closes[:rapida]) / rapida
     ema_l = sum(closes[:lenta])  / lenta
 
@@ -191,12 +195,10 @@ def calcular_macd(closes, rapida=12, lenta=26, sinal=9):
 
     if len(macd_series) < sinal + 2: return None, None, None, None, None
 
-    # Linha de sinal (EMA do MACD)
     sig = sum(macd_series[:sinal]) / sinal
     for v in macd_series[sinal:]:
         sig = v * k_s + sig * (1 - k_s)
 
-    # Sinal anterior (penúltimo ponto)
     sig_prev = sum(macd_series[:sinal]) / sinal
     for v in macd_series[sinal:-1]:
         sig_prev = v * k_s + sig_prev * (1 - k_s)
@@ -210,9 +212,13 @@ def calcular_macd(closes, rapida=12, lenta=26, sinal=9):
 
     return ema_r, ema_l, hist, cruzamento, hist_prev
 
-def shadow_rejection(vela, threshold=None):
-    """Retorna True se a vela deve ser bloqueada por pavio excessivo."""
-    th = threshold or SHADOW_THRESHOLD
+def shadow_rejection(vela, threshold=None, is_otc=False):
+    """Retorna True se a vela deve ser bloqueada por pavio excessivo.
+    OTC: threshold menor (0.35) — mais sensível às zonas de retração.
+    FX:  threshold padrão (0.40).
+    """
+    if threshold is None:
+        threshold = SHADOW_THRESHOLD_OTC if is_otc else SHADOW_THRESHOLD_FX
     h  = vela.get('max', vela['close'])
     l  = vela.get('min', vela['open'])
     o, c = vela['open'], vela['close']
@@ -220,7 +226,7 @@ def shadow_rejection(vela, threshold=None):
     if total == 0: return False
     sup = h - max(o, c)
     inf = min(o, c) - l
-    return (sup / total) > th or (inf / total) > th
+    return (sup / total) > threshold or (inf / total) > threshold
 
 # ══════════════════════════════════════════════════════════════════
 #  CONTROLE DE JANELA E MINUTOS
@@ -304,6 +310,12 @@ def analisar_par(par, v=None):
         is_otc = "-OTC" in par
         adx_lat = ADX_OTC_LATERAL   if is_otc else ADX_FX_LATERAL
         adx_ten = ADX_OTC_TENDENCIA if is_otc else ADX_FX_TENDENCIA
+
+        # Tratamento especial USDJPY — par ruidoso, exige ADX >= 30
+        par_base = par.replace("-OTC","")
+        if "USDJPY" in par_base and adx < ADX_USDJPY_MIN:
+            print(f"  {par}: bloqueado ADX USDJPY especial ({adx:.1f} < {ADX_USDJPY_MIN})")
+            return None
 
         if adx >= adx_ten:
             modo = "TENDENCIA"
@@ -396,29 +408,40 @@ def analisar_par(par, v=None):
                     return None
             print(f"  {par}: [A/B] MACD desativado")
 
-        # F7 — Shadow Rejection
-        if shadow_rejection(v[-1]):
-            h_v = v[-1].get('max', v[-1]['close'])
-            l_v = v[-1].get('min', v[-1]['open'])
-            print(f"  {par}: bloqueado F7 Shadow Rejection")
+        # F7 — Shadow Rejection (threshold dinâmico OTC vs FX)
+        if shadow_rejection(v[-1], is_otc=is_otc):
+            print(f"  {par}: bloqueado F7 Shadow Rejection ({'OTC th=0.35' if is_otc else 'FX th=0.40'})")
             return None
 
-        # ── SCORE ─────────────────────────────────────────────────
+        # ── SCORE DINÂMICO OTC vs FOREX ───────────────────────────
+        # OTC: Shadow + Bollinger pesam mais
+        # FX:  MACD + RSI pesam mais
         dir_ = cruzamento
         pt = ps = 0
 
-        if dir_ == "CALL": pt += 35
-        else:              ps += 35
+        # MACD — peso diferenciado
+        peso_macd = SCORE_PESO_MACD_OTC if is_otc else SCORE_PESO_MACD_FX
+        if dir_ == "CALL": pt += peso_macd
+        else:              ps += peso_macd
 
-        if rsi > RSI_NEUTRO_SUP:  pt += 20
-        elif rsi < RSI_NEUTRO_INF: ps += 20
+        # RSI — peso diferenciado
+        peso_rsi = SCORE_PESO_RSI_OTC if is_otc else SCORE_PESO_RSI_FX
+        if rsi > RSI_NEUTRO_SUP:   pt += peso_rsi
+        elif rsi < RSI_NEUTRO_INF: ps += peso_rsi
 
-        if adx > adx_ten: pt += 15; ps += 15  # tendência confirma ambos
+        # ADX tendência — igual para ambos
+        if adx > adx_ten: pt += 15; ps += 15
 
+        # Bollinger — peso diferenciado
+        peso_bb = SCORE_PESO_BB_OTC if is_otc else SCORE_PESO_BB_FX
         if bb_sup and bb_inf and (bb_sup - bb_inf) > 0:
             pos = (pc - bb_inf) / (bb_sup - bb_inf)
-            if dir_ == "CALL" and pos > 0.7: pt += 15
-            if dir_ == "PUT"  and pos < 0.3: ps += 15
+            if dir_ == "CALL" and pos > 0.7: pt += peso_bb
+            if dir_ == "PUT"  and pos < 0.3: ps += peso_bb
+
+        # Shadow bonus (OTC: vale mais quando passa no filtro)
+        peso_shadow = SCORE_PESO_SHADOW_OTC if is_otc else SCORE_PESO_SHADOW_FX
+        pt += peso_shadow; ps += peso_shadow  # passou no F7 = bônus
 
         score = pt if dir_ == "CALL" else ps
         if score < SCORE_MINIMO:
@@ -428,7 +451,8 @@ def analisar_par(par, v=None):
         agora_brt = datetime.now(timezone(timedelta(hours=-3))).replace(tzinfo=None)
         hora_entrada = (agora_brt + timedelta(minutes=1)).strftime("%H:%M")
 
-        print(f"  {par}: ✅ aprovado [{modo}] {dir_} | Score:{score} RSI:{rsi:.1f} ADX:{adx:.1f}")
+        tipo = "OTC" if is_otc else "FX"
+        print(f"  {par}: ✅ aprovado [{modo}/{tipo}] {dir_} | Score:{score} RSI:{rsi:.1f} ADX:{adx:.1f}")
 
         return {
             "par":    par,
