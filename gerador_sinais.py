@@ -263,16 +263,23 @@ def calcular_sinal(par):
 
         # ════════════════════════════════════════════════════════════
         # FILTRO 0 — SELEÇÃO DE MODO DE MERCADO (ADX como árbitro)
-        # ADX >= 22  → MODO TENDÊNCIA  (filtros de força)
-        # ADX < 18   → MODO LATERAL    (filtros de contenção)
-        # 18–21      → ZONA CINZA      → abortar (mercado indefinido)
+        # Limiares dinâmicos por tipo de ativo:
+        #   OTC   → lateral < 18 | tendência >= 22 (menos volátil)
+        #   Forex → lateral < 20 | tendência >= 25 (mais volátil)
         # ════════════════════════════════════════════════════════════
-        if adx >= 22:
+        if "-OTC" in par:
+            ADX_LATERAL    = 18
+            ADX_TENDENCIA  = 22
+        else:
+            ADX_LATERAL    = 20
+            ADX_TENDENCIA  = 25
+
+        if adx >= ADX_TENDENCIA:
             modo = "TENDENCIA"
-        elif adx < 18:
+        elif adx < ADX_LATERAL:
             modo = "LATERAL"
         else:
-            print(f"  {par}: bloqueado Zona Cinza ADX ({adx:.1f} — entre 18 e 21)")
+            print(f"  {par}: bloqueado Zona Cinza ADX ({adx:.1f} | limiar {ADX_LATERAL}-{ADX_TENDENCIA})")
             return None
 
         print(f"  {par}: MODO {modo} (ADX:{adx:.1f})")
@@ -572,6 +579,32 @@ def ciclo():
                     print(f"  {par}: REVALIDAÇÃO bloqueada F6 — dominância contrária ({puts_rv}P/{calls_rv}C)")
                     continue
                 print(f"  {par}: REVALIDAÇÃO OK — {s['d']} confirmado na entrada")
+
+            # CHECAGEM FINAL 10s — anti-slippage de última hora
+            # Aguarda mais 10s e re-checa Shadow Rejection + direção da vela atual
+            # Se o mercado virar nesse intervalo, cancela antes do clique
+            time.sleep(10)
+            v_final = get_velas(par, 5)
+            if v_final and len(v_final) >= 2:
+                vf = v_final[-1]
+                # Shadow Rejection final
+                hf = vf.get('max', vf['close'])
+                lf = vf.get('min', vf['open'])
+                of = vf['open']
+                cf = vf['close']
+                tt = hf - lf
+                if tt > 0:
+                    ps_f = hf - max(of, cf)
+                    pi_f = min(of, cf) - lf
+                    if (ps_f / tt) > 0.4 or (pi_f / tt) > 0.4:
+                        print(f"  {par}: CHECAGEM 10s — bloqueado Shadow Rejection final (pavio excessivo)")
+                        continue
+                # Direção da vela atual ainda confirma?
+                dir_10s = "CALL" if cf > of else "PUT"
+                if dir_10s != s['d']:
+                    print(f"  {par}: CHECAGEM 10s — bloqueado reversão de vela ({dir_10s} vs {s['d']})")
+                    continue
+                print(f"  {par}: CHECAGEM 10s OK — entrada confirmada ✅")
             
             registrar_sinal(par, s['d'], agora)
             env[chave] = True
