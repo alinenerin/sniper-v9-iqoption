@@ -782,9 +782,7 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                                                  "check_hostname": False, "cert_reqs": ssl.CERT_NONE, "ca_certs": "cacert.pem"}})  # for fix pyinstall error: cafile, capath and cadata cannot be all omitted
         self.websocket_thread.daemon = True
         self.websocket_thread.start()
-        import time as _ts
-        _ts_deadline = _ts.time() + 20
-        while _ts.time() < _ts_deadline:
+        while True:
             try:
                 if global_value.check_websocket_if_error:
                     return False, global_value.websocket_error_reason
@@ -794,8 +792,8 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                     return True, None
             except:
                 pass
-            _ts.sleep(0.1)
-        return False, "websocket connect timeout"
+
+            pass
 
     # @tokensms.setter
     def setTokenSMS(self, response):
@@ -878,17 +876,12 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
             self.session.cookies, {"ssid": global_value.SSID})
 
         self.timesync.server_timestamp = None
-        import time as _t
-        _deadline = _t.time() + 30
-        while _t.time() < _deadline:
+        while True:
             try:
                 if self.timesync.server_timestamp != None:
                     break
             except:
                 pass
-            _t.sleep(0.1)
-        if self.timesync.server_timestamp is None:
-            return False, "timesync timeout"
         return True, None
 
     def connect2fa(self, sms_code):
