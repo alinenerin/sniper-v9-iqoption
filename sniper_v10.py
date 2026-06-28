@@ -171,6 +171,28 @@ def calcular_bollinger(closes, periodo=20, desvios=2):
     std   = (sum((x - media)**2 for x in serie) / periodo) ** 0.5
     return media + desvios*std, media, media - desvios*std
 
+def calcular_choppiness(velas, periodo):
+    """
+    Choppiness Index = 100 * log10(SUM(ATR1,n) / (MaxHigh-MinLow)) / log10(n)
+    >= ci_max → mercado choppy (dente de serra) → BLOQUEAR
+    < ci_max  → mercado direcional              → LIBERAR
+    Calibrado por par (veja CI_CONFIG no config.py).
+    """
+    import math
+    if len(velas) < periodo + 1: return 50.0
+    janela = velas[-(periodo+1):]
+    atr_sum = sum(
+        max(janela[i]['max'] - janela[i]['min'],
+            abs(janela[i]['max'] - janela[i-1]['close']),
+            abs(janela[i]['min'] - janela[i-1]['close']))
+        for i in range(1, len(janela))
+    )
+    max_h = max(v['max'] for v in janela[1:])
+    min_l = min(v['min'] for v in janela[1:])
+    rng   = max_h - min_l
+    if rng == 0 or atr_sum == 0: return 50.0
+    return round(100.0 * math.log10(atr_sum / rng) / math.log10(periodo), 2)
+
 def calcular_macd(closes, rapida=None, lenta=None, sinal=None):
     # Usa períodos do config (padrão rápido M1: 5,13,4)
     rapida = rapida or MACD_RAPIDA
@@ -326,6 +348,15 @@ def analisar_par(par, v=None):
             return None
 
         print(f"  {par}: MODO {modo} (ADX:{adx:.1f})")
+
+        # ── F_CI: CHOPPINESS INDEX (EURUSD e GBPUSD) ─────────────
+        ci_cfg = CI_CONFIG.get(par_base)
+        if ci_cfg:
+            ci_val = calcular_choppiness(v, ci_cfg["ci_per"])
+            if ci_val >= ci_cfg["ci_max"]:
+                print(f"  {par}: bloqueado CI={ci_val} >= {ci_cfg['ci_max']} (mercado choppy)")
+                return None
+            print(f"  {par}: CI={ci_val} OK (< {ci_cfg['ci_max']})")
 
         # ── FILTROS MODO TENDÊNCIA ────────────────────────────────
         if modo == "TENDENCIA":
