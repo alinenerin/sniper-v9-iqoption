@@ -472,7 +472,7 @@ def ciclo():
     else:  # AUTO
         pares = PARES_OTC + PARES_FOREX
 
-    sinais = []
+    sinais_candidatos = []
 
     for par in pares:
         chave = f"{par}_{agora.strftime('%H:%M')}"
@@ -487,22 +487,35 @@ def ciclo():
         if not resultado:
             continue
 
-        # Checagem final sincronizada com vela
-        if not checagem_final(par, resultado['dir']):
-            continue
-
         # Trava de sequência por direção
         if sequencia_bloqueada(par, resultado['dir'], agora):
             print(f"  {par}: bloqueado Trava de Sequência")
             continue
 
-        registrar_sinal(par, resultado['dir'], agora)
-        env[chave] = True
-        sinais.append(resultado)
+        sinais_candidatos.append(resultado)
 
     # Limpa env antigo
     if len(env) > 500:
         env.clear()
+
+    if not sinais_candidatos:
+        print("  Sem sinal aprovado neste ciclo.")
+        return
+
+    # Ordena por score — melhor sinal primeiro
+    sinais_candidatos.sort(key=lambda x: x['score'], reverse=True)
+
+    # CHECAGEM FINAL — uma única vez, sincronizada com o relógio da vela
+    # Feita APÓS selecionar candidatos para não multiplicar o tempo por par
+    sinais = []
+    for s in sinais_candidatos:
+        if checagem_final(s['par'], s['dir']):
+            chave = f"{s['par']}_{agora.strftime('%H:%M')}"
+            registrar_sinal(s['par'], s['dir'], agora)
+            env[chave] = True
+            sinais.append(s)
+        # Só faz checagem final uma vez (já sincronizou com segundo 50)
+        break
 
     if not sinais:
         print("  Sem sinal aprovado neste ciclo.")
