@@ -5,10 +5,8 @@
 # ══════════════════════════════════════════════════════════════════
 
 # ── CREDENCIAIS ───────────────────────────────────────────────────
-import os
-IQ_EMAIL      = os.environ.get("IQ_EMAIL", "laiane.aline@gmail.com")
-IQ_PASS       = os.environ.get("IQ_PASS",  "alineegui95")
-IQ_SSID       = os.environ.get("IQ_SSID",  "")   # token de sessão pré-autenticado
+IQ_EMAIL      = "laiane.aline@gmail.com"
+IQ_PASS       = "alineegui95"
 TG_TOKEN      = "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg"
 TG_CHAT       = "5911742397"
 TWELVE_API    = "1be0b948fb1c48bb997e350c542edafd"
@@ -31,7 +29,6 @@ PARES_FOREX = [
     "XAU/USD",   # Ouro  — ADX>=22
 ]
 PARES_OTC = [
-    # IDs dos ativos OTC na IQ Option (M1, disponíveis no FDS)
     {"nome": "EURUSD-OTC",  "id": 76},
     {"nome": "GBPUSD-OTC",  "id": 77},
     {"nome": "USDJPY-OTC",  "id": 78},
