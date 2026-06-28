@@ -76,15 +76,28 @@ def _iq_conectar():
         try:
             print("  🔄 Conectando IQ Option via WebSocket...")
             api = IQ_Option(IQ_EMAIL, IQ_PASS)
-            check, reason = api.connect()
-            if check:
+            resultado = [False, "timeout"]
+
+            def _tentar():
+                try:
+                    check, reason = api.connect()
+                    resultado[0] = check
+                    resultado[1] = reason
+                except Exception as ex:
+                    resultado[1] = str(ex)
+
+            t = threading.Thread(target=_tentar, daemon=True)
+            t.start()
+            t.join(25)   # timeout 25s na conexão
+
+            if resultado[0]:
                 api.change_balance("PRACTICE")
                 _iq_api       = api
                 _iq_conectado = True
-                print(f"  ✅ IQ Option conectado! ({reason})")
+                print(f"  ✅ IQ Option conectado! ({resultado[1]})")
                 return True
             else:
-                print(f"  ❌ IQ Option falhou: {reason}")
+                print(f"  ❌ IQ Option falhou: {resultado[1]}")
                 _iq_conectado = False
                 return False
         except Exception as e:
@@ -652,7 +665,11 @@ def main():
     print()
 
     if is_otc:
-        _iq_conectar()
+        t_iq = threading.Thread(target=_iq_conectar, daemon=True)
+        t_iq.start()
+        t_iq.join(30)   # timeout 30s — não bloqueia o main loop
+        if t_iq.is_alive():
+            print("  ⚠️ IQ Option: timeout na conexão — tentará no primeiro ciclo")
 
     tg(
         f"🟢 <b>Sniper V10 v5 online!</b>\n\n"
