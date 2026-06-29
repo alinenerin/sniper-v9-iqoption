@@ -708,14 +708,22 @@ if __name__ == '__main__':
         sys.exit(0)
 
     iq = IQ_Option(IQ_EMAIL, IQ_PASS)
-
-    log('Conectando IQ Option via SSID...')
+    # Tenta usar SSID do ambiente para bypassar bloqueio de IP
+    _ssid = os.environ.get('IQ_SSID', '')
+    if _ssid:
+        log(f'Usando SSID do ambiente: {_ssid[:8]}...')
+        try:
+            import http.cookiejar as cj
+            c = cj.Cookie(0,'ssid',_ssid,None,False,'.iqoption.com',True,True,'/',False,False,None,False,None,None,{})
+            iq.api.session.cookies.set_cookie(c)
+        except Exception as _e:
+            log(f'Cookie err: {_e}')
+    log('Conectando IQ Option...')
     check, reason = iq.connect()
     log(f'Conexão: {check} | {reason}')
     if not check:
         log('ERRO: falha na conexão.')
         sys.exit(1)
-
     time.sleep(3)
     iq.change_balance(ACCOUNT_TYPE)
     saldo_atual = iq.get_balance()
