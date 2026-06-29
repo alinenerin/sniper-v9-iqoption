@@ -787,7 +787,9 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.websocket_thread = threading.Thread(target=self.websocket.run_forever, kwargs={'sslopt': _sslopt})
         self.websocket_thread.daemon = True
         self.websocket_thread.start()
-        while True:
+        import time as _t
+        _deadline = _t.time() + 20  # timeout de 20s no websocket
+        while _t.time() < _deadline:
             try:
                 if global_value.check_websocket_if_error:
                     return False, global_value.websocket_error_reason
@@ -797,6 +799,8 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                     return True, None
             except:
                 pass
+            _t.sleep(0.05)
+        return False, "Websocket connect timeout (20s)"
 
             pass
 
