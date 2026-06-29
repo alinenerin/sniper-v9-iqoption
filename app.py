@@ -2344,6 +2344,54 @@ def pwa_icon192():
 def pwa_icon512():
     return Response(_svg_to_png(512), mimetype='image/png')
 
+@app.route("/teste")
+def pagina_teste():
+    H = """<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Teste Botao</title>
+<style>
+body{background:#111;color:#fff;font-family:sans-serif;padding:20px;text-align:center}
+button{display:block;width:100%;padding:20px;font-size:1.2rem;font-weight:bold;
+       background:#00e676;color:#000;border:none;border-radius:12px;margin:10px 0;cursor:pointer}
+#log{margin-top:20px;background:#222;padding:10px;border-radius:8px;text-align:left;
+     font-family:monospace;font-size:.8rem;min-height:100px}
+</style>
+</head><body>
+<h2>Diagnostico de Botoes</h2>
+<button id="btn1">TESTE CLICK (SEM FETCH)</button>
+<button id="btn2">TESTE FETCH /estado</button>
+<button id="btn3">TESTE POST /iniciar</button>
+<div id="log">Aguardando clique...</div>
+<script>
+var log = document.getElementById('log');
+function addLog(msg){ log.innerHTML += '<br>' + new Date().toLocaleTimeString() + ' — ' + msg; }
+
+document.getElementById('btn1').addEventListener('click', function(){
+  addLog('CLICK FUNCIONOU! JavaScript OK.');
+});
+
+document.getElementById('btn2').addEventListener('click', function(){
+  addLog('Fazendo fetch GET /estado...');
+  fetch(window.location.origin + '/estado')
+    .then(function(r){ return r.json(); })
+    .then(function(d){ addLog('GET OK! ativo=' + d.ativo + ' saldo=' + d.saldo); })
+    .catch(function(e){ addLog('GET ERRO: ' + e.toString()); });
+});
+
+document.getElementById('btn3').addEventListener('click', function(){
+  addLog('Fazendo fetch POST /iniciar...');
+  fetch(window.location.origin + '/iniciar', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ addLog('POST OK! ok=' + d.ok); })
+    .catch(function(e){ addLog('POST ERRO: ' + e.toString()); });
+});
+
+addLog('JS carregado. Navegador: ' + navigator.userAgent.substring(0,80));
+</script>
+</body></html>"""
+    return Response(H, mimetype='text/html')
+
 # ══════════════════════════════════════════════════════════════════
 #  MAIN
 # ══════════════════════════════════════════════════════════════════
