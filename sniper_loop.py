@@ -708,11 +708,6 @@ if __name__ == '__main__':
         sys.exit(0)
 
     iq = IQ_Option(IQ_EMAIL, IQ_PASS)
-    # Injeta SSID via SESSION_COOKIE para bypassar bloqueio de IP no Railway
-    _ssid = os.environ.get('IQ_SSID', '')
-    if _ssid:
-        log(f'Injetando SSID: {_ssid[:8]}...')
-        iq.SESSION_COOKIE = {'ssid': _ssid}
     log('Conectando IQ Option...')
     check, reason = iq.connect()
     log(f'Conexão: {check} | {reason}')
