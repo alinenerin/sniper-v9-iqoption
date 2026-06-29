@@ -1742,8 +1742,8 @@ textarea:focus{border-color:#00e676}
     </div>
     <div class="trava-info" id="trava_info"></div>
     <div class="grid2" style="margin-top:14px">
-      <button class="btn btn-go"   ontouchstart="" onclick="iniciar()">▶ INICIAR</button>
-      <button class="btn btn-stop" ontouchstart="" onclick="parar()">⏹ PARAR</button>
+      <button class="btn btn-go"   id="btn-iniciar">▶ INICIAR</button>
+      <button class="btn btn-stop" id="btn-parar">⏹ PARAR</button>
     </div>
   </div>
 
@@ -1756,8 +1756,8 @@ textarea:focus{border-color:#00e676}
       Controla se os sinais aprovados serão executados automaticamente na IQ Option.
     </div>
     <div class="grid2">
-      <button class="btn btn-exec-on" ontouchstart="" onclick="execLigar()">⚡ EXECUTOR ON</button>
-      <button class="btn btn-exec-off" ontouchstart="" onclick="execDesligar()">🚫 EXECUTOR OFF</button>
+      <button class="btn btn-exec-on" id="btn-exec-on">⚡ EXECUTOR ON</button>
+      <button class="btn btn-exec-off" id="btn-exec-off">🚫 EXECUTOR OFF</button>
     </div>
   </div>
 
@@ -1801,8 +1801,8 @@ textarea:focus{border-color:#00e676}
       </div>
     </div>
     <div class="grid2" style="margin-top:10px">
-      <button class="btn btn-go" ontouchstart="" onclick="fetch('/forex/ligar',{method:'POST'}).then(atualizar)" id="btn_forex_on">▶ FOREX ON</button>
-      <button class="btn btn-stop" ontouchstart="" onclick="fetch('/forex/desligar',{method:'POST'}).then(atualizar)" id="btn_forex_off">⏹ FOREX OFF</button>
+      <button class="btn btn-go" id="btn-forex-on">▶ FOREX ON</button>
+      <button class="btn btn-stop" id="btn-forex-off">⏹ FOREX OFF</button>
     </div>
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
@@ -1833,8 +1833,8 @@ textarea:focus{border-color:#00e676}
       </div>
     </div>
     <div class="grid2" style="margin-top:10px">
-      <button class="btn btn-go" ontouchstart="" onclick="fetch('/otc/ligar',{method:'POST'}).then(atualizar)" id="btn_otc_on">▶ OTC ON</button>
-      <button class="btn btn-stop" ontouchstart="" onclick="fetch('/otc/desligar',{method:'POST'}).then(atualizar)" id="btn_otc_off">⏹ OTC OFF</button>
+      <button class="btn btn-go" id="btn-otc-on">▶ OTC ON</button>
+      <button class="btn btn-stop" id="btn-otc-off">⏹ OTC OFF</button>
     </div>
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
@@ -1859,7 +1859,7 @@ textarea:focus{border-color:#00e676}
       Engines automáticas continuam rodando normalmente.
     </div>
     <textarea id="filtro_input" placeholder="M1;EURUSD-OTC;09:52;CALL&#10;M1;GBPUSD-OTC;09:52;PUT&#10;M1;USDJPY-OTC;09:53;CALL&#10;..."></textarea>
-    <button class="btn btn-filtro" ontouchstart="" onclick="rodarFiltro()" style="margin-top:8px">
+    <button class="btn btn-filtro" id="btn-filtrar" style="margin-top:8px">
       🔍 FILTRAR LISTA
     </button>
     <div id="filtro_feedback" style="margin-top:8px;font-size:.75rem;color:#ce93d8"></div>
@@ -1876,7 +1876,7 @@ textarea:focus{border-color:#00e676}
       Engines automáticas continuam rodando em paralelo.
     </div>
     <textarea id="sinais_input" placeholder="M1;EURUSD-OTC;09:52;CALL&#10;M3;GBPUSD;09:53;PUT&#10;M1;USDJPY-OTC;09:54;CALL"></textarea>
-    <button class="btn btn-manual" ontouchstart="" onclick="enviarSinais()" style="margin-top:8px">
+    <button class="btn btn-manual" id="btn-enviar" style="margin-top:8px">
       📤 ENVIAR SINAIS
     </button>
     <div id="manual_feedback" style="margin-top:8px;font-size:.75rem;color:#ffd600"></div>
@@ -1910,8 +1910,8 @@ const ICONS = {
 
 function atualizar(){
   fetch('/estado').then(r=>r.json()).then(d=>{
-    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? ' STOP DIÁRIO' : 'PARADO');
-    document.getElementById('saldo').textContent = '$'+d.saldo.toFixed(2);
+    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? 'STOP DIARIO' : 'PARADO');
+    document.getElementById('saldo').textContent = '$'+(d.saldo||0).toFixed(2);
     document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
     document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
 
@@ -1973,21 +1973,31 @@ function atualizar(){
   });
 }
 
-function iniciar(){ fetch('/iniciar',{method:'POST'}).then(atualizar); }
-function parar()  { fetch('/parar',  {method:'POST'}).then(atualizar); }
+function post(url){ return fetch(url,{method:'POST'}).then(r=>r.json()); }
 
-function execLigar(){
-  fetch('/executor/ligar',{method:'POST'}).then(()=>{
-    const b = document.getElementById('exec_badge');
-    b.textContent='ATIVO'; b.style.background='#00e676'; b.style.color='#000';
+function iniciar(){ post('/iniciar').then(atualizar); }
+function parar()  { post('/parar').then(atualizar); }
+function execLigar()   { post('/executor/ligar').then(atualizar); }
+function execDesligar(){ post('/executor/desligar').then(atualizar); }
+
+document.addEventListener('DOMContentLoaded', function(){
+  var btns = {
+    'btn-iniciar':   iniciar,
+    'btn-parar':     parar,
+    'btn-exec-on':   execLigar,
+    'btn-exec-off':  execDesligar,
+    'btn-forex-on':  function(){ post('/forex/ligar').then(atualizar); },
+    'btn-forex-off': function(){ post('/forex/desligar').then(atualizar); },
+    'btn-otc-on':    function(){ post('/otc/ligar').then(atualizar); },
+    'btn-otc-off':   function(){ post('/otc/desligar').then(atualizar); },
+    'btn-filtrar':   rodarFiltro,
+    'btn-enviar':    enviarSinais,
+  };
+  Object.keys(btns).forEach(function(id){
+    var el = document.getElementById(id);
+    if(el){ el.addEventListener('click', btns[id]); }
   });
-}
-function execDesligar(){
-  fetch('/executor/desligar',{method:'POST'}).then(()=>{
-    const b = document.getElementById('exec_badge');
-    b.textContent='DESATIVADO'; b.style.background='#ff1744'; b.style.color='#fff';
-  });
-}
+});
 
 function rodarFiltro(){
   const txt = document.getElementById('filtro_input').value.trim();
