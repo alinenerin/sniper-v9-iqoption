@@ -18,7 +18,7 @@ subprocess.call(
 
 import time, math, threading, requests, pytz
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, render_template_string, request as freq, Response
+from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
@@ -1641,534 +1641,217 @@ def iniciar_motor():
 # ══════════════════════════════════════════════════════════════════
 app = Flask(__name__)
 
-HTML = """
-<!DOCTYPE html>
+HTML = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sniper Híbrido V10</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Sniper V10</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Sniper V10">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0a0a0a;color:#e0e0e0;font-family:'Segoe UI',sans-serif;padding:16px}
-.wrap{max-width:560px;margin:0 auto}
-h1{text-align:center;font-size:1.4rem;letter-spacing:3px;margin-bottom:18px;
-   background:linear-gradient(90deg,#00b4ff,#ff6b00);-webkit-background-clip:text;
-   -webkit-text-fill-color:transparent}
-.card{background:#141414;border-radius:14px;padding:14px 16px;margin-bottom:12px;border:1px solid #222}
-.card h3{font-size:.68rem;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
-.val{font-size:1.35rem;font-weight:700}
-.g{color:#00e676}.r{color:#ff1744}.b{color:#00b4ff}.o{color:#ff6b00}.y{color:#ffd600}.gr{color:#777}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0a0a;color:#e0e0e0;font-family:sans-serif;padding:12px}
+.wrap{max-width:520px;margin:0 auto}
+.card{background:#141414;border:1px solid #222;border-radius:12px;padding:14px;margin-bottom:10px}
+.titulo{font-size:.65rem;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px}
+.status-box{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.val{font-size:1.4rem;font-weight:700}
+.val-g{color:#00e676}
+.val-w{color:#fff}
+.label{font-size:.6rem;color:#555;text-transform:uppercase}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
-.engine-box{border-radius:12px;padding:12px;margin-bottom:10px}
-.engine-forex{border:1px solid #00b4ff22;background:#001a2e}
-.engine-otc  {border:1px solid #ff6b0022;background:#1a0d00}
-.engine-title{font-size:.9rem;font-weight:700;margin-bottom:8px}
-.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:.7rem;font-weight:700}
-.badge-on {background:#00e67622;color:#00e676}
-.badge-off{background:#ff174422;color:#ff1744}
-.badge-op {background:#ffd60022;color:#ffd600}
-.placar{display:flex;gap:16px;align-items:center;margin-top:4px}
-.placar-item{text-align:center}
-.placar-item .n{font-size:1.3rem;font-weight:700}
-.placar-item .l{font-size:.65rem;color:#555}
-.btn{border:none;border-radius:10px;font-size:.95rem;font-weight:700;cursor:pointer;
-     padding:13px;transition:.15s;width:100%;
-     -webkit-tap-highlight-color:transparent;touch-action:manipulation;
-     position:relative;z-index:10;user-select:none;-webkit-user-select:none}
-.btn-go {background:#00e676;color:#000}
+/* BOTOES — usando form+button para garantir funcionamento */
+.btn-form{width:100%;margin:0;padding:0}
+.btn{width:100%;padding:16px 8px;font-size:1rem;font-weight:700;border:none;
+     border-radius:10px;cursor:pointer;-webkit-appearance:none;appearance:none}
+.btn-go  {background:#00e676;color:#000}
 .btn-stop{background:#ff1744;color:#fff}
-.btn:hover{opacity:.82}
-.log-wrap{background:#0d0d0d;border-radius:8px;height:150px;overflow-y:auto;
-          padding:8px;font-family:monospace;font-size:.68rem}
-.log-wrap p{margin:1px 0;color:#999}
-.stop-bar{background:#ff1744;color:#fff;text-align:center;padding:9px;
-          border-radius:10px;font-weight:700;margin-bottom:12px;display:none}
-.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}
+.btn-exec{background:#7c4dff;color:#fff}
+.btn-off {background:#333;color:#aaa}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:.7rem;font-weight:700}
+.badge-on  {background:#00e67622;color:#00e676}
+.badge-off {background:#33333388;color:#888}
+.badge-exec{background:#7c4dff22;color:#ce93d8}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
 .dot-g{background:#00e676}.dot-r{background:#ff1744}.dot-y{background:#ffd600}
-.trava-info{font-size:.72rem;color:#555;margin-top:4px}
-/* Manual */
-.manual-box{background:#0d1a0d;border:1px solid #00e67622;border-radius:14px;padding:14px 16px;margin-bottom:12px}
-.manual-title{font-size:.9rem;font-weight:700;color:#00e676;margin-bottom:8px}
-/* Filtro */
-.filtro-box{background:#0d0d1a;border:1px solid #9c27b022;border-radius:14px;padding:14px 16px;margin-bottom:12px}
-.filtro-title{font-size:.9rem;font-weight:700;color:#ce93d8;margin-bottom:8px}
-textarea{width:100%;background:#0a0a0a;border:1px solid #333;border-radius:8px;
-         color:#e0e0e0;font-family:monospace;font-size:.8rem;padding:10px;
-         resize:vertical;min-height:90px;outline:none}
-textarea:focus{border-color:#00e676}
-.btn-manual{background:#00e676;color:#000;font-weight:700}
-.btn-manual:hover{opacity:.82}
-.btn-filtro{background:#9c27b0;color:#fff;font-weight:700}
-.btn-filtro:hover{opacity:.82}
-.btn-exec-all{background:#ff6b00;color:#000;font-weight:700;margin-top:8px}
-.btn-exec-on{background:#00e676;color:#000}
-.btn-exec-off{background:#ff1744;color:#fff}
-.executor-badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:.8rem;font-weight:700;margin-left:8px}
-.btn-exec-all:hover{opacity:.82}
-.sinal-row{display:flex;align-items:center;gap:8px;padding:5px 0;
-           border-bottom:1px solid #1a1a1a;font-size:.75rem;flex-wrap:wrap}
-.sinal-raw{font-family:monospace;color:#ccc}
-.sinal-motivo{color:#666;font-size:.68rem}
-.badge-win {background:#00e67622;color:#00e676}
-.badge-loss{background:#ff174422;color:#ff1744}
-.badge-exp {background:#55555522;color:#777}
-.filtro-row{display:flex;align-items:flex-start;gap:8px;padding:7px 0;
-            border-bottom:1px solid #1a1a1a;font-size:.75rem;flex-wrap:wrap}
-.filtro-info{font-size:.68rem;color:#888;margin-top:2px}
-.filtro-bloq{opacity:.5}
-.ic-diamante{color:#ce93d8}.ic-ok{color:#00e676}.ic-aviso{color:#ffd600}
+.log-box{background:#0d0d0d;border-radius:8px;height:120px;overflow-y:auto;
+         padding:8px;font-family:monospace;font-size:.65rem;margin-top:8px}
+.log-box p{margin:1px 0;color:#777}
+textarea{width:100%;background:#0d0d0d;color:#e0e0e0;border:1px solid #333;
+         border-radius:8px;padding:8px;font-family:monospace;font-size:.75rem;
+         resize:vertical;margin-bottom:6px;-webkit-appearance:none}
+.info{font-size:.72rem;color:#555;margin-top:4px}
+.saldo-big{font-size:2rem;font-weight:700;color:#00e676}
 </style>
-  <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#0a0a0a">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Sniper V10">
-  <link rel="apple-touch-icon" href="/icon-192.png">
-  <script>
-    if('serviceWorker' in navigator){
-      navigator.serviceWorker.register('/sw.js');
-    }
-  </script>
 </head>
 <body>
 <div class="wrap">
-  <h1>⚡ SNIPER HÍBRIDO V10</h1>
-
-  <div class="stop-bar" id="stop_bar">🛑 STOP DIÁRIO — 4 losses atingidos. Reinicie amanhã.</div>
 
   <!-- STATUS GERAL -->
-  <div class="card">
-    <h3>Status Geral</h3>
-    <div class="grid2">
+  <div class="card" id="card-status">
+    <div class="titulo">Status do Bot</div>
+    <div class="status-box">
       <div>
-        <div class="val b" id="bot_status">—</div>
-        <div style="font-size:.75rem;color:#555;margin-top:3px" id="iniciado_em"></div>
+        <div class="saldo-big" id="saldo">$0.00</div>
+        <div class="label">Saldo Real</div>
       </div>
-      <div>
-        <div class="val g" id="saldo">$0.00</div>
-        <div style="font-size:.65rem;color:#555">SALDO</div>
+      <div style="text-align:right">
+        <div class="val val-w" id="bot_status">—</div>
+        <div class="label">Bot</div>
+        <div class="info" id="iniciado_em"></div>
       </div>
     </div>
-    <div class="trava-info" id="trava_info"></div>
-    <div class="grid2" style="margin-top:14px">
-      <button class="btn btn-go"   id="btn-iniciar" data-url="/iniciar" data-reload="1">▶ INICIAR</button>
-      <button class="btn btn-stop" id="btn-parar" data-url="/parar" data-reload="1">⏹ PARAR</button>
+    <div class="grid2" style="margin-top:10px">
+      <form class="btn-form" action="/iniciar" method="post">
+        <button class="btn btn-go" type="submit">▶ INICIAR</button>
+      </form>
+      <form class="btn-form" action="/parar" method="post">
+        <button class="btn btn-stop" type="submit">⏹ PARAR</button>
+      </form>
+    </div>
+    <div id="stop_bar" style="display:none;background:#ff1744;color:#fff;text-align:center;padding:8px;border-radius:8px;margin-top:8px;font-weight:700">
+      STOP DIARIO ATIVO
     </div>
   </div>
 
-  <!-- EXECUTOR AUTOMÁTICO -->
+  <!-- EXECUTOR -->
   <div class="card">
-    <h3>⚡ Executor Automático
-      <span class="executor-badge" id="exec_badge" style="background:#00e676;color:#000">ATIVO</span>
-    </h3>
-    <div style="font-size:.75rem;color:#666;margin-bottom:10px">
-      Controla se os sinais aprovados serão executados automaticamente na IQ Option.
+    <div class="titulo">Executor Automatico &nbsp;
+      <span class="badge badge-exec" id="exec_badge">ATIVO</span>
     </div>
     <div class="grid2">
-      <button class="btn btn-exec-on" id="btn-exec-on" data-url="/executor/ligar" data-reload="1">⚡ EXECUTOR ON</button>
-      <button class="btn btn-exec-off" id="btn-exec-off" data-url="/executor/desligar" data-reload="1">🚫 EXECUTOR OFF</button>
+      <form class="btn-form" action="/executor/ligar" method="post">
+        <button class="btn btn-exec" type="submit">⚡ EXEC ON</button>
+      </form>
+      <form class="btn-form" action="/executor/desligar" method="post">
+        <button class="btn btn-off" type="submit">EXEC OFF</button>
+      </form>
     </div>
   </div>
 
-  <!-- STOP DIÁRIO -->
+  <!-- FOREX -->
   <div class="card">
-    <h3>Stop Diário Unificado</h3>
+    <div class="titulo">Engine Forex &nbsp;
+      <span class="badge" id="forex_badge">—</span>
+    </div>
     <div class="grid3">
-      <div class="placar-item">
-        <div class="n g" id="total_w">0</div>
-        <div class="l">WINS</div>
-      </div>
-      <div class="placar-item">
-        <div class="n r" id="total_l">0</div>
-        <div class="l">LOSSES</div>
-      </div>
-      <div class="placar-item">
-        <div class="n y" id="losses_dia">0/4</div>
-        <div class="l">HOJE/STOP</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ENGINE FOREX -->
-  <div class="engine-box engine-forex">
-    <div class="engine-title b">🔵 ENGINE FOREX (M3 · Score 170)</div>
-    <div class="grid2">
+      <form class="btn-form" action="/forex/ligar" method="post">
+        <button class="btn btn-go" type="submit">▶ ON</button>
+      </form>
+      <form class="btn-form" action="/forex/desligar" method="post">
+        <button class="btn btn-stop" type="submit">⏹ OFF</button>
+      </form>
       <div>
-        <span class="badge" id="forex_badge">—</span>
-        <div style="font-size:.8rem;margin-top:5px">Par: <b id="forex_par">—</b></div>
-        <div style="font-size:.75rem;color:#555">Score: <span id="forex_score">0</span></div>
-      </div>
-      <div class="placar">
-        <div class="placar-item">
-          <div class="n g" id="forex_w">0</div>
-          <div class="l">W</div>
-        </div>
-        <div class="placar-item">
-          <div class="n r" id="forex_l">0</div>
-          <div class="l">L</div>
-        </div>
+        <div class="val val-g" id="forex_wr" style="font-size:1rem;padding-top:8px">—</div>
+        <div class="label">W/L</div>
       </div>
     </div>
-    <div class="grid2" style="margin-top:10px">
-      <button class="btn btn-go" id="btn-forex-on" data-url="/forex/ligar" data-reload="1">▶ FOREX ON</button>
-      <button class="btn btn-stop" id="btn-forex-off" data-url="/forex/desligar" data-reload="1">⏹ FOREX OFF</button>
-    </div>
-    <div style="margin-top:10px">
-      <div class="card" style="margin:0;padding:8px">
-        <h3>Log Forex</h3>
-        <div class="log-wrap" id="log_forex"></div>
-      </div>
-    </div>
+    <div class="log-box" id="log_forex"></div>
   </div>
 
-  <!-- ENGINE OTC -->
-  <div class="engine-box engine-otc">
-    <div class="engine-title o">🟠 ENGINE OTC (M1 · Score 100)</div>
-    <div class="grid2">
-      <div>
-        <span class="badge" id="otc_badge">—</span>
-        <div style="font-size:.8rem;margin-top:5px">Par: <b id="otc_par">—</b></div>
-        <div style="font-size:.75rem;color:#555">Score: <span id="otc_score">0</span></div>
-      </div>
-      <div class="placar">
-        <div class="placar-item">
-          <div class="n g" id="otc_w">0</div>
-          <div class="l">W</div>
-        </div>
-        <div class="placar-item">
-          <div class="n r" id="otc_l">0</div>
-          <div class="l">L</div>
-        </div>
-      </div>
-    </div>
-    <div class="grid2" style="margin-top:10px">
-      <button class="btn btn-go" id="btn-otc-on" data-url="/otc/ligar" data-reload="1">▶ OTC ON</button>
-      <button class="btn btn-stop" id="btn-otc-off" data-url="/otc/desligar" data-reload="1">⏹ OTC OFF</button>
-    </div>
-    <div style="margin-top:10px">
-      <div class="card" style="margin:0;padding:8px">
-        <h3>Log OTC</h3>
-        <div class="log-wrap" id="log_otc"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- IQ + CONTROLES -->
+  <!-- OTC -->
   <div class="card">
-    <h3>IQ Option</h3>
-    <span class="dot" id="iq_dot"></span>
-    <span id="iq_txt">—</span>
+    <div class="titulo">Engine OTC &nbsp;
+      <span class="badge" id="otc_badge">—</span>
+    </div>
+    <div class="grid3">
+      <form class="btn-form" action="/otc/ligar" method="post">
+        <button class="btn btn-go" type="submit">▶ ON</button>
+      </form>
+      <form class="btn-form" action="/otc/desligar" method="post">
+        <button class="btn btn-stop" type="submit">⏹ OFF</button>
+      </form>
+      <div>
+        <div class="val val-g" id="otc_wr" style="font-size:1rem;padding-top:8px">—</div>
+        <div class="label">W/L</div>
+      </div>
+    </div>
+    <div class="log-box" id="log_otc"></div>
   </div>
 
-  <!-- ── SNIPER FILTRO V9.1 ──────────────────────────────────────── -->
-  <div class="filtro-box">
-    <div class="filtro-title">🎯 SNIPER FILTRO V9.1</div>
-    <div style="font-size:.7rem;color:#666;margin-bottom:8px">
-      Cole a lista bruta abaixo. O filtro aplica 4 camadas (Técnico · Markov · Notícias · Vela) e mostra os aprovados.<br>
-      Engines automáticas continuam rodando normalmente.
-    </div>
-    <textarea id="filtro_input" placeholder="M1;EURUSD-OTC;09:52;CALL&#10;M1;GBPUSD-OTC;09:52;PUT&#10;M1;USDJPY-OTC;09:53;CALL&#10;..."></textarea>
-    <button class="btn btn-filtro" id="btn-filtrar" style="margin-top:8px">
-      🔍 FILTRAR LISTA
-    </button>
-    <div id="filtro_feedback" style="margin-top:8px;font-size:.75rem;color:#ce93d8"></div>
-
-    <!-- Resultado do filtro -->
-    <div id="filtro_resultado" style="margin-top:10px"></div>
+  <!-- SINAIS MANUAIS -->
+  <div class="card">
+    <div class="titulo">Enviar Sinais Manualmente</div>
+    <form action="/sinais_form" method="post">
+      <textarea name="sinais" rows="4" placeholder="M1;EURUSD;14:30;CALL&#10;M1;GBPUSD;14:31;PUT"></textarea>
+      <button class="btn btn-exec" type="submit" style="margin-top:4px">ENVIAR AO EXECUTOR</button>
+    </form>
+    <div class="info" id="fila_info" style="margin-top:6px"></div>
   </div>
 
-  <!-- ── SINAIS MANUAIS ─────────────────────────────────────────── -->
-  <div class="manual-box">
-    <div class="manual-title">📋 SINAIS MANUAIS</div>
-    <div style="font-size:.7rem;color:#666;margin-bottom:8px">
-      Formato: <code style="color:#aaa">M1;PAR;HH:MM;CALL</code> &nbsp;·&nbsp; um por linha<br>
-      Engines automáticas continuam rodando em paralelo.
-    </div>
-    <textarea id="sinais_input" placeholder="M1;EURUSD-OTC;09:52;CALL&#10;M3;GBPUSD;09:53;PUT&#10;M1;USDJPY-OTC;09:54;CALL"></textarea>
-    <button class="btn btn-manual" id="btn-enviar" style="margin-top:8px">
-      📤 ENVIAR SINAIS
-    </button>
-    <div id="manual_feedback" style="margin-top:8px;font-size:.75rem;color:#ffd600"></div>
-
-    <!-- Fila de sinais -->
-    <div id="fila_sinais" style="margin-top:10px"></div>
+  <!-- RESET STOP -->
+  <div class="card">
+    <form class="btn-form" action="/reset_stop" method="post">
+      <button class="btn btn-off" type="submit">RESETAR STOP DIARIO</button>
+    </form>
   </div>
 
 </div>
 
 <script>
-/*  STATUS BADGE  */
-var CORES = {
-  aguardando:   'badge-on',
-  confirmando:  'badge-op',
-  executando:   'badge-op',
-  win:          'badge-win',
-  loss:         'badge-loss',
-  bloqueado:    'badge-loss',
-  expirado:     'badge-exp',
-};
-var ICONS = {
-  aguardando:  'aguardando',
-  confirmando: 'confirmando',
-  executando:  'executando',
-  win:         'WIN',
-  loss:        'LOSS',
-  bloqueado:   'bloqueado',
-  expirado:    'expirado',
-};
+function upd(){
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', '/estado', true);
+  xhr.onreadystatechange = function(){
+    if(xhr.readyState === 4 && xhr.status === 200){
+      try{
+        var d = JSON.parse(xhr.responseText);
+        document.getElementById('saldo').textContent     = '$' + (d.saldo||0).toFixed(2);
+        document.getElementById('bot_status').textContent= d.ativo ? 'RODANDO' : 'PARADO';
+        document.getElementById('bot_status').style.color= d.ativo ? '#00e676' : '#ff1744';
+        document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde '+d.iniciado_em : '';
+        document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
 
-function atualizar(){
-  var base = window.location.origin;
-  fetch(base+'/estado').then(function(r){ return r.json(); }).then(function(d){
-    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? 'STOP' : 'PARADO');
-    document.getElementById('saldo').textContent = '$'+(d.saldo||0).toFixed(2);
-    document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
-    document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
+        var eb = document.getElementById('exec_badge');
+        var eOn = d.executor_ativo !== false;
+        eb.textContent  = eOn ? 'ATIVO' : 'OFF';
+        eb.className    = 'badge ' + (eOn ? 'badge-exec' : 'badge-off');
 
-    var trava = document.getElementById('trava_info');
-    trava.textContent = d.trava_par ? 'Trava: '+d.trava_par : '';
+        var fb = document.getElementById('forex_badge');
+        var fOn = d.forex_ativo !== false;
+        fb.textContent = fOn ? 'ON' : 'OFF';
+        fb.className   = 'badge ' + (fOn ? 'badge-on' : 'badge-off');
+        document.getElementById('forex_wr').textContent = (d.forex_wins||0) + 'W / ' + (d.forex_losses||0) + 'L';
 
-    document.getElementById('total_w').textContent  = d.forex_wins + d.otc_wins;
-    document.getElementById('total_l').textContent  = d.forex_losses + d.otc_losses;
-    document.getElementById('losses_dia').textContent = d.losses_dia+'/4';
+        var ob = document.getElementById('otc_badge');
+        var oOn = d.otc_ativo !== false;
+        ob.textContent = oOn ? 'ON' : 'OFF';
+        ob.className   = 'badge ' + (oOn ? 'badge-on' : 'badge-off');
+        document.getElementById('otc_wr').textContent = (d.otc_wins||0) + 'W / ' + (d.otc_losses||0) + 'L';
 
-    var fb = document.getElementById('forex_badge');
-    fb.textContent  = d.forex_status === 'operando' ? ' OPERANDO' : ' MONITORANDO';
-    fb.className    = 'badge ' + (d.forex_status === 'operando' ? 'badge-op' : 'badge-on');
-    document.getElementById('forex_par').textContent   = d.forex_par || '';
-    document.getElementById('forex_score').textContent = d.forex_score;
-    document.getElementById('forex_w').textContent     = d.forex_wins;
-    document.getElementById('forex_l').textContent     = d.forex_losses;
+        var lf = document.getElementById('log_forex');
+        if(d.log_forex && d.log_forex.length){
+          lf.innerHTML = (d.log_forex||[]).slice(-20).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
+        }
+        var lo = document.getElementById('log_otc');
+        if(d.log_otc && d.log_otc.length){
+          lo.innerHTML = (d.log_otc||[]).slice(-20).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
+        }
 
-    var ob = document.getElementById('otc_badge');
-    ob.textContent = d.otc_status === 'operando' ? ' OPERANDO' : ' MONITORANDO';
-    ob.className   = 'badge ' + (d.otc_status === 'operando' ? 'badge-op' : 'badge-on');
-    document.getElementById('otc_par').textContent   = d.otc_par || '';
-    document.getElementById('otc_score').textContent = d.otc_score;
-    document.getElementById('otc_w').textContent     = d.otc_wins;
-    document.getElementById('otc_l').textContent     = d.otc_losses;
-
-    var dot = document.getElementById('iq_dot');
-    dot.className = 'dot ' + (d.iq_ok ? 'dot-g' : 'dot-r');
-    document.getElementById('iq_txt').textContent = d.iq_ok ? 'Conectada ' : 'Desconectada ';
-
-    // Badge executor
-    var eb = document.getElementById('exec_badge');
-    if(eb){
-      var on = d.executor_ativo !== false;
-      eb.textContent = on ? 'ATIVO' : 'DESATIVADO';
-      eb.style.background = on ? '#00e676' : '#ff1744';
-      eb.style.color = on ? '#000' : '#fff';
+        var xhr2 = new XMLHttpRequest();
+        xhr2.open('GET', '/sinais', true);
+        xhr2.onreadystatechange = function(){
+          if(xhr2.readyState===4 && xhr2.status===200){
+            try{
+              var lista = JSON.parse(xhr2.responseText);
+              var fi = document.getElementById('fila_info');
+              fi.textContent = lista.length ? lista.length + ' sinal(is) na fila.' : '';
+            }catch(e){}
+          }
+        };
+        xhr2.send();
+      }catch(e){}
     }
-
-    var lf = document.getElementById('log_forex');
-    lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
-    var lo = document.getElementById('log_otc');
-    lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
-  });
-
-  /* Fila de sinais manuais */
-  fetch(base+'/sinais').then(function(r){ return r.json(); }).then(function(lista){
-    var el = document.getElementById('fila_sinais');
-    if(!lista.length){ el.innerHTML=''; return; }
-    var html2 = '';
-    for(var k=0; k<lista.length; k++){
-      var s2 = lista[k];
-      var cor2  = CORES[s2.status]  || 'badge-on';
-      var icon2 = ICONS[s2.status]  || '';
-      html2 += '<div class="sinal-row">';
-      html2 += '<span class="badge ' + cor2 + '">' + icon2 + ' ' + s2.status.toUpperCase() + '</span>';
-      html2 += '<span class="sinal-raw">' + s2.raw + '</span>';
-      if(s2.motivo) html2 += '<span class="sinal-motivo">' + s2.motivo + '</span>';
-      html2 += '</div>';
-    }
-    el.innerHTML = html2;
-  });
+  };
+  xhr.send();
 }
-
-function post(url){
-  var base = window.location.origin;
-  return fetch(base+url, {method:'POST'}).then(function(r){ return r.json(); });
-}
-
-function iniciar(){ post('/iniciar').then(atualizar); }
-function parar()  { post('/parar').then(atualizar); }
-function execLigar()   { post('/executor/ligar').then(atualizar); }
-function execDesligar(){ post('/executor/desligar').then(atualizar); }
-
-/* Bind botoes por data-url */
-document.addEventListener('DOMContentLoaded', function(){
-  document.querySelectorAll('[data-url]').forEach(function(el){
-    el.addEventListener('click', function(e){
-      e.preventDefault();
-      /* feedback visual imediato */
-      var origTxt = el.textContent;
-      var origBg  = el.style.background;
-      el.textContent = '...';
-      el.style.background = '#ffd600';
-      el.disabled = true;
-      var url = el.getAttribute('data-url');
-      var _base = window.location.origin;
-      fetch(_base+url, {method:'POST'})
-        .then(function(r){ return r.json(); })
-        .then(function(){
-          el.textContent = origTxt;
-          el.style.background = origBg;
-          el.disabled = false;
-          atualizar();
-        })
-        .catch(function(err){
-          el.textContent = 'ERRO';
-          el.style.background = '#ff1744';
-          setTimeout(function(){ el.textContent=origTxt; el.style.background=origBg; el.disabled=false; }, 2000);
-        });
-    });
-  });
-  var bFiltrar = document.getElementById('btn-filtrar');
-  if(bFiltrar) bFiltrar.addEventListener('click', rodarFiltro);
-  var bEnviar  = document.getElementById('btn-enviar');
-  if(bEnviar)  bEnviar.addEventListener('click', enviarSinais);
-  /* atualizar status ao abrir */
-  atualizar();
-});
-
-function rodarFiltro(){
-  var txt = document.getElementById('filtro_input').value.trim();
-  if(!txt){ return; }
-  var fb = document.getElementById('filtro_feedback');
-  fb.style.color = '#ce93d8';
-  fb.textContent = ' Processando... (aguarde, consulta IQ + ForexFactory)';
-  document.getElementById('filtro_resultado').innerHTML = '';
-  fetch('/filtro', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({lista: txt})
-  }).then(function(r){ return r.json(); }).then(function(d){
-    if(d.ok){
-      fb.textContent = ' Filtro iniciado! Resultado aparece abaixo em segundos...';
-      pollFiltro();
-    } else {
-      fb.style.color = '#ff1744';
-      fb.textContent = ' '+(d.msg||'Erro.');
-    }
-  });
-}
-
-function pollFiltro(){
-  fetch('/filtro').then(function(r){ return r.json(); }).then(function(d){
-    var fb  = document.getElementById('filtro_feedback');
-    if(d.rodando){
-      fb.textContent = ' Processando... buscando velas e aplicando filtros';
-      setTimeout(pollFiltro, 1500);
-      return;
-    }
-    var res = document.getElementById('filtro_resultado');
-    if(d.erro){ fb.style.color='#ff1744'; fb.textContent=' '+d.erro; return; }
-
-    var apr = d.resultado || [];
-    var blq = d.bloqueados || [];
-    var html = '';
-
-    if(apr.length){
-      html += '<div style="font-size:.72rem;color:#ce93d8;margin-bottom:6px">' + apr.length + ' aprovado(s) — clique Executar para enviar ao executor</div>';
-      for(var i=0; i<apr.length; i++){
-        var s = apr[i];
-        var rawEsc = s.raw.replace(/'/g, "\'");
-        html += '<div class="filtro-row">';
-        html += '<span class="badge badge-on" style="background:#9c27b022;color:#ce93d8">' + s.ic + ' ' + s.score + 'pts</span>';
-        html += '<div>';
-        html += '<span class="sinal-raw">' + s.raw + '</span>';
-        html += '<div class="filtro-info">Setup:' + s.setup + ' | RSI:' + s.rsi + ' | Mkv:' + s.markov + '% | Vela:' + s.vela + '(' + s.body + '%) | Cons:' + s.cons + '%(' + s.n + 'x)</div>';
-        html += '</div>';
-        html += '<button data-raw="' + rawEsc + '" class="btn-exec-um" style="margin-left:auto;background:#ff6b00;color:#000;border:none;border-radius:8px;padding:4px 10px;font-size:.7rem;font-weight:700;cursor:pointer">Executar</button>';
-        html += '</div>';
-      }
-      html += '<button class="btn btn-exec-all" id="btn-enviar-todos">Enviar TODOS ao Executor (' + apr.length + ')</button>';
-    } else {
-      html += '<div style="color:#666;font-size:.75rem;padding:6px 0">Nenhum sinal aprovado pelo filtro.</div>';
-    }
-
-    if(blq.length){
-      html += '<div style="font-size:.68rem;color:#444;margin-top:10px;margin-bottom:4px">' + blq.length + ' bloqueado(s):</div>';
-      for(var j=0; j<blq.length; j++){
-        var b = blq[j];
-        html += '<div class="filtro-row filtro-bloq">';
-        html += '<span class="sinal-raw">' + b.par + ' ' + b.hora + ' ' + b.dir + '</span>';
-        html += '<span class="sinal-motivo">' + b.motivo + '</span>';
-        html += '</div>';
-      }
-    }
-
-    res.innerHTML = html;
-    fb.textContent = 'Concluido: ' + apr.length + ' aprovados / ' + blq.length + ' bloqueados';
-
-    /* bind botoes dinamicos pos-render */
-    document.querySelectorAll('.btn-exec-um').forEach(function(btn){
-      btn.addEventListener('click', function(){ enviarUm(btn.getAttribute('data-raw')); });
-    });
-    var bTodos = document.getElementById('btn-enviar-todos');
-    if(bTodos) bTodos.addEventListener('click', enviarTodos);
-  });
-}
-
-function enviarUm(raw){
-  var base = window.location.origin;
-  fetch(base+'/sinais', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({sinais: raw})
-  }).then(function(r){ return r.json(); }).then(function(d){
-    alert(d.ok ? 'Sinal enviado ao executor!' : (d.msg||'Erro'));
-    atualizar();
-  });
-}
-
-function enviarTodos(){
-  var base = window.location.origin;
-  fetch(base+'/filtro').then(function(r){ return r.json(); }).then(function(d){
-    var linhas = '';
-    for(var i=0; i<(d.resultado||[]).length; i++){
-      if(i>0) linhas += '\n';
-      linhas += d.resultado[i].raw;
-    }
-    if(!linhas){ alert('Nenhum sinal aprovado.'); return; }
-    fetch(base+'/sinais',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({sinais: linhas})
-    }).then(function(r){ return r.json(); }).then(function(d2){
-      alert(d2.ok ? (d2.adicionados + ' sinal(is) enviados ao executor!') : (d2.msg||'Erro'));
-      atualizar();
-    });
-  });
-}
-
-function enviarSinais(){
-  var txt = document.getElementById('sinais_input').value.trim();
-  if(!txt){ return; }
-  fetch('/sinais', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({sinais: txt})
-  }).then(function(r){ return r.json(); }).then(function(d){
-    var fb = document.getElementById('manual_feedback');
-    if(d.ok){
-      fb.style.color = '#00e676';
-      fb.textContent = ' ' + d.adicionados + ' sinal(is) adicionado(s) à fila!';
-      document.getElementById('sinais_input').value = '';
-    } else {
-      fb.style.color = '#ff1744';
-      fb.textContent = ' ' + (d.msg || 'Erro ao processar sinais.');
-    }
-    setTimeout(function(){ fb.textContent=''; }, 5000);
-    atualizar();
-  });
-}
-
-setInterval(atualizar, 3000);
-atualizar();
+upd();
+setInterval(upd, 3000);
 </script>
 </body>
 </html>
@@ -2193,52 +1876,67 @@ def get_estado_route():
 
 @app.route("/iniciar", methods=["POST"])
 def iniciar():
-    if estado.get("stop_diario"):
-        return jsonify({"ok": False, "msg": "Stop diário ativo."})
-    if not estado["ativo"]:
+    is_form = freq.content_type and 'urlencoded' in freq.content_type
+    if not estado.get("stop_diario") and not estado["ativo"]:
         estado["ativo"] = True
         threading.Thread(target=iniciar_motor, daemon=True).start()
+    if is_form:
+        return redirect("/")
     return jsonify({"ok": True})
 
 @app.route("/parar", methods=["POST"])
 def parar():
     estado["ativo"] = False
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
     return jsonify({"ok": True})
 
 @app.route("/forex/ligar", methods=["POST"])
 def forex_ligar():
     estado["forex_ativo"] = True
-    _log("🔵 Engine FOREX ligada manualmente", "FOREX")
+    _log("Engine FOREX ligada", "FOREX")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
     return jsonify({"ok": True})
 
 @app.route("/forex/desligar", methods=["POST"])
 def forex_desligar():
     estado["forex_ativo"] = False
-    _log("🔵 Engine FOREX desligada manualmente", "FOREX")
+    _log("Engine FOREX desligada", "FOREX")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
     return jsonify({"ok": True})
 
 @app.route("/otc/ligar", methods=["POST"])
 def otc_ligar():
     estado["otc_ativo"] = True
-    _log("🟠 Engine OTC ligada manualmente", "OTC")
+    _log("Engine OTC ligada", "OTC")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
     return jsonify({"ok": True})
 
 @app.route("/otc/desligar", methods=["POST"])
 def otc_desligar():
     estado["otc_ativo"] = False
-    _log("🟠 Engine OTC desligada manualmente", "OTC")
+    _log("Engine OTC desligada", "OTC")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
     return jsonify({"ok": True})
 
 @app.route("/executor/ligar", methods=["POST"])
 def executor_ligar():
     estado["executor_ativo"] = True
-    _log("⚡ Executor automático ATIVADO", "MANUAL")
+    _log("Executor ATIVADO", "MANUAL")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
     return jsonify({"ok": True})
 
 @app.route("/executor/desligar", methods=["POST"])
 def executor_desligar():
     estado["executor_ativo"] = False
-    _log("🚫 Executor automático DESATIVADO", "MANUAL")
+    _log("Executor DESATIVADO", "MANUAL")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
     return jsonify({"ok": True})
 
 @app.route("/reset_stop", methods=["POST"])
@@ -2247,7 +1945,9 @@ def reset_stop():
         estado["stop_diario"]      = False
         estado["losses_dia"]       = 0
         estado["data_losses_dia"]  = ""
-    _log("⚠️ Stop diário resetado manualmente.")
+    _log("Stop diario resetado manualmente.")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
     return jsonify({"ok": True})
 
 @app.route("/filtro", methods=["GET"])
@@ -2416,6 +2116,19 @@ addLog('JS carregado. Navegador: ' + navigator.userAgent.substring(0,80));
 </script>
 </body></html>"""
     return Response(H, mimetype='text/html')
+
+
+@app.route("/sinais_form", methods=["POST"])
+def post_sinais_form():
+    texto = freq.form.get("sinais", "").strip()
+    if texto:
+        with _sinais_lock:
+            for linha in texto.splitlines():
+                s = _parse_sinal(linha)
+                if s:
+                    _sinais_manuais.append(s)
+                    _log("Sinal manual: " + s["raw"], "MANUAL")
+    return redirect("/")
 
 # ══════════════════════════════════════════════════════════════════
 #  MAIN
