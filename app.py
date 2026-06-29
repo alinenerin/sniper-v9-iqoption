@@ -27,7 +27,7 @@ TG_TOKEN  = os.environ.get("TG_TOKEN", "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2Y
 TG_CHAT   = os.environ.get("TG_CHAT",  "5911742397")
 IQ_EMAIL  = os.environ.get("IQ_EMAIL", "laiane.aline@gmail.com")
 IQ_PASS   = os.environ.get("IQ_PASS",  "alineegui95")
-IQ_SSID   = os.environ.get("IQ_SSID",  "")  # legado, não utilizado
+IQ_SSID   = os.environ.get("IQ_SSID",  "")
 POLYGON_KEY = os.environ.get("POLYGON_KEY", "gXySF0ojKao907z3vKOtpxr8opt0cbLx")
 
 BRT            = pytz.timezone("America/Sao_Paulo")
@@ -160,32 +160,56 @@ def tg(msg):
         _log(f"Telegram erro: {e}")
 
 # ══════════════════════════════════════════════════════════════════
-#  IQ OPTION — LIB WEBSOCKET (iqoptionapi)
+#  IQ OPTION — REST PURO (sem websocket, sem lib)
 # ══════════════════════════════════════════════════════════════════
-_iq_api      = None
+_iq_sess     = requests.Session()
+_iq_sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"})
 _iq_ok       = False
 _iq_tentando = False
 
+# Mapa ativo → active_id da IQ Option
+_IQ_ACTIVE_ID = {
+    "EURUSD": 1, "EURJPY": 18, "EURGBP": 17, "GBPUSD": 2,
+    "USDJPY": 4, "AUDUSD": 3,  "USDCHF": 5,  "XAUUSD": 68,
+    "NZDUSD": 6, "USDCAD": 8,
+}
+
 def _conectar_iq():
-    global _iq_api, _iq_ok, _iq_tentando
+    global _iq_ok, _iq_tentando
     _iq_tentando = True
     try:
-        _log("Conectando IQ Option...")
-        from iqoptionapi.stable_api import IQ_Option
-        api = IQ_Option(IQ_EMAIL, IQ_PASS)
-        check, reason = api.connect()
-        if check:
-            time.sleep(2)
-            saldo = api.get_balance()
-            _iq_api = api
-            _iq_ok  = True
+        _log("Conectando IQ Option (REST)...")
+        # Tenta com SSID primeiro
+        if IQ_SSID:
+            _iq_sess.cookies.set("ssid", IQ_SSID, domain="iqoption.com")
+            r = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=10)
+            if r.status_code == 200:
+                d = r.json().get("data", {})
+                saldo = float(d.get("balance", 0))
+                _iq_ok = True
+                with _lock:
+                    estado["iq_ok"]  = True
+                    estado["saldo"]  = saldo
+                _log(f"IQ conectada via SSID! Saldo: ${saldo:.2f}")
+                tg(f"✅ <b>IQ conectada (REST)!</b>\n💵 Saldo: ${saldo:.2f}")
+                return
+        # Fallback: login com usuário/senha via REST
+        r = _iq_sess.post("https://auth.iqoption.com/api/v2/login",
+            json={"identifier": IQ_EMAIL, "password": IQ_PASS}, timeout=12)
+        ssid = r.json().get("ssid", "")
+        if ssid:
+            _iq_sess.cookies.set("ssid", ssid, domain="iqoption.com")
+            _iq_ok = True
+            # Buscar saldo
+            rp = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=8)
+            saldo = float(rp.json().get("data", {}).get("balance", 0)) if rp.status_code == 200 else 0.0
             with _lock:
                 estado["iq_ok"]  = True
                 estado["saldo"]  = saldo
-            _log(f"IQ conectada! Saldo: ${saldo:.2f}")
-            tg(f"✅ <b>IQ conectada!</b>\n💵 Saldo: ${saldo:.2f}")
+            _log(f"IQ conectada via login! Saldo: ${saldo:.2f}")
+            tg(f"✅ <b>IQ conectada (REST)!</b>\n💵 Saldo: ${saldo:.2f}")
         else:
-            _log(f"IQ login falhou: {reason}")
+            _log(f"IQ login falhou: {r.text[:120]}")
     except Exception as e:
         _log(f"IQ erro: {e}")
     finally:
@@ -198,29 +222,31 @@ def garantir_conexao():
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
-    """Busca velas M1 — 1º IQ lib | 2º Polygon | 3º Twelve Data"""
+    """Busca velas M1 — 1º IQ REST | 2º Polygon | 3º Twelve Data"""
     par_base = ativo.replace("-OTC", "").replace("/", "").upper()
 
-    # ── 1. IQ Option via lib websocket (tempo real) ────────────────────
-    if _iq_ok and _iq_api:
+    # ── 1. IQ Option REST (tempo real, mesmo plataforma) ──────────────
+    if _iq_ok:
         try:
-            if not _iq_api.check_connect():
-                _iq_api.connect()
-                time.sleep(2)
-            velas_raw = _iq_api.get_candles(par_base, tf, n, time.time())
-            if velas_raw:
-                velas = []
-                for v in velas_raw:
-                    velas.append({
-                        "o": float(v.get("open",  0)),
-                        "c": float(v.get("close", 0)),
-                        "h": float(v.get("max",   v.get("high",  0))),
-                        "l": float(v.get("min",   v.get("low",   0))),
-                        "t": int(v.get("from",    v.get("at",    0))),
-                    })
-                return sorted(velas, key=lambda x: x["t"])
+            active_id = _IQ_ACTIVE_ID.get(par_base)
+            if active_id:
+                r = _iq_sess.post("https://iqoption.com/api/v6/getcandles",
+                    json={"active_id": active_id, "size": tf, "count": n, "to": int(time.time())},
+                    timeout=8)
+                candles = r.json().get("data", {}).get("candles", [])
+                if candles:
+                    velas = []
+                    for v in candles:
+                        velas.append({
+                            "o": float(v.get("open", 0)),
+                            "c": float(v.get("close", 0)),
+                            "h": float(v.get("max", 0)),
+                            "l": float(v.get("min", 0)),
+                            "t": int(v.get("from", 0)),
+                        })
+                    return sorted(velas, key=lambda x: x["t"])
         except Exception as e:
-            _log(f"IQ candles erro ({par_base}): {e}")
+            _log(f"IQ candles REST erro ({par_base}): {e}")
 
     # ── 2. Polygon.io (delay ~10min no plano free) ─────────────────────
     try:
@@ -266,11 +292,10 @@ def get_candles(ativo, n=60, tf=60):
 
 def get_saldo():
     try:
-        if _iq_ok and _iq_api:
-            if not _iq_api.check_connect():
-                _iq_api.connect()
-                time.sleep(2)
-            return float(_iq_api.get_balance())
+        if _iq_ok:
+            r = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=8)
+            if r.status_code == 200:
+                return float(r.json().get("data", {}).get("balance", estado["saldo"]))
     except:
         pass
     return estado["saldo"]
@@ -668,23 +693,30 @@ def em_janela(agora, janelas):
 #  EXECUÇÃO DE TRADE
 # ══════════════════════════════════════════════════════════════════
 def abrir_trade(par, direcao, stake, expiracao_min):
-    """Abre ordem via lib IQ Option. Retorna id_op ou None."""
+    """Abre ordem via REST IQ Option. Retorna id_op ou None."""
     try:
-        if not _iq_ok or not _iq_api:
-            _log(f"abrir_trade: IQ não conectada")
-            return None
-        if not _iq_api.check_connect():
-            _iq_api.connect()
-            time.sleep(2)
         par_base = par.replace("-OTC", "").replace("/", "").upper()
-        is_otc   = "-OTC" in par.upper()
-        # turbo = M1 (binary options), binary = M3+
-        action   = "turbo" if expiracao_min <= 1 else "binary"
-        status, id_op = _iq_api.buy(stake, par_base, direcao.lower(), expiracao_min)
-        if status and id_op:
+        active_id = _IQ_ACTIVE_ID.get(par_base)
+        if not active_id:
+            _log(f"abrir_trade: active_id não encontrado para {par}")
+            return None
+        is_otc = "-OTC" in par.upper()
+        # turbo = opção binária M1; binary = M3+
+        option_type = "turbo" if expiracao_min <= 1 else "binary"
+        payload = {
+            "price":        stake,
+            "active_id":    active_id,
+            "direction":    direcao.lower(),
+            "expired":      expiracao_min,
+            "option_type":  option_type,
+        }
+        r = _iq_sess.post("https://iqoption.com/api/v6/buy", json=payload, timeout=10)
+        data = r.json()
+        id_op = data.get("data", {}).get("id") or data.get("id")
+        if id_op:
             _log(f"Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
             return id_op
-        _log(f"Falha buy {par}: status={status}")
+        _log(f"Falha buy {par}: {data}")
         return None
     except Exception as e:
         _log(f"Erro buy {par}: {e}")
@@ -698,17 +730,18 @@ def _checar_resultado_por_saldo(saldo_antes, espera_s):
     return diff > 0, abs(diff)
 
 def _checar_resultado_rest(id_op, espera_s):
-    """Verifica resultado via lib IQ Option após espera."""
+    """Verifica resultado via REST após espera."""
     time.sleep(espera_s)
-    if _iq_ok and _iq_api:
-        for _ in range(6):
-            try:
-                result = _iq_api.check_win_v3(id_op)
-                if result is not None:
-                    return result > 0, abs(result)
-            except:
-                pass
-            time.sleep(5)
+    for _ in range(6):
+        try:
+            r = _iq_sess.get(f"https://iqoption.com/api/v1.0/position/{id_op}", timeout=8)
+            d = r.json().get("data", {})
+            pnl = d.get("pnl_realized")
+            if pnl is not None:
+                return float(pnl) > 0, abs(float(pnl))
+        except:
+            pass
+        time.sleep(5)
     return None, 0
 
 def checar_resultado_m1(id_op, stake):
@@ -1747,11 +1780,10 @@ textarea:focus{border-color:#00e676}
     <h3>IQ Option</h3>
     <span class="dot" id="iq_dot"></span>
     <span id="iq_txt">—</span>
-  </div>
-
-  <div class="grid2" style="margin-bottom:12px">
-    <button class="btn btn-go"   onclick="iniciar()">▶ INICIAR</button>
-    <button class="btn btn-stop" onclick="parar()">⏹ PARAR</button>
+    <div class="grid2" style="margin-top:12px">
+      <button class="btn btn-go"   onclick="iniciar()">▶ INICIAR</button>
+      <button class="btn btn-stop" onclick="parar()">⏹ PARAR</button>
+    </div>
   </div>
 
   <!-- ── SNIPER FILTRO V9.1 ──────────────────────────────────────── -->
