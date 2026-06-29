@@ -2003,18 +2003,35 @@ document.addEventListener('DOMContentLoaded', function(){
   document.querySelectorAll('[data-url]').forEach(function(el){
     el.addEventListener('click', function(e){
       e.preventDefault();
+      /* feedback visual imediato */
+      var origTxt = el.textContent;
+      var origBg  = el.style.background;
+      el.textContent = '...';
+      el.style.background = '#ffd600';
+      el.disabled = true;
       var url = el.getAttribute('data-url');
       var _base = window.location.origin;
       fetch(_base+url, {method:'POST'})
         .then(function(r){ return r.json(); })
-        .then(function(){ atualizar(); })
-        .catch(function(err){ console.error('Erro:', err); });
+        .then(function(){
+          el.textContent = origTxt;
+          el.style.background = origBg;
+          el.disabled = false;
+          atualizar();
+        })
+        .catch(function(err){
+          el.textContent = 'ERRO';
+          el.style.background = '#ff1744';
+          setTimeout(function(){ el.textContent=origTxt; el.style.background=origBg; el.disabled=false; }, 2000);
+        });
     });
   });
   var bFiltrar = document.getElementById('btn-filtrar');
   if(bFiltrar) bFiltrar.addEventListener('click', rodarFiltro);
   var bEnviar  = document.getElementById('btn-enviar');
   if(bEnviar)  bEnviar.addEventListener('click', enviarSinais);
+  /* atualizar status ao abrir */
+  atualizar();
 });
 
 function rodarFiltro(){
@@ -2163,6 +2180,14 @@ def index():
 
 @app.route("/estado")
 def get_estado_route():
+    # Busca saldo real da IQ sempre que possivel
+    if estado.get("ativo") or estado.get("saldo", 0) == 0:
+        try:
+            s = get_saldo()
+            if s and s > 0:
+                estado["saldo"] = s
+        except Exception:
+            pass
     with _lock:
         return jsonify(dict(estado))
 
