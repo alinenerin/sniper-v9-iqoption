@@ -787,7 +787,6 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.websocket_thread = threading.Thread(target=self.websocket.run_forever, kwargs={'sslopt': _sslopt})
         self.websocket_thread.daemon = True
         self.websocket_thread.start()
-        import time as _t; _t0 = _t.time()
         while True:
             try:
                 if global_value.check_websocket_if_error:
@@ -796,8 +795,6 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                     return False, "Websocket connection closed."
                 elif global_value.check_websocket_if_connect == 1:
                     return True, None
-                if _t.time() - _t0 > 30:
-                    return False, "Timeout WebSocket connect"
             except:
                 pass
 
@@ -888,12 +885,9 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
             self.session.cookies, {"ssid": global_value.SSID})
 
         self.timesync.server_timestamp = None
-        import time as _t2; _t2s = _t2.time()
         while True:
             try:
                 if self.timesync.server_timestamp != None:
-                    break
-                if _t2.time() - _t2s > 30:
                     break
             except:
                 pass
