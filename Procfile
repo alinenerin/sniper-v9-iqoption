@@ -1,1 +1,1 @@
-web: python app.py
+web: python sniper_v10.py
