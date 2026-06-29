@@ -1813,6 +1813,7 @@ const ICONS = {
 
 function atualizar(){
   fetch('/estado').then(r=>r.json()).then(d=>{
+    if(!d){ return; }
     document.getElementById('bot_status').textContent = d.ativo ? '🟢 RODANDO' : (d.stop_diario ? '🛑 STOP DIÁRIO' : '⏸ PARADO');
     document.getElementById('saldo').textContent = '$'+d.saldo.toFixed(2);
     document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
@@ -1849,7 +1850,7 @@ function atualizar(){
     lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
     const lo = document.getElementById('log_otc');
     lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
-  });
+  }).catch(e=>console.error('estado err:',e));
 
   /* Fila de sinais manuais */
   fetch('/sinais').then(r=>r.json()).then(lista=>{
@@ -1867,8 +1868,8 @@ function atualizar(){
   });
 }
 
-function iniciar(){ fetch('/iniciar',{method:'POST'}).then(atualizar); }
-function parar()  { fetch('/parar',  {method:'POST'}).then(atualizar); }
+function iniciar(){ fetch('/iniciar',{method:'POST'}).then(r=>r.json()).then(()=>{ setTimeout(atualizar,500); }).catch(e=>console.error('iniciar err:',e)); }
+function parar()  { fetch('/parar',  {method:'POST'}).then(r=>r.json()).then(()=>{ setTimeout(atualizar,500); }).catch(e=>console.error('parar err:',e)); }
 
 function rodarFiltro(){
   const txt = document.getElementById('filtro_input').value.trim();
@@ -2006,8 +2007,14 @@ def index():
 
 @app.route("/estado")
 def get_estado_route():
+    import json as _json
     with _lock:
-        return jsonify(dict(estado))
+        resp = app.response_class(
+            response=_json.dumps(dict(estado), ensure_ascii=False),
+            status=200,
+            mimetype='application/json'
+        )
+        return resp
 
 @app.route("/iniciar", methods=["POST"])
 def iniciar():
