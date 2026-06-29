@@ -1,235 +1,323 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════╗
-║           SNIPER V10 — CALIBRAÇÃO v5                            ║
-║  AUTO: Forex (Seg-Sex) via Twelve Data                          ║
-║        OTC   (Sáb-Dom) via IQ Option                            ║
-║  8 Pares Forex | 8 Pares OTC | Zero Gale                        ║
-╚══════════════════════════════════════════════════════════════════╝
+SNIPER V10 — OTC Weekend — 29/06/2026
+Mesma estrutura do V9 + filtros avançados:
+  - MACD (5,13,4) com histograma
+  - RSI (14) com zonas neutro/exaustão
+  - Bollinger Bands (20, 2)
+  - Shadow Rejection
+  - ADX (modo lateral vs tendência)
+  - Score ponderado por componente
+  - Trava de portfólio global (1 op por vez)
+  - Auto-renovação de SSID via HTTP
 """
-import sys, os, subprocess
-subprocess.call(
-    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz"],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-)
-
-import time, math, requests, threading
-from datetime import datetime, timedelta, timezone
+import sys, time, json, os, datetime, urllib.request, urllib.parse, threading, math
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from config import *
 
-BRT = timezone(timedelta(hours=-3))
+sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
 
-# ══════════════════════════════════════════════════════════════════
-#  KEEP-ALIVE (Railway exige porta ativa)
-# ══════════════════════════════════════════════════════════════════
-class _H(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200); self.end_headers()
-        self.wfile.write(b"Sniper V10 v5 online")
-    def log_message(self, *a): pass
+# ── CREDENCIAIS ───────────────────────────────────────────────────────
+IQ_EMAIL   = 'laiane.aline@gmail.com'
+IQ_PASS    = 'alineegui95'
+TG_TOKEN   = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
+TG_CHAT_ID = '5911742397'
 
-threading.Thread(
-    target=lambda: HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), _H).serve_forever(),
-    daemon=True
-).start()
+# ── CONFIG ────────────────────────────────────────────────────────────
+EXECUCAO_ATIVA     = False   # False = só avisa Telegram
+SCORE_MINIMO       = 80
+COOLDOWN           = 120     # segundos entre trades no mesmo par
+MAX_SEQUENCIA_IGUAL = 2
 
-# ══════════════════════════════════════════════════════════════════
-#  DETECÇÃO AUTOMÁTICA DE MODO (FOREX vs OTC)
-# ══════════════════════════════════════════════════════════════════
-def modo_atual():
-    """
-    Sábado e Domingo = OTC (IQ Option)
-    Segunda a Sexta  = FOREX (Twelve Data)
-    """
-    agora = datetime.now(BRT)
-    if agora.weekday() >= 5:   # 5=Sab, 6=Dom
-        return "OTC"
-    return "FOREX"
+PARES_OTC = [
+    'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
+    'EURJPY-OTC', 'GBPJPY-OTC', 'AUDJPY-OTC', 'EURGBP-OTC',
+]
 
-# ══════════════════════════════════════════════════════════════════
-#  TELEGRAM
-# ══════════════════════════════════════════════════════════════════
-def tg(msg):
+# MACD
+MACD_RAPIDA = 5
+MACD_LENTA  = 13
+MACD_SINAL  = 4
+
+# RSI
+RSI_NEUTRO_INF       = 42
+RSI_NEUTRO_SUP       = 58
+RSI_EXAUST_SUP       = 75
+RSI_EXAUST_INF       = 25
+RSI_EXAUST_SUP_FORTE = 80
+RSI_EXAUST_INF_FORTE = 20
+
+# Shadow
+SHADOW_THRESHOLD = 0.35
+
+# ADX
+ADX_LATERAL   = 18
+ADX_TENDENCIA = 22
+
+# Pesos de score
+PESO_MACD   = 20
+PESO_RSI    = 15
+PESO_BB     = 25
+PESO_SHADOW = 20
+PESO_ADX    = 20
+
+# Janelas BRT
+JANELAS_ATIVAS = [
+    (6,  0, 11, 44),
+    (13, 15, 17,  0),
+    (21,  0,  2,  0),
+]
+
+MINUTOS_BLOQUEADOS = [0, 1, 2, 17, 32, 47, 58, 59]
+
+# Arquivos
+WORK        = '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work'
+LOG_FILE    = f'{WORK}/logs/sniper_v10.log'
+ESTADO_FILE = f'{WORK}/estado_v10.json'
+LOCK_FILE   = f'{WORK}/bot.lock'
+
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+# ── LOCK ─────────────────────────────────────────────────────────────
+def acquire_lock():
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "HTML"},
-            timeout=8
-        )
+        if os.path.exists(LOCK_FILE):
+            with open(LOCK_FILE) as f:
+                pid_old = int(f.read().strip())
+            try:
+                os.kill(pid_old, 0)
+                print(f'ABORT: outro processo rodando (PID {pid_old})')
+                sys.exit(1)
+            except OSError:
+                pass
+        with open(LOCK_FILE, 'w') as f:
+            f.write(str(os.getpid()))
     except Exception as e:
-        print(f"  ⚠️ Telegram: {e}")
+        print(f'Lock erro: {e}')
 
-# ══════════════════════════════════════════════════════════════════
-#  IQ OPTION — FONTE OTC (FIM DE SEMANA)
-# ══════════════════════════════════════════════════════════════════
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from iqoptionapi.stable_api import IQ_Option
+def release_lock():
+    try:
+        os.remove(LOCK_FILE)
+    except:
+        pass
 
-_iq_api       = None
-_iq_conectado = False
+# ── LOG ──────────────────────────────────────────────────────────────
+def log(msg):
+    now  = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    line = f'[{now}] {msg}'
+    print(line)
+    painel_add_log(line)
+    try:
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
+    except:
+        pass
 
-def _iq_conectar():
-    global _iq_api, _iq_conectado
-    if _iq_conectado and _iq_api:
-        return True
+# ── TELEGRAM ─────────────────────────────────────────────────────────
+def telegram(msg):
+    try:
+        url  = f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage'
+        data = urllib.parse.urlencode({
+            'chat_id':    TG_CHAT_ID,
+            'text':       msg,
+            'parse_mode': 'HTML',
+        }).encode()
+        urllib.request.urlopen(url, data=data, timeout=8)
+    except Exception as e:
+        log(f'Telegram erro: {e}')
 
-    resultado = [None, None]  # [check, reason]
+# ── ESTADO GLOBAL DO PAINEL ──────────────────────────────────────────
+_painel = {
+    'bot_ativo':      True,
+    'execucao_ativa': False,
+    'score_minimo':   80,
+    'saldo':          0.0,
+    'wins':           0,
+    'losses':         0,
+    'iq_conectado':   False,
+    'sinais':         [],
+    'log_lines':      [],
+    'iniciado_em':    datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-3))).strftime('%d/%m %H:%M'),
+}
+_painel_lock = threading.Lock()
 
-    def _tentar():
-        try:
-            api = IQ_Option(IQ_EMAIL, IQ_PASS)
-            check, reason = api.connect()
-            if check:
-                resultado[0] = api
-                resultado[1] = "ok"
-            else:
-                resultado[1] = reason or "falhou"
-        except Exception as e:
-            resultado[1] = str(e)
+def painel_add_log(linha):
+    with _painel_lock:
+        _painel['log_lines'].append(linha)
+        if len(_painel['log_lines']) > 50:
+            _painel['log_lines'] = _painel['log_lines'][-50:]
 
-    print("  🔄 Conectando IQ Option...")
-    t = threading.Thread(target=_tentar, daemon=True)
-    t.start()
-    t.join(25)  # timeout externo 25s
+def painel_add_sinal(par, direcao, score, hora):
+    with _painel_lock:
+        _painel['sinais'].insert(0, {'par': par, 'dir': direcao, 'score': score, 'hora': hora})
+        if len(_painel['sinais']) > 20:
+            _painel['sinais'] = _painel['sinais'][:20]
 
-    if resultado[0] is not None:
-        _iq_api       = resultado[0]
-        _iq_conectado = True
-        print("  ✅ IQ Option conectado!")
-        tg("✅ IQ Option conectado com sucesso!")
-        return True
+HTML = """<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Sniper V10</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#0d0d0d;color:#e0e0e0;font-family:'Segoe UI',sans-serif;padding:16px}}
+h1{{color:#00e5ff;font-size:1.4em;margin-bottom:4px}}
+.sub{{color:#888;font-size:0.8em;margin-bottom:16px}}
+.cards{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}}
+.card{{background:#1a1a1a;border-radius:12px;padding:14px;text-align:center}}
+.card .lbl{{font-size:0.7em;color:#888;text-transform:uppercase;margin-bottom:4px}}
+.card .val{{font-size:1.5em;font-weight:bold}}
+.g{{color:#00e676}}.r{{color:#ff5252}}.b{{color:#00e5ff}}.y{{color:#ffd740}}
+.btn{{width:100%;padding:14px;border:none;border-radius:12px;font-size:1em;font-weight:bold;cursor:pointer;margin-bottom:10px}}
+.bg{{background:#00e676;color:#000}}.br{{background:#ff5252;color:#fff}}
+.bb{{background:#00e5ff;color:#000}}.by{{background:#ffd740;color:#000}}.bgr{{background:#333;color:#fff}}
+.sec{{background:#1a1a1a;border-radius:12px;padding:14px;margin-bottom:12px}}
+.sec h2{{font-size:0.82em;color:#888;text-transform:uppercase;margin-bottom:10px}}
+.row{{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #222;font-size:0.9em}}
+.row:last-child{{border-bottom:none}}
+.badge{{padding:3px 10px;border-radius:20px;font-size:0.75em;font-weight:bold}}
+.bc{{background:#00e676;color:#000}}.bp{{background:#ff5252;color:#fff}}
+.log{{font-family:monospace;font-size:0.72em;color:#aaa;max-height:220px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}}
+.sc-row{{display:flex;align-items:center;gap:10px}}
+.sc-row input{{flex:1;padding:10px;border-radius:8px;border:1px solid #333;background:#0d0d0d;color:#fff;font-size:1em}}
+</style>
+</head>
+<body>
+<h1>&#9889; Sniper V10</h1>
+<p class="sub">Iniciado: {iniciado_em} &nbsp;|&nbsp; <span id="rel">atualizando...</span></p>
+<div class="cards">
+  <div class="card"><div class="lbl">Saldo</div><div class="val g">${saldo:.2f}</div></div>
+  <div class="card"><div class="lbl">IQ Option</div><div class="val {iq_cor}">{iq_st}</div></div>
+  <div class="card"><div class="lbl">Wins</div><div class="val g">{wins}</div></div>
+  <div class="card"><div class="lbl">Losses</div><div class="val r">{losses}</div></div>
+</div>
+<div class="sec">
+  <h2>Controles</h2>
+  <button class="btn {bot_cls}" onclick="cmd('bot')">{bot_txt}</button>
+  <button class="btn {ex_cls}"  onclick="cmd('exec')">{ex_txt}</button>
+</div>
+<div class="sec">
+  <h2>Score M&#237;nimo: {score_minimo}</h2>
+  <div class="sc-row">
+    <input type="number" id="sv" value="{score_minimo}" min="50" max="100">
+    <button class="btn bb" style="width:auto;padding:10px 20px" onclick="setScore()">Salvar</button>
+  </div>
+</div>
+<div class="sec">
+  <h2>&#218;ltimos Sinais</h2>
+  {sinais_html}
+</div>
+<div class="sec">
+  <h2>Log em Tempo Real</h2>
+  <div class="log" id="lb">{log_html}</div>
+</div>
+<script>
+function cmd(a){{fetch('/cmd?a='+a).then(()=>location.reload())}}
+function setScore(){{fetch('/cmd?a=score&v='+document.getElementById('sv').value).then(()=>location.reload())}}
+setTimeout(()=>location.reload(),15000);
+var d=new Date(),s=Math.floor((new Date()-d)/1000);
+document.getElementById('rel').textContent='atualiza em 15s';
+var lb=document.getElementById('lb');if(lb)lb.scrollTop=lb.scrollHeight;
+</script>
+</body>
+</html>"""
 
-    motivo = resultado[1] or "timeout (sem resposta em 25s)"
-    print(f"  ❌ IQ Option: {motivo}")
-    tg(f"❌ IQ Option: {motivo}")
-    return False
+def render_painel():
+    with _painel_lock:
+        p = dict(_painel)
+        sinais = list(p['sinais'])
+        logs   = list(p['log_lines'])
 
-_otc_cache    = {}
-_otc_cache_ts = {}
-OTC_CACHE_TTL = 55
+    iq_cor = 'g' if p['iq_conectado'] else 'r'
+    iq_st  = '&#129001; ON' if p['iq_conectado'] else '&#128997; OFF'
+    bot_cls = 'br' if p['bot_ativo'] else 'bg'
+    bot_txt = '&#9209; Parar Bot' if p['bot_ativo'] else '&#9654;&#65039; Iniciar Bot'
+    ex_cls  = 'bgr' if p['execucao_ativa'] else 'by'
+    ex_txt  = '&#128065; Desligar Execu&#231;&#227;o Auto' if p['execucao_ativa'] else '&#9889; Ligar Execu&#231;&#227;o Auto'
 
-def buscar_velas_otc_batch(pares_otc, n=65):
-    if not _iq_api or not _iq_conectado:
-        _iq_conectar()
-    if not _iq_api or not _iq_conectado:
-        print("  ⚠️ IQ Option: sem conexao ativa")
-        return {p["nome"]: [] for p in pares_otc}
-    agora_ts = time.time()
-    resultado = {}
-    for par in pares_otc:
-        nome = par["nome"]
-        if _otc_cache.get(nome) and (agora_ts - _otc_cache_ts.get(nome, 0)) < OTC_CACHE_TTL:
-            resultado[nome] = _otc_cache[nome]
-            continue
-        try:
-            velas_raw = _iq_api.get_candles(nome, 60, n, time.time())
-            velas = []
-            for v in (velas_raw or []):
-                try:
-                    velas.append({
-                        "open":  float(v.get("open", 0)),
-                        "close": float(v.get("close", 0)),
-                        "max":   float(v.get("max", v.get("high", 0))),
-                        "min":   float(v.get("min", v.get("low", 0))),
-                        "t":     v.get("from", v.get("at", 0)),
-                    })
-                except: pass
-            velas = sorted(velas, key=lambda x: x["t"])
-            _otc_cache[nome] = velas
-            _otc_cache_ts[nome] = agora_ts
-            resultado[nome] = velas
-            print(f"  📡 OTC {nome}: {len(velas)} velas")
-        except Exception as e:
-            print(f"  ⚠️ OTC {nome}: {e}")
-            resultado[nome] = []
-    return resultado
+    sh = ''
+    for s in sinais[:10]:
+        bc = 'bc' if s['dir'] == 'CALL' else 'bp'
+        em = '&#128200;' if s['dir'] == 'CALL' else '&#128201;'
+        sh += f'<div class="row"><span>{em} <b>{s["par"].replace("-OTC","")}</b> &mdash; {s["hora"]}</span><span><span class="badge {bc}">{s["dir"]}</span> &nbsp; {s["score"]}</span></div>'
+    if not sh:
+        sh = '<div style="color:#555;font-size:0.85em">Aguardando sinais...</div>'
 
-# ══════════════════════════════════════════════════════════════════
-#  TWELVE DATA — FONTE FOREX (SEG-SEX)
-# ══════════════════════════════════════════════════════════════════
-_td_cache      = {}
-_td_cache_ts   = {}
-TD_CACHE_TTL   = 55
+    lh = '\n'.join(logs[-30:]) or 'Aguardando...'
 
-def buscar_velas_td_batch(pares, n=65):
-    agora_ts = time.time()
-    resultado = {}
-    pares_buscar = []
+    return HTML.format(
+        iniciado_em=p['iniciado_em'], saldo=p['saldo'],
+        iq_cor=iq_cor, iq_st=iq_st,
+        wins=p['wins'], losses=p['losses'],
+        bot_cls=bot_cls, bot_txt=bot_txt,
+        ex_cls=ex_cls, ex_txt=ex_txt,
+        score_minimo=p['score_minimo'],
+        sinais_html=sh, log_html=lh,
+    )
 
-    for par in pares:
-        cached = _td_cache.get(par)
-        ts     = _td_cache_ts.get(par, 0)
-        if cached and (agora_ts - ts) < TD_CACHE_TTL:
-            resultado[par] = cached
-        else:
-            pares_buscar.append(par)
-
-    if not pares_buscar:
-        return resultado
-
-    LOTE = 8
-    for i in range(0, len(pares_buscar), LOTE):
-        lote = pares_buscar[i:i+LOTE]
-        simbolos = ",".join(lote)
-        url = (
-            f"https://api.twelvedata.com/time_series"
-            f"?symbol={simbolos}&interval=1min&outputsize={n}&apikey={TWELVE_API}"
-        )
-        try:
-            r = requests.get(url, timeout=15).json()
-            if "values" in r:
-                data = {lote[0]: r}
-            else:
-                data = r
-
-            for par in lote:
-                dado = data.get(par, {})
-                vals = dado.get("values", [])
-                if not vals:
-                    code = dado.get("code", "?")
-                    print(f"  ⚠️ TD sem dados para {par} (code={code})")
-                    resultado[par] = []
-                    continue
-                velas = []
-                for v in reversed(vals):
+def start_health_server():
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            global EXECUCAO_ATIVA, SCORE_MINIMO
+            if self.path.startswith('/cmd'):
+                params = {}
+                if '?' in self.path:
+                    for kv in self.path.split('?',1)[1].split('&'):
+                        if '=' in kv: k,v = kv.split('=',1); params[k]=v
+                a = params.get('a','')
+                if a == 'bot':
+                    with _painel_lock: _painel['bot_ativo'] = not _painel['bot_ativo']
+                    log(f'Painel: bot {"ON" if _painel["bot_ativo"] else "OFF"}')
+                elif a == 'exec':
+                    EXECUCAO_ATIVA = not EXECUCAO_ATIVA
+                    with _painel_lock: _painel['execucao_ativa'] = EXECUCAO_ATIVA
+                    log(f'Painel: execucao {"ON" if EXECUCAO_ATIVA else "OFF"}')
+                elif a == 'score':
                     try:
-                        velas.append({
-                            "open":  float(v["open"]),
-                            "close": float(v["close"]),
-                            "max":   float(v["high"]),
-                            "min":   float(v["low"]),
-                            "t":     v["datetime"],
-                        })
+                        SCORE_MINIMO = max(50, min(100, int(params.get('v', SCORE_MINIMO))))
+                        with _painel_lock: _painel['score_minimo'] = SCORE_MINIMO
+                        log(f'Painel: score_minimo → {SCORE_MINIMO}')
                     except: pass
-                _td_cache[par]    = velas
-                _td_cache_ts[par] = agora_ts
-                resultado[par]    = velas
-                print(f"  📡 TD {par}: {len(velas)} velas (ultima: {vals[0]['datetime']})")
+                self.send_response(200); self.end_headers(); self.wfile.write(b'OK')
+            else:
+                body = render_painel().encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type','text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        def log_message(self, *a): pass
+    try:
+        port = int(os.environ.get('PORT', 8080))
+        s = HTTPServer(('0.0.0.0', port), H)
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+        log(f'Painel web OK — porta {port}')
+    except Exception as e:
+        log(f'Painel erro: {e}')
 
-        except Exception as e:
-            print(f"  ⚠️ TD batch erro: {e}")
-            for par in lote:
-                resultado[par] = []
+# ── ESTADO ───────────────────────────────────────────────────────────
+def load_estado():
+    if os.path.exists(ESTADO_FILE):
+        try:
+            with open(ESTADO_FILE) as f:
+                e = json.load(f)
+            agora = time.time()
+            e['ultimo_trade'] = {k: v for k, v in e.get('ultimo_trade', {}).items() if agora - v < 600}
+            return e
+        except: pass
+    return {'wins': 0, 'losses': 0, 'losses_seq': 0, 'saldo_inicial': None, 'ultimo_trade': {}}
 
-        if i + LOTE < len(pares_buscar):
-            time.sleep(62)
+def save_estado(e):
+    try:
+        with open(ESTADO_FILE, 'w') as f:
+            json.dump(e, f)
+    except: pass
 
-    return resultado
-
-# ══════════════════════════════════════════════════════════════════
-#  NORMALIZAÇÃO
-# ══════════════════════════════════════════════════════════════════
-def par_base(par):
-    """EUR/USD → EURUSD | EURUSD-OTC → EURUSD"""
-    return par.replace("/", "").replace("-OTC", "").upper()
-
-# ══════════════════════════════════════════════════════════════════
-#  INDICADORES
-# ══════════════════════════════════════════════════════════════════
+# ── INDICADORES ──────────────────────────────────────────────────────
 def ema(data, n):
-    if len(data) < n: return None
-    k = 2 / (n + 1); e = sum(data[:n]) / n
+    if len(data) < n: return data[-1]
+    k = 2 / (n + 1)
+    e = sum(data[:n]) / n
     for p in data[n:]: e = p * k + e * (1 - k)
     return e
 
@@ -246,8 +334,7 @@ def calcular_adx(velas, p=14):
     if len(velas) < p + 1: return 0
     trs, pdms, ndms = [], [], []
     for i in range(1, len(velas)):
-        h  = velas[i]['max'];   l  = velas[i]['min']
-        pc = velas[i-1]['close']
+        h = velas[i]['max']; l = velas[i]['min']; pc = velas[i-1]['close']
         trs.append(max(h - l, abs(h - pc), abs(l - pc)))
         pdms.append(max(velas[i]['max'] - velas[i-1]['max'], 0))
         ndms.append(max(velas[i-1]['min'] - velas[i]['min'], 0))
@@ -267,20 +354,6 @@ def calcular_bollinger(closes, p=20, d=2):
     std = (sum((x - m)**2 for x in s) / p) ** 0.5
     return m + d*std, m, m - d*std
 
-def calcular_ci(velas, p):
-    if len(velas) < p + 1: return 50.0
-    j = velas[-(p+1):]
-    atr_sum = sum(
-        max(j[i]['max'] - j[i]['min'],
-            abs(j[i]['max'] - j[i-1]['close']),
-            abs(j[i]['min'] - j[i-1]['close']))
-        for i in range(1, len(j))
-    )
-    mh = max(v['max'] for v in j[1:]); ml = min(v['min'] for v in j[1:])
-    rng = mh - ml
-    if rng == 0 or atr_sum == 0: return 50.0
-    return round(100.0 * math.log10(atr_sum / rng) / math.log10(p), 2)
-
 def calcular_macd(closes):
     r, l, s = MACD_RAPIDA, MACD_LENTA, MACD_SINAL
     if len(closes) < l + s + 2: return None, None, None
@@ -288,51 +361,29 @@ def calcular_macd(closes):
     er = sum(closes[:r]) / r; el = sum(closes[:l]) / l
     ms = []
     for i in range(l, len(closes)):
-        er = closes[i] * kr + er * (1 - kr)
-        el = closes[i] * kl + el * (1 - kl)
+        er = closes[i] * kr + er * (1-kr)
+        el = closes[i] * kl + el * (1-kl)
         ms.append(er - el)
     if len(ms) < s + 2: return None, None, None
     sig = sum(ms[:s]) / s
-    for v in ms[s:]:   sig = v * ks + sig * (1 - ks)
+    for v in ms[s:]: sig = v * ks + sig * (1-ks)
     sigp = sum(ms[:s]) / s
-    for v in ms[s:-1]: sigp = v * ks + sigp * (1 - ks)
+    for v in ms[s:-1]: sigp = v * ks + sigp * (1-ks)
     hist = ms[-1] - sig; hist_prev = ms[-2] - sigp
-    cr = None
-    if ms[-2] < 0 and ms[-1] >= 0: cr = "CALL"
-    elif ms[-2] > 0 and ms[-1] <= 0: cr = "PUT"
-    return cr, hist, hist_prev
+    crz = None
+    if ms[-2] < 0 and ms[-1] >= 0: crz = 'CALL'
+    elif ms[-2] > 0 and ms[-1] <= 0: crz = 'PUT'
+    return crz, hist, hist_prev
 
-def shadow_rejection(vela, th=0.40):
-    h = vela.get('max', vela['close']); l = vela.get('min', vela['open'])
+def shadow_rejection(vela, th=SHADOW_THRESHOLD):
+    h = vela['max']; l = vela['min']
     o = vela['open']; c = vela['close']
     total = h - l
     if total == 0: return False
     sup = h - max(o, c); inf = min(o, c) - l
     return (sup / total) > th or (inf / total) > th
 
-# ══════════════════════════════════════════════════════════════════
-#  TRAVA ÚNICA — 1 operação por vez no portfólio
-# ══════════════════════════════════════════════════════════════════
-_trava_global = threading.Lock()
-_op_ativa     = {"par": None, "expira": 0}
-
-def portafolio_livre():
-    agora = time.time()
-    if _op_ativa["par"] and agora < _op_ativa["expira"]:
-        restante = int(_op_ativa["expira"] - agora)
-        print(f"  🔒 TRAVA ATIVA: {_op_ativa['par']} — libera em {restante}s")
-        return False
-    return True
-
-def travar_portafolio(par, segundos=65):
-    with _trava_global:
-        _op_ativa["par"]    = par
-        _op_ativa["expira"] = time.time() + segundos
-    print(f"  🔒 PORTFÓLIO TRAVADO: {par} por {segundos}s")
-
-# ══════════════════════════════════════════════════════════════════
-#  JANELA E MINUTOS BLOQUEADOS
-# ══════════════════════════════════════════════════════════════════
+# ── JANELA ───────────────────────────────────────────────────────────
 def janela_ativa(agora):
     hm = agora.hour * 60 + agora.minute
     for hi, mi, hf, mf in JANELAS_ATIVAS:
@@ -343,335 +394,265 @@ def janela_ativa(agora):
             if ini <= hm <= fim: return True
     return False
 
-def minuto_bloqueado(agora):
-    return agora.minute in MINUTOS_BLOQUEADOS
+# ── TRAVA GLOBAL ─────────────────────────────────────────────────────
+_trava = {'par': None, 'expira': 0}
+_trava_lock = threading.Lock()
 
-# ══════════════════════════════════════════════════════════════════
-#  COOLDOWN E SEQUÊNCIA
-# ══════════════════════════════════════════════════════════════════
-historico = {}
-cooldown  = {}
+def portafolio_livre():
+    with _trava_lock:
+        if _trava['par'] and time.time() < _trava['expira']:
+            log(f'  🔒 TRAVA ativa: {_trava["par"]}')
+            return False
+        _trava['par'] = None
+        return True
 
-def em_cooldown(par, agora):
-    return par in cooldown and agora.timestamp() < cooldown[par]
+def travar(par, seg=65):
+    with _trava_lock:
+        _trava['par']    = par
+        _trava['expira'] = time.time() + seg
 
-def registrar_sinal(par, direcao, agora):
-    h = historico.get(par, [])
-    h.append((direcao, agora.timestamp()))
-    historico[par] = [(d, t) for d, t in h if agora.timestamp() - t < 600]
-
-def sequencia_bloqueada(par, direcao, agora):
-    if em_cooldown(par, agora): return True
-    h = [(d, t) for d, t in historico.get(par, []) if agora.timestamp() - t < 600]
-    return sum(1 for d, t in h if d == direcao) >= MAX_SEQUENCIA_IGUAL
-
-def registrar_loss(par):
-    cooldown[par] = time.time() + COOLDOWN_POS_LOSS
-    print(f"  ⏳ Cooldown {par}: {COOLDOWN_POS_LOSS}s")
-
-# ══════════════════════════════════════════════════════════════════
-#  MOTOR DE ANÁLISE — PAR ÚNICO
-# ══════════════════════════════════════════════════════════════════
-def analisar_par(par, velas, is_otc=False):
+# ── ANÁLISE ──────────────────────────────────────────────────────────
+def analisar_par(iq, par):
     try:
-        if not velas or len(velas) < 40:
-            print(f"  {par}: velas insuficientes ({len(velas) if velas else 0})")
-            return None
+        nome = par.replace('-OTC', '')
+        v    = iq.get_candles(nome, 60, 70, time.time())
+        if not v or len(v) < 40:
+            return None, 0, f'velas insuf ({len(v) if v else 0})'
 
-        closes = [v['close'] for v in velas]
-        opens  = [v['open']  for v in velas]
-        pb     = par_base(par)
+        fechadas = v[:-1]
+        closes   = [c['close'] for c in fechadas]
+        opens    = [c['open']  for c in fechadas]
 
-        adx_lat  = ADX_OTC_LATERAL   if is_otc else ADX_FX_LATERAL
-        adx_tend = ADX_OTC_TENDENCIA  if is_otc else ADX_FX_TENDENCIA
-        sh_th    = SHADOW_THRESHOLD_OTC if is_otc else SHADOW_THRESHOLD_FX
+        # ADX
+        adx = calcular_adx(fechadas)
+        if ADX_LATERAL <= adx < ADX_TENDENCIA:
+            return None, 0, f'Zona Cinza ADX {adx:.1f}'
+        modo = 'TENDENCIA' if adx >= ADX_TENDENCIA else 'LATERAL'
 
-        # ── ADX ──────────────────────────────────────────────────
-        adx = calcular_adx(velas)
-        adx_min_esp = ADX_MINIMO_ESPECIAL.get(pb, 0)
-        if adx_min_esp and adx < adx_min_esp:
-            print(f"  {par}: ❌ ADX especial {adx:.1f} < {adx_min_esp}")
-            return None
-        if adx_lat <= adx < adx_tend:
-            print(f"  {par}: ❌ Zona Cinza ADX {adx:.1f}")
-            return None
-        modo = "TENDENCIA" if adx >= adx_tend else "LATERAL"
-
-        # ── CI (só Forex) ─────────────────────────────────────────
-        ci_cfg = CI_CONFIG.get(pb) if not is_otc else None
-        ci_val = None
-        if ci_cfg:
-            ci_val = calcular_ci(velas, ci_cfg["ci_per"])
-            if ci_val >= ci_cfg["ci_max"]:
-                print(f"  {par}: ❌ CI={ci_val:.1f} >= {ci_cfg['ci_max']} (choppy)")
-                return None
-
-        # ── MACD ──────────────────────────────────────────────────
+        # MACD
         crz, hist, hist_prev = calcular_macd(closes)
         if crz is None:
-            print(f"  {par}: ❌ MACD sem cruzamento")
-            return None
+            return None, 0, 'MACD sem cruzamento'
         if hist is not None and hist_prev is not None:
-            if crz == "CALL" and hist < hist_prev:
-                print(f"  {par}: ❌ Histograma enfraquece CALL")
-                return None
-            if crz == "PUT"  and hist > hist_prev:
-                print(f"  {par}: ❌ Histograma enfraquece PUT")
-                return None
+            if crz == 'CALL' and hist < hist_prev:
+                return None, 0, 'Histograma enfraquece CALL'
+            if crz == 'PUT'  and hist > hist_prev:
+                return None, 0, 'Histograma enfraquece PUT'
+
+        # Vela contrária
         if len(opens) >= 2:
-            if crz == "CALL" and closes[-1] < opens[-2]:
-                print(f"  {par}: ❌ Vela contrária CALL")
-                return None
-            if crz == "PUT"  and closes[-1] > opens[-2]:
-                print(f"  {par}: ❌ Vela contrária PUT")
-                return None
+            if crz == 'CALL' and closes[-1] < opens[-2]:
+                return None, 0, 'Vela contrária CALL'
+            if crz == 'PUT'  and closes[-1] > opens[-2]:
+                return None, 0, 'Vela contrária PUT'
 
-        # ── RSI ───────────────────────────────────────────────────
+        # RSI
         rsi = calcular_rsi(closes)
-        if modo == "LATERAL":
-            if RSI_NEUTRO_INF <= rsi <= RSI_NEUTRO_SUP:
-                print(f"  {par}: ❌ RSI neutro lateral {rsi:.1f}")
-                return None
-        else:
-            teto = RSI_EXAUST_SUP_FORTE if adx > 40 else RSI_EXAUST_SUP
-            piso = RSI_EXAUST_INF_FORTE if adx > 40 else RSI_EXAUST_INF
-            if crz == "CALL" and rsi > teto:
-                print(f"  {par}: ❌ RSI exaustão CALL {rsi:.1f}>{teto}")
-                return None
-            if crz == "PUT"  and rsi < piso:
-                print(f"  {par}: ❌ RSI exaustão PUT {rsi:.1f}<{piso}")
-                return None
+        teto = RSI_EXAUST_SUP_FORTE if adx > 40 else RSI_EXAUST_SUP
+        piso = RSI_EXAUST_INF_FORTE if adx > 40 else RSI_EXAUST_INF
+        if crz == 'CALL' and rsi > teto:
+            return None, 0, f'RSI exaustão CALL {rsi:.1f}'
+        if crz == 'PUT'  and rsi < piso:
+            return None, 0, f'RSI exaustão PUT {rsi:.1f}'
+        if modo == 'LATERAL' and RSI_NEUTRO_INF <= rsi <= RSI_NEUTRO_SUP:
+            return None, 0, f'RSI neutro lateral {rsi:.1f}'
 
-        # ── BOLLINGER ─────────────────────────────────────────────
+        # BB
         bb_sup, bb_med, bb_inf = calcular_bollinger(closes)
-        if modo == "LATERAL" and bb_sup and bb_inf:
-            banda = bb_sup - bb_inf
-            if banda > 0:
-                pos_bb = (closes[-1] - bb_inf) / banda
-                if 0.30 < pos_bb < 0.70:
-                    print(f"  {par}: ❌ BB centro lateral pos={pos_bb:.2f}")
-                    return None
 
-        # ── DOMINÂNCIA ────────────────────────────────────────────
-        if modo == "TENDENCIA":
-            ult5 = velas[-6:-1]
+        # Dominância (modo tendência)
+        if modo == 'TENDENCIA':
+            ult5 = fechadas[-6:-1]
             if len(ult5) >= 5:
-                puts_c  = sum(1 for v in ult5 if v['close'] < v['open'])
-                calls_c = sum(1 for v in ult5 if v['close'] >= v['open'])
-                if crz == "CALL" and puts_c >= 4:
-                    print(f"  {par}: ❌ Dominância PUT {puts_c}/5")
-                    return None
-                if crz == "PUT"  and calls_c >= 4:
-                    print(f"  {par}: ❌ Dominância CALL {calls_c}/5")
-                    return None
+                puts_c  = sum(1 for vc in ult5 if vc['close'] < vc['open'])
+                calls_c = sum(1 for vc in ult5 if vc['close'] >= vc['open'])
+                if crz == 'CALL' and puts_c >= 4:
+                    return None, 0, f'Dominância PUT {puts_c}/5'
+                if crz == 'PUT'  and calls_c >= 4:
+                    return None, 0, f'Dominância CALL {calls_c}/5'
 
-        # ── EMA9 plana (LATERAL) ──────────────────────────────────
-        if modo == "LATERAL" and len(closes) >= 26:
-            pc  = closes[-1]
-            pip = 1.0 if pc > 500 else (0.01 if pc > 50 else 0.0001)
-            e9a = ema(closes[-25:], 9)
-            e9p = ema(closes[-26:-1], 9)
-            if e9a and e9p:
-                inc = e9a - e9p; lim = pip * 0.2
-                if crz == "CALL" and inc < lim:
-                    print(f"  {par}: ❌ EMA9 plana CALL")
-                    return None
-                if crz == "PUT"  and inc > -lim:
-                    print(f"  {par}: ❌ EMA9 plana PUT")
-                    return None
+        # Shadow Rejection
+        if shadow_rejection(fechadas[-1]):
+            return None, 0, 'Shadow Rejection'
 
-        # ── SHADOW REJECTION ──────────────────────────────────────
-        if shadow_rejection(velas[-1], sh_th):
-            print(f"  {par}: ❌ Shadow Rejection")
-            return None
+        # ── SCORE ────────────────────────────────────────────────────
+        score = 0
 
-        # ── SCORE ─────────────────────────────────────────────────
-        pm = SCORE_PESO_MACD_OTC   if is_otc else SCORE_PESO_MACD_FX
-        pr = SCORE_PESO_RSI_OTC    if is_otc else SCORE_PESO_RSI_FX
-        pb_ = SCORE_PESO_BB_OTC    if is_otc else SCORE_PESO_BB_FX
-        psh = SCORE_PESO_SHADOW_OTC if is_otc else SCORE_PESO_SHADOW_FX
+        # MACD
+        score += PESO_MACD
 
-        pc_v = closes[-1]; pt = ps = 0
-        if crz == "CALL": pt += pm
-        else:             ps += pm
-        if rsi > RSI_NEUTRO_SUP:   pt += pr
-        elif rsi < RSI_NEUTRO_INF: ps += pr
-        if adx >= adx_tend: pt += 15; ps += 15
+        # RSI
+        if crz == 'CALL' and rsi > RSI_NEUTRO_SUP: score += PESO_RSI
+        elif crz == 'PUT' and rsi < RSI_NEUTRO_INF: score += PESO_RSI
+        elif RSI_NEUTRO_INF <= rsi <= RSI_NEUTRO_SUP: score += PESO_RSI // 2
+
+        # BB
         if bb_sup and bb_inf and (bb_sup - bb_inf) > 0:
-            pos_bb = (pc_v - bb_inf) / (bb_sup - bb_inf)
-            if crz == "CALL" and pos_bb > 0.7: pt += pb_
-            if crz == "PUT"  and pos_bb < 0.3: ps += pb_
-        pt += psh; ps += psh
-        score = pt if crz == "CALL" else ps
+            pos_bb = (closes[-1] - bb_inf) / (bb_sup - bb_inf)
+            if crz == 'CALL' and pos_bb > 0.7: score += PESO_BB
+            elif crz == 'PUT' and pos_bb < 0.3: score += PESO_BB
+            elif 0.3 <= pos_bb <= 0.7:          score += PESO_BB // 3
+
+        # Shadow (passou = bônus)
+        score += PESO_SHADOW
+
+        # ADX
+        if adx >= ADX_TENDENCIA: score += PESO_ADX
+        elif adx < ADX_LATERAL:  score += PESO_ADX // 2
 
         if score < SCORE_MINIMO:
-            print(f"  {par}: ❌ Score baixo {score} < {SCORE_MINIMO}")
-            return None
+            return None, 0, f'Score {score} < {SCORE_MINIMO}'
 
-        ci_str = f" CI={ci_val:.1f}" if ci_val is not None else ""
-        print(f"  {par}: ✅ APROVADO [{modo}] {crz} | Score:{score} RSI:{rsi:.1f} ADX:{adx:.1f}{ci_str}")
+        return crz, score, {'rsi': round(rsi, 1), 'adx': round(adx, 1), 'modo': modo}
 
-        agora_brt    = datetime.now(BRT)
-        hora_entrada = (agora_brt + timedelta(minutes=1)).strftime("%H:%M")
+    except Exception as ex:
+        return None, 0, f'Exceção: {ex}'
 
-        return {
-            "par":    par,
-            "pb":     par_base(par),
-            "dir":    crz,
-            "hora":   hora_entrada,
-            "score":  score,
-            "rsi":    round(rsi, 1),
-            "adx":    round(adx, 1),
-            "ci":     round(ci_val, 1) if ci_val is not None else None,
-            "modo":   modo,
-            "is_otc": is_otc,
-        }
-
-    except Exception as e:
-        print(f"  {par}: erro análise — {e}")
-        return None
-
-# ══════════════════════════════════════════════════════════════════
-#  CICLO PRINCIPAL
-# ══════════════════════════════════════════════════════════════════
+# ── CICLO ────────────────────────────────────────────────────────────
 _enviados = {}
 
-def ciclo():
-    agora  = datetime.now(BRT)
-    ts_str = agora.strftime("%H:%M:%S")
-    mercado = modo_atual()   # "FOREX" ou "OTC"
-
-    print(f"\n🔍 [{ts_str}] — modo {mercado} — escaneando pares...")
+def ciclo(iq, estado):
+    agora = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-3)))
+    ts    = agora.strftime('%H:%M')
 
     if not janela_ativa(agora):
-        print(f"  Fora da janela operacional ({agora.strftime('%H:%M')} BRT)")
+        log(f'[{ts}] Fora da janela')
         return
-    if minuto_bloqueado(agora):
-        print(f"  Minuto bloqueado SFI V6 (:{agora.minute:02d})")
+
+    if agora.minute in MINUTOS_BLOQUEADOS:
+        log(f'[{ts}] Minuto bloqueado :{agora.minute:02d}')
         return
+
+    if estado['losses_seq'] >= 3:
+        log('STOP: 3 losses seguidos!')
+        telegram('🛑 STOP — 3 losses seguidos. Pausado 30min.')
+        return
+
     if not portafolio_livre():
         return
 
-    is_otc = (mercado == "OTC")
+    log(f'[{ts}] Escaneando {len(PARES_OTC)} pares OTC...')
 
-    # ── Busca velas ──────────────────────────────────────────────
-    t0 = time.time()
-    if is_otc:
-        batch_raw = buscar_velas_otc_batch(PARES_OTC, n=65)
-        # Normaliza: {nome: velas}
-        batch  = batch_raw
-        pares  = [p["nome"] for p in PARES_OTC]
-    else:
-        batch  = buscar_velas_td_batch(PARES_FOREX, n=65)
-        pares  = PARES_FOREX
-
-    fonte = "IQ Option (OTC)" if is_otc else "Twelve Data"
-    print(f"  📡 Batch {fonte}: {len(batch)} pares em {time.time()-t0:.1f}s")
-
-    # ── Analisa ──────────────────────────────────────────────────
     candidatos = []
-    for par in pares:
-        velas = batch.get(par, [])
-        pb    = par_base(par)
-        chave = f"{pb}_{agora.strftime('%H:%M')}"
+    agora_ts   = time.time()
+
+    for par in PARES_OTC:
+        chave = f'{par}_{ts}'
         if _enviados.get(chave):
-            print(f"  {par}: já enviado neste minuto")
             continue
-        if sequencia_bloqueada(pb, "", agora):
-            print(f"  {par}: em cooldown/sequência bloqueada")
+        if agora_ts - estado['ultimo_trade'].get(par, 0) < COOLDOWN:
+            log(f'  {par}: cooldown')
             continue
-        resultado = analisar_par(par, velas, is_otc=is_otc)
-        if resultado:
-            candidatos.append(resultado)
+
+        crz, score, det = analisar_par(iq, par)
+        if crz:
+            candidatos.append({'par': par, 'dir': crz, 'score': score, 'det': det})
+            log(f'  {par}: ✅ {crz} Score:{score} RSI:{det["rsi"]} ADX:{det["adx"]} [{det["modo"]}]')
+        else:
+            log(f'  {par}: ❌ {det}')
 
     if len(_enviados) > 500:
         _enviados.clear()
 
     if not candidatos:
-        print("  Sem sinal aprovado neste ciclo.")
+        log('Sem sinal aprovado.')
         return
 
     candidatos.sort(key=lambda x: x['score'], reverse=True)
     melhor = candidatos[0]
+    par    = melhor['par']
+    crz    = melhor['dir']
+    score  = melhor['score']
+    det    = melhor['det']
 
-    chave = f"{melhor['pb']}_{agora.strftime('%H:%M')}"
+    chave = f'{par}_{ts}'
     _enviados[chave] = True
-    registrar_sinal(melhor['pb'], melhor['dir'], agora)
+    estado['ultimo_trade'][par] = agora_ts
+    save_estado(estado)
+
+    hora_entrada = (agora + datetime.timedelta(minutes=1)).strftime('%H:%M')
+
+    extras = ''
+    if len(candidatos) > 1:
+        outros = ', '.join(f"{c['par'].replace('-OTC','')}({c['score']})" for c in candidatos[1:])
+        extras = f'\n<i>+{len(candidatos)-1} bloqueado(s): {outros}</i>'
+
+    msg = (
+        f'🎯 <b>SNIPER V10 — {ts} BRT</b>\n\n'
+        f'<code>M1;{par.replace("-OTC","")};{hora_entrada};{crz}</code>\n\n'
+        f'📊 Score: <b>{score}</b> | RSI: {det["rsi"]} | ADX: {det["adx"]}\n'
+        f'📈 Modo: {det["modo"]} | OTC 🔴'
+        f'{extras}'
+    )
 
     if EXECUCAO_ATIVA:
-        travar_portafolio(melhor['par'], segundos=65)
+        travar(par, 65)
 
-    modo_label = "🤖 EXECUÇÃO AUTO" if EXECUCAO_ATIVA else "👁 OBSERVAÇÃO"
-    ci_str     = f" | CI:{melhor['ci']}" if melhor.get('ci') else ""
-    n_desc     = len(candidatos)
-    extras     = ""
-    if n_desc > 1:
-        outros = ", ".join(f"{c['pb']}({c['score']})" for c in candidatos[1:])
-        extras = f"\n<i>+{n_desc-1} outro(s) bloqueado(s) pela Trava Única: {outros}</i>"
+    telegram(msg)
+    log(f'📨 SINAL → {par} {crz} Score:{score}')
+    painel_add_sinal(par, crz, score, ts)
 
-    tipo_par = "OTC 🔴" if is_otc else "FOREX 🌐"
-    msg = (
-        f"🎯 <b>SNIPER V10 v5 — {agora.strftime('%H:%M')} BRT [{modo_label}]</b>\n\n"
-        f"<code>M1;{melhor['pb']};{melhor['hora']};{melhor['dir']}</code>\n\n"
-        f"📊 Score: <b>{melhor['score']}</b> | RSI: {melhor['rsi']} "
-        f"| ADX: {melhor['adx']}{ci_str}\n"
-        f"📈 Modo: {melhor['modo']} | {tipo_par}\n"
-        f"🔒 Trava Única: portfólio bloqueado até {melhor['hora']}"
-        f"{extras}"
+# ── MAIN ─────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    from iqoptionapi.stable_api import IQ_Option
+    import atexit
+
+    acquire_lock()
+    atexit.register(release_lock)
+
+    log('=== SNIPER V10 OTC — INICIANDO (v29/06/2026) ===')
+    start_health_server()
+
+    iq = IQ_Option(IQ_EMAIL, IQ_PASS)
+    log('Conectando IQ Option...')
+    check, reason = iq.connect()
+    log(f'Conexão: {check} | {reason}')
+    if not check:
+        log('ERRO: falha na conexão.')
+        sys.exit(1)
+
+    time.sleep(3)
+    iq.change_balance('PRACTICE')
+    time.sleep(1)
+    saldo = iq.get_balance()
+    with _painel_lock:
+        _painel['saldo']        = saldo
+        _painel['iq_conectado'] = True
+    log(f'Conectado! Saldo: ${saldo:.2f}')
+
+    telegram(
+        f'🟢 <b>Sniper V10 OTC online!</b>\n'
+        f'💵 Saldo: <b>${saldo:.2f}</b>\n'
+        f'📊 Score mín: {SCORE_MINIMO} | MACD+RSI+BB+ADX\n'
+        f'👁 Modo observação — sem execução automática'
     )
 
-    tg(msg)
-    print(f"\n  📨 SINAL ENVIADO → {melhor['pb']} {melhor['dir']} Score:{melhor['score']}")
+    estado = load_estado()
 
-# ══════════════════════════════════════════════════════════════════
-#  MAIN
-# ══════════════════════════════════════════════════════════════════
-def main():
-    mercado   = modo_atual()
-    is_otc    = (mercado == "OTC")
-    modo_str  = "EXECUÇÃO AUTO 🤖" if EXECUCAO_ATIVA else "OBSERVAÇÃO 👁"
-    pares_str = " | ".join(p["nome"] if is_otc else par_base(p) for p in (PARES_OTC if is_otc else PARES_FOREX))
-    fonte_str = "IQ Option (OTC)" if is_otc else "Twelve Data"
-
-    print(f"🟢 Sniper V10 v5 iniciado!")
-    print(f"   Modo    : {modo_str}")
-    print(f"   Mercado : {mercado}")
-    print(f"   Pares   : {pares_str}")
-    print(f"   Fonte   : {fonte_str}")
-    print(f"   Score   : >= {SCORE_MINIMO}")
-    print(f"   Trava   : 1 op por vez em todo o portfólio")
-    import sys; sys.stdout.flush()
-    print()
-
-    tg(
-        f"🟢 <b>Sniper V10 v5 online!</b>\n\n"
-        f"Modo: <b>{modo_str}</b>\n"
-        f"Mercado: <b>{mercado}</b>\n"
-        f"Fonte: <b>{fonte_str}</b>\n"
-        f"Pares: <b>{pares_str}</b>\n"
-        f"Score mínimo: <b>{SCORE_MINIMO}</b>\n"
-        f"🔄 Auto-chaveamento FDS ↔ Semana ativo"
-    )
-
-    ultimo = ""
     while True:
         try:
-            agora = datetime.now(BRT)
-            chave = agora.strftime("%H:%M")
-            if chave != ultimo:
-                ultimo = chave
-                t = threading.Thread(target=ciclo, daemon=True)
-                t.start()
-                t.join(115)
-                if t.is_alive():
-                    print(f"  ⚠️ Ciclo {chave} excedeu tempo limite")
-            time.sleep(5)
-        except KeyboardInterrupt:
-            print("\n⛔ Sniper V10 encerrado.")
-            break
+            if not iq.check_connect():
+                log('Reconectando...')
+                iq.connect()
+                time.sleep(3)
+                iq.change_balance('PRACTICE')
+                with _painel_lock: _painel['iq_conectado'] = True
+
+            # Atualiza saldo no painel a cada ciclo
+            try:
+                s = iq.get_balance()
+                with _painel_lock: _painel['saldo'] = s or _painel['saldo']
+            except: pass
+
+            if not _painel['bot_ativo']:
+                log('Bot pausado pelo painel.')
+                time.sleep(10)
+                continue
+
+            ciclo(iq, estado)
+
         except Exception as e:
-            print(f"⚠️ Erro main: {e}")
+            log(f'Erro loop: {e}')
             time.sleep(10)
 
-if __name__ == "__main__":
-    main()
+        time.sleep(57)
