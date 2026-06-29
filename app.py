@@ -18,7 +18,7 @@ subprocess.call(
 
 import time, math, threading, requests, pytz
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, render_template_string, request as freq
+from flask import Flask, jsonify, render_template_string, request as freq, Response
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
@@ -2121,7 +2121,7 @@ atualizar();
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    return Response(HTML, mimetype='text/html')
 
 @app.route("/estado")
 def get_estado_route():
