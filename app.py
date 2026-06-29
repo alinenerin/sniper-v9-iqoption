@@ -1888,7 +1888,7 @@ textarea:focus{border-color:#00e676}
 </div>
 
 <script>
-/* ── STATUS BADGE ── */
+/*  STATUS BADGE  */
 const CORES = {
   aguardando:   'badge-on',
   confirmando:  'badge-op',
@@ -1899,48 +1899,48 @@ const CORES = {
   expirado:     'badge-exp',
 };
 const ICONS = {
-  aguardando:  '⏳',
-  confirmando: '🔍',
-  executando:  '⚡',
-  win:         '✅',
-  loss:        '❌',
-  bloqueado:   '🚫',
-  expirado:    '⏰',
+  aguardando:  'aguardando',
+  confirmando: 'confirmando',
+  executando:  'executando',
+  win:         'WIN',
+  loss:        'LOSS',
+  bloqueado:   'bloqueado',
+  expirado:    'expirado',
 };
 
 function atualizar(){
   fetch('/estado').then(r=>r.json()).then(d=>{
-    document.getElementById('bot_status').textContent = d.ativo ? '🟢 RODANDO' : (d.stop_diario ? '🛑 STOP DIÁRIO' : '⏸ PARADO');
+    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? ' STOP DIÁRIO' : 'PARADO');
     document.getElementById('saldo').textContent = '$'+d.saldo.toFixed(2);
     document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
     document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
 
     const trava = document.getElementById('trava_info');
-    trava.textContent = d.trava_par ? '🔒 Trava ativa: '+d.trava_par : '';
+    trava.textContent = d.trava_par ? 'Trava: '+d.trava_par : '';
 
     document.getElementById('total_w').textContent  = d.forex_wins + d.otc_wins;
     document.getElementById('total_l').textContent  = d.forex_losses + d.otc_losses;
     document.getElementById('losses_dia').textContent = d.losses_dia+'/4';
 
     const fb = document.getElementById('forex_badge');
-    fb.textContent  = d.forex_status === 'operando' ? '⚡ OPERANDO' : '👁 MONITORANDO';
+    fb.textContent  = d.forex_status === 'operando' ? ' OPERANDO' : ' MONITORANDO';
     fb.className    = 'badge ' + (d.forex_status === 'operando' ? 'badge-op' : 'badge-on');
-    document.getElementById('forex_par').textContent   = d.forex_par || '—';
+    document.getElementById('forex_par').textContent   = d.forex_par || '';
     document.getElementById('forex_score').textContent = d.forex_score;
     document.getElementById('forex_w').textContent     = d.forex_wins;
     document.getElementById('forex_l').textContent     = d.forex_losses;
 
     const ob = document.getElementById('otc_badge');
-    ob.textContent = d.otc_status === 'operando' ? '⚡ OPERANDO' : '👁 MONITORANDO';
+    ob.textContent = d.otc_status === 'operando' ? ' OPERANDO' : ' MONITORANDO';
     ob.className   = 'badge ' + (d.otc_status === 'operando' ? 'badge-op' : 'badge-on');
-    document.getElementById('otc_par').textContent   = d.otc_par || '—';
+    document.getElementById('otc_par').textContent   = d.otc_par || '';
     document.getElementById('otc_score').textContent = d.otc_score;
     document.getElementById('otc_w').textContent     = d.otc_wins;
     document.getElementById('otc_l').textContent     = d.otc_losses;
 
     const dot = document.getElementById('iq_dot');
     dot.className = 'dot ' + (d.iq_ok ? 'dot-g' : 'dot-r');
-    document.getElementById('iq_txt').textContent = d.iq_ok ? 'Conectada ✅' : 'Desconectada ❌';
+    document.getElementById('iq_txt').textContent = d.iq_ok ? 'Conectada ' : 'Desconectada ';
 
     // Badge executor
     const eb = document.getElementById('exec_badge');
@@ -1963,7 +1963,7 @@ function atualizar(){
     if(!lista.length){ el.innerHTML=''; return; }
     el.innerHTML = lista.map(s=>{
       const cor  = CORES[s.status]  || 'badge-on';
-      const icon = ICONS[s.status]  || '•';
+      const icon = ICONS[s.status]  || '';
       return `<div class="sinal-row">
         <span class="badge ${cor}">${icon} ${s.status.toUpperCase()}</span>
         <span class="sinal-raw">${s.raw}</span>
@@ -1994,7 +1994,7 @@ function rodarFiltro(){
   if(!txt){ return; }
   const fb = document.getElementById('filtro_feedback');
   fb.style.color = '#ce93d8';
-  fb.textContent = '⏳ Processando... (aguarde, consulta IQ + ForexFactory)';
+  fb.textContent = ' Processando... (aguarde, consulta IQ + ForexFactory)';
   document.getElementById('filtro_resultado').innerHTML = '';
   fetch('/filtro', {
     method: 'POST',
@@ -2002,11 +2002,11 @@ function rodarFiltro(){
     body: JSON.stringify({lista: txt})
   }).then(r=>r.json()).then(d=>{
     if(d.ok){
-      fb.textContent = '✅ Filtro iniciado! Resultado aparece abaixo em segundos...';
+      fb.textContent = ' Filtro iniciado! Resultado aparece abaixo em segundos...';
       pollFiltro();
     } else {
       fb.style.color = '#ff1744';
-      fb.textContent = '❌ '+(d.msg||'Erro.');
+      fb.textContent = ' '+(d.msg||'Erro.');
     }
   });
 }
@@ -2015,12 +2015,12 @@ function pollFiltro(){
   fetch('/filtro').then(r=>r.json()).then(d=>{
     const fb  = document.getElementById('filtro_feedback');
     if(d.rodando){
-      fb.textContent = '⏳ Processando... buscando velas e aplicando filtros';
+      fb.textContent = ' Processando... buscando velas e aplicando filtros';
       setTimeout(pollFiltro, 1500);
       return;
     }
     const res = document.getElementById('filtro_resultado');
-    if(d.erro){ fb.style.color='#ff1744'; fb.textContent='❌ '+d.erro; return; }
+    if(d.erro){ fb.style.color='#ff1744'; fb.textContent=' '+d.erro; return; }
 
     const apr = d.resultado || [];
     const blq = d.bloqueados || [];
@@ -2028,7 +2028,7 @@ function pollFiltro(){
 
     if(apr.length){
       html += `<div style="font-size:.72rem;color:#ce93d8;margin-bottom:6px">
-        💎 ${apr.length} aprovado(s) — clique em ✅ para enviar ao executor</div>`;
+         ${apr.length} aprovado(s)  clique em  para enviar ao executor</div>`;
       apr.forEach((s,i)=>{
         html += `<div class="filtro-row">
           <span class="badge badge-on" style="background:#9c27b022;color:#ce93d8">${s.ic} ${s.score}pts</span>
@@ -2039,18 +2039,18 @@ function pollFiltro(){
           <button onclick="enviarUm('${s.raw}')"
             style="margin-left:auto;background:#ff6b00;color:#000;border:none;
                    border-radius:8px;padding:4px 10px;font-size:.7rem;font-weight:700;cursor:pointer">
-            ✅ Executar
+             Executar
           </button>
         </div>`;
       });
       html += `<button class="btn btn-exec-all" onclick="enviarTodos()">
-        📤 Enviar TODOS ao Executor (${apr.length})</button>`;
+         Enviar TODOS ao Executor (${apr.length})</button>`;
     } else {
       html += '<div style="color:#666;font-size:.75rem;padding:6px 0">Nenhum sinal aprovado pelo filtro.</div>';
     }
 
     if(blq.length){
-      html += `<div style="font-size:.68rem;color:#444;margin-top:10px;margin-bottom:4px">🚫 ${blq.length} bloqueado(s):</div>`;
+      html += `<div style="font-size:.68rem;color:#444;margin-top:10px;margin-bottom:4px"> ${blq.length} bloqueado(s):</div>`;
       blq.forEach(s=>{
         html += `<div class="filtro-row filtro-bloq">
           <span class="sinal-raw">${s.par} ${s.hora} ${s.dir}</span>
@@ -2060,7 +2060,7 @@ function pollFiltro(){
     }
 
     res.innerHTML = html;
-    fb.textContent = `✅ Concluído: ${apr.length} aprovados / ${blq.length} bloqueados`;
+    fb.textContent = ` Concluído: ${apr.length} aprovados / ${blq.length} bloqueados`;
   });
 }
 
@@ -2070,7 +2070,7 @@ function enviarUm(raw){
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({sinais: raw})
   }).then(r=>r.json()).then(d=>{
-    alert(d.ok ? '✅ Sinal enviado ao executor!' : '❌ '+(d.msg||'Erro'));
+    alert(d.ok ? ' Sinal enviado ao executor!' : ' '+(d.msg||'Erro'));
     atualizar();
   });
 }
@@ -2084,7 +2084,7 @@ function enviarTodos(){
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({sinais: linhas})
     }).then(r=>r.json()).then(d2=>{
-      alert(d2.ok ? `✅ ${d2.adicionados} sinal(is) enviados ao executor!` : '❌ '+(d2.msg||'Erro'));
+      alert(d2.ok ? ` ${d2.adicionados} sinal(is) enviados ao executor!` : ' '+(d2.msg||'Erro'));
       atualizar();
     });
   });
@@ -2101,11 +2101,11 @@ function enviarSinais(){
     const fb = document.getElementById('manual_feedback');
     if(d.ok){
       fb.style.color = '#00e676';
-      fb.textContent = '✅ ' + d.adicionados + ' sinal(is) adicionado(s) à fila!';
+      fb.textContent = ' ' + d.adicionados + ' sinal(is) adicionado(s) à fila!';
       document.getElementById('sinais_input').value = '';
     } else {
       fb.style.color = '#ff1744';
-      fb.textContent = '❌ ' + (d.msg || 'Erro ao processar sinais.');
+      fb.textContent = ' ' + (d.msg || 'Erro ao processar sinais.');
     }
     setTimeout(()=>{ fb.textContent=''; }, 5000);
     atualizar();
