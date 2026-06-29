@@ -1656,15 +1656,15 @@ textarea:focus{border-color:#00e676}
     <h3>Status Geral</h3>
     <div class="grid2">
       <div>
-        <div class="val b" id="bot_status">—</div>
-        <div style="font-size:.75rem;color:#555;margin-top:3px" id="iniciado_em"></div>
+        <div class="val b" id="bot_status">{% if ativo %}🟢 RODANDO{% elif stop_diario %}🛑 STOP DIÁRIO{% else %}⏸ PARADO{% endif %}</div>
+        <div style="font-size:.75rem;color:#555;margin-top:3px" id="iniciado_em">{% if iniciado_em %}Desde: {{ iniciado_em }}{% endif %}</div>
       </div>
       <div>
-        <div class="val g" id="saldo">$0.00</div>
+        <div class="val g" id="saldo">${{ "%.2f"|format(saldo) }}</div>
         <div style="font-size:.65rem;color:#555">SALDO</div>
       </div>
     </div>
-    <div class="trava-info" id="trava_info"></div>
+    <div class="trava-info" id="trava_info">{% if trava_par %}🔒 Trava ativa: {{ trava_par }}{% endif %}</div>
   </div>
 
   <!-- STOP DIÁRIO -->
@@ -1672,15 +1672,15 @@ textarea:focus{border-color:#00e676}
     <h3>Stop Diário Unificado</h3>
     <div class="grid3">
       <div class="placar-item">
-        <div class="n g" id="total_w">0</div>
+        <div class="n g" id="total_w">{{ forex_wins + otc_wins }}</div>
         <div class="l">WINS</div>
       </div>
       <div class="placar-item">
-        <div class="n r" id="total_l">0</div>
+        <div class="n r" id="total_l">{{ forex_losses + otc_losses }}</div>
         <div class="l">LOSSES</div>
       </div>
       <div class="placar-item">
-        <div class="n y" id="losses_dia">0/4</div>
+        <div class="n y" id="losses_dia">{{ losses_dia }}/4</div>
         <div class="l">HOJE/STOP</div>
       </div>
     </div>
@@ -1691,17 +1691,17 @@ textarea:focus{border-color:#00e676}
     <div class="engine-title b">🔵 ENGINE FOREX (M3 · Score 170)</div>
     <div class="grid2">
       <div>
-        <span class="badge" id="forex_badge">—</span>
-        <div style="font-size:.8rem;margin-top:5px">Par: <b id="forex_par">—</b></div>
-        <div style="font-size:.75rem;color:#555">Score: <span id="forex_score">0</span></div>
+        <span class="badge {% if forex_status == 'operando' %}badge-op{% else %}badge-on{% endif %}" id="forex_badge">{% if forex_status == 'operando' %}⚡ OPERANDO{% else %}👁 MONITORANDO{% endif %}</span>
+        <div style="font-size:.8rem;margin-top:5px">Par: <b id="forex_par">{{ forex_par }}</b></div>
+        <div style="font-size:.75rem;color:#555">Score: <span id="forex_score">{{ forex_score }}</span></div>
       </div>
       <div class="placar">
         <div class="placar-item">
-          <div class="n g" id="forex_w">0</div>
+          <div class="n g" id="forex_w">{{ forex_wins }}</div>
           <div class="l">W</div>
         </div>
         <div class="placar-item">
-          <div class="n r" id="forex_l">0</div>
+          <div class="n r" id="forex_l">{{ forex_losses }}</div>
           <div class="l">L</div>
         </div>
       </div>
@@ -1709,7 +1709,7 @@ textarea:focus{border-color:#00e676}
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
         <h3>Log Forex</h3>
-        <div class="log-wrap" id="log_forex"></div>
+        <div class="log-wrap" id="log_forex">{% for linha in log_forex|reverse %}<p>{{ linha }}</p>{% endfor %}</div>
       </div>
     </div>
   </div>
@@ -1719,17 +1719,17 @@ textarea:focus{border-color:#00e676}
     <div class="engine-title o">🟠 ENGINE OTC (M1 · Score 100)</div>
     <div class="grid2">
       <div>
-        <span class="badge" id="otc_badge">—</span>
-        <div style="font-size:.8rem;margin-top:5px">Par: <b id="otc_par">—</b></div>
-        <div style="font-size:.75rem;color:#555">Score: <span id="otc_score">0</span></div>
+        <span class="badge {% if otc_status == 'operando' %}badge-op{% else %}badge-on{% endif %}" id="otc_badge">{% if otc_status == 'operando' %}⚡ OPERANDO{% else %}👁 MONITORANDO{% endif %}</span>
+        <div style="font-size:.8rem;margin-top:5px">Par: <b id="otc_par">{{ otc_par }}</b></div>
+        <div style="font-size:.75rem;color:#555">Score: <span id="otc_score">{{ otc_score }}</span></div>
       </div>
       <div class="placar">
         <div class="placar-item">
-          <div class="n g" id="otc_w">0</div>
+          <div class="n g" id="otc_w">{{ otc_wins }}</div>
           <div class="l">W</div>
         </div>
         <div class="placar-item">
-          <div class="n r" id="otc_l">0</div>
+          <div class="n r" id="otc_l">{{ otc_losses }}</div>
           <div class="l">L</div>
         </div>
       </div>
@@ -1737,7 +1737,7 @@ textarea:focus{border-color:#00e676}
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
         <h3>Log OTC</h3>
-        <div class="log-wrap" id="log_otc"></div>
+        <div class="log-wrap" id="log_otc">{% for linha in log_otc|reverse %}<p>{{ linha }}</p>{% endfor %}</div>
       </div>
     </div>
   </div>
@@ -1745,8 +1745,8 @@ textarea:focus{border-color:#00e676}
   <!-- IQ + CONTROLES -->
   <div class="card">
     <h3>IQ Option</h3>
-    <span class="dot" id="iq_dot"></span>
-    <span id="iq_txt">—</span>
+    <span class="dot {% if iq_ok %}dot-g{% else %}dot-r{% endif %}" id="iq_dot"></span>
+    <span id="iq_txt">{% if iq_ok %}Conectada ✅{% else %}Desconectada ❌{% endif %}</span>
   </div>
 
   <div class="grid2" style="margin-bottom:12px">
@@ -2007,7 +2007,29 @@ atualizar();
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    with _lock:
+        e = dict(estado)
+    return render_template_string(HTML,
+        ativo        = e["ativo"],
+        stop_diario  = e["stop_diario"],
+        saldo        = e["saldo"],
+        iq_ok        = e["iq_ok"],
+        iniciado_em  = e["iniciado_em"],
+        losses_dia   = e["losses_dia"],
+        forex_wins   = e["forex_wins"],
+        forex_losses = e["forex_losses"],
+        forex_par    = e["forex_par"] or "—",
+        forex_score  = e["forex_score"],
+        forex_status = e["forex_status"],
+        otc_wins     = e["otc_wins"],
+        otc_losses   = e["otc_losses"],
+        otc_par      = e["otc_par"] or "—",
+        otc_score    = e["otc_score"],
+        otc_status   = e["otc_status"],
+        log_forex    = e["log_forex"][-20:],
+        log_otc      = e["log_otc"][-20:],
+        trava_par    = e["trava_par"],
+    )
 
 @app.route("/estado")
 def get_estado_route():
