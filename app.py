@@ -72,6 +72,7 @@ estado = {
     "ativo":           False,
     "forex_ativo":     True,
     "otc_ativo":       True,
+    "executor_ativo":  True,
     "stop_diario":     False,
     "losses_dia":      0,
     "data_losses_dia": "",
@@ -1226,6 +1227,12 @@ def _executar_sinal(sinal):
             _log(f"🔒 {par} BLOQUEADO: trava não liberou em 30s", "MANUAL")
             return
 
+    # ── Executor bloqueado manualmente ────────────────────────────
+    if not estado.get("executor_ativo", True):
+        _atualizar_sinal(sid, "bloqueado", "Executor desativado")
+        _log(f"🚫 {par} BLOQUEADO: executor desativado", "MANUAL")
+        return
+
     # ── Execução ──────────────────────────────────────────────────
     _atualizar_sinal(sid, "executando")
     saldo = get_saldo()
@@ -1696,6 +1703,9 @@ textarea:focus{border-color:#00e676}
 .btn-filtro{background:#9c27b0;color:#fff;font-weight:700}
 .btn-filtro:hover{opacity:.82}
 .btn-exec-all{background:#ff6b00;color:#000;font-weight:700;margin-top:8px}
+.btn-exec-on{background:#00e676;color:#000}
+.btn-exec-off{background:#ff1744;color:#fff}
+.executor-badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:.8rem;font-weight:700;margin-left:8px}
 .btn-exec-all:hover{opacity:.82}
 .sinal-row{display:flex;align-items:center;gap:8px;padding:5px 0;
            border-bottom:1px solid #1a1a1a;font-size:.75rem;flex-wrap:wrap}
@@ -1734,6 +1744,20 @@ textarea:focus{border-color:#00e676}
     <div class="grid2" style="margin-top:14px">
       <button class="btn btn-go"   ontouchstart="" onclick="iniciar()">▶ INICIAR</button>
       <button class="btn btn-stop" ontouchstart="" onclick="parar()">⏹ PARAR</button>
+    </div>
+  </div>
+
+  <!-- EXECUTOR AUTOMÁTICO -->
+  <div class="card">
+    <h3>⚡ Executor Automático
+      <span class="executor-badge" id="exec_badge" style="background:#00e676;color:#000">ATIVO</span>
+    </h3>
+    <div style="font-size:.75rem;color:#666;margin-bottom:10px">
+      Controla se os sinais aprovados serão executados automaticamente na IQ Option.
+    </div>
+    <div class="grid2">
+      <button class="btn btn-exec-on" ontouchstart="" onclick="execLigar()">⚡ EXECUTOR ON</button>
+      <button class="btn btn-exec-off" ontouchstart="" onclick="execDesligar()">🚫 EXECUTOR OFF</button>
     </div>
   </div>
 
@@ -1918,6 +1942,15 @@ function atualizar(){
     dot.className = 'dot ' + (d.iq_ok ? 'dot-g' : 'dot-r');
     document.getElementById('iq_txt').textContent = d.iq_ok ? 'Conectada ✅' : 'Desconectada ❌';
 
+    // Badge executor
+    const eb = document.getElementById('exec_badge');
+    if(eb){
+      const on = d.executor_ativo !== false;
+      eb.textContent = on ? 'ATIVO' : 'DESATIVADO';
+      eb.style.background = on ? '#00e676' : '#ff1744';
+      eb.style.color = on ? '#000' : '#fff';
+    }
+
     const lf = document.getElementById('log_forex');
     lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
     const lo = document.getElementById('log_otc');
@@ -1942,6 +1975,19 @@ function atualizar(){
 
 function iniciar(){ fetch('/iniciar',{method:'POST'}).then(atualizar); }
 function parar()  { fetch('/parar',  {method:'POST'}).then(atualizar); }
+
+function execLigar(){
+  fetch('/executor/ligar',{method:'POST'}).then(()=>{
+    const b = document.getElementById('exec_badge');
+    b.textContent='ATIVO'; b.style.background='#00e676'; b.style.color='#000';
+  });
+}
+function execDesligar(){
+  fetch('/executor/desligar',{method:'POST'}).then(()=>{
+    const b = document.getElementById('exec_badge');
+    b.textContent='DESATIVADO'; b.style.background='#ff1744'; b.style.color='#fff';
+  });
+}
 
 function rodarFiltro(){
   const txt = document.getElementById('filtro_input').value.trim();
@@ -2118,6 +2164,18 @@ def otc_ligar():
 def otc_desligar():
     estado["otc_ativo"] = False
     _log("🟠 Engine OTC desligada manualmente", "OTC")
+    return jsonify({"ok": True})
+
+@app.route("/executor/ligar", methods=["POST"])
+def executor_ligar():
+    estado["executor_ativo"] = True
+    _log("⚡ Executor automático ATIVADO", "MANUAL")
+    return jsonify({"ok": True})
+
+@app.route("/executor/desligar", methods=["POST"])
+def executor_desligar():
+    estado["executor_ativo"] = False
+    _log("🚫 Executor automático DESATIVADO", "MANUAL")
     return jsonify({"ok": True})
 
 @app.route("/reset_stop", methods=["POST"])
