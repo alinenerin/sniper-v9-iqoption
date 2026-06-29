@@ -1,6 +1,3 @@
-flask
-pytz
-requests
-websocket-client
-gunicorn
-# bust-1782731505
+requests>=2.31.0
+pytz>=2024.1
+websocket-client==0.56.0
