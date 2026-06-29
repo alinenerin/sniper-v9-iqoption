@@ -708,7 +708,7 @@ if __name__ == '__main__':
         sys.exit(0)
 
     iq = IQ_Option(IQ_EMAIL, IQ_PASS)
-    iq.set_ssid("97a21df2474ec30203bb47a9ff35992q")
+
     log('Conectando IQ Option via SSID...')
     check, reason = iq.connect()
     log(f'Conexão: {check} | {reason}')
