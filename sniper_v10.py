@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
 SNIPER V10 — OTC Weekend — 29/06/2026
-Diretrizes V10:
-  - Conexão IQ via iq.connect() (sem set_ssid)
-  - Fuso horário America/Sao_Paulo via pytz
-  - Score: MACD(30) + ADX(30) + BB(25) + RSI(15) = 100pts
-  - Shadow Rejection = BLOQUEIO puro (sem pts)
-  - Stop diário absoluto: 4 losses no dia = desliga bot
+Mesma estrutura do V9 + filtros avançados:
+  - MACD (5,13,4) com histograma
+  - RSI (14) com zonas neutro/exaustão
+  - Bollinger Bands (20, 2)
+  - Shadow Rejection
+  - ADX (modo lateral vs tendência)
+  - Score ponderado por componente
+  - Trava de portfólio global (1 op por vez)
+  - Auto-renovação de SSID via HTTP
 """
 import sys, time, json, os, datetime, urllib.request, urllib.parse, threading, math
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import pytz
 
-sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api_faria'))
 
 # ── CREDENCIAIS ───────────────────────────────────────────────────────
 IQ_EMAIL   = 'laiane.aline@gmail.com'
@@ -51,15 +53,12 @@ SHADOW_THRESHOLD = 0.35
 ADX_LATERAL   = 18
 ADX_TENDENCIA = 22
 
-# Pesos de score (Shadow = bloqueio, sem pontos)
-PESO_MACD   = 30
+# Pesos de score
+PESO_MACD   = 20
 PESO_RSI    = 15
 PESO_BB     = 25
-PESO_SHADOW = 0   # apenas bloqueio
-PESO_ADX    = 30
-
-# Stop diário absoluto
-MAX_LOSSES_DIA = 4
+PESO_SHADOW = 20
+PESO_ADX    = 20
 
 # Janelas BRT
 JANELAS_ATIVAS = [
@@ -103,8 +102,7 @@ def release_lock():
 
 # ── LOG ──────────────────────────────────────────────────────────────
 def log(msg):
-    BRT = pytz.timezone('America/Sao_Paulo')
-    now  = datetime.datetime.now(BRT).strftime('%Y-%m-%d %H:%M:%S')
+    now  = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     line = f'[{now}] {msg}'
     print(line)
     painel_add_log(line)
@@ -133,14 +131,13 @@ _painel = {
     'execucao_ativa': False,
     'score_minimo':   80,
     'saldo':          0.0,
+    'saldo_practice': 0.0,
     'wins':           0,
     'losses':         0,
-    'losses_dia':     0,
-    'data_losses_dia': '',
     'iq_conectado':   False,
     'sinais':         [],
     'log_lines':      [],
-    'iniciado_em':    datetime.datetime.now(pytz.timezone('America/Sao_Paulo')).strftime('%d/%m %H:%M'),
+    'iniciado_em':    datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-3))).strftime('%d/%m %H:%M'),
 }
 _painel_lock = threading.Lock()
 
@@ -190,12 +187,11 @@ h1{{color:#00e5ff;font-size:1.4em;margin-bottom:4px}}
 <h1>&#9889; Sniper V10</h1>
 <p class="sub">Iniciado: {iniciado_em} &nbsp;|&nbsp; <span id="rel">atualizando...</span></p>
 <div class="cards">
-  <div class="card"><div class="lbl">Saldo</div><div class="val g">${saldo:.2f}</div></div>
+  <div class="card"><div class="lbl">Saldo Real</div><div class="val g">${saldo:.2f}</div></div>
+  <div class="card"><div class="lbl">Practice</div><div class="val" style="color:#29b6f6">${saldo_practice:.2f}</div></div>
   <div class="card"><div class="lbl">IQ Option</div><div class="val {iq_cor}">{iq_st}</div></div>
   <div class="card"><div class="lbl">Wins</div><div class="val g">{wins}</div></div>
   <div class="card"><div class="lbl">Losses</div><div class="val r">{losses}</div></div>
-  <div class="card"><div class="lbl">Losses Hoje</div><div class="val r">{losses_dia}/{max_losses_dia}</div></div>
-  <div class="card"><div class="lbl">Stop Diário</div><div class="val {stop_cor}">{stop_txt}</div></div>
 </div>
 <div class="sec">
   <h2>Controles</h2>
@@ -251,15 +247,11 @@ def render_painel():
 
     lh = '\n'.join(logs[-30:]) or 'Aguardando...'
 
-    stop_cor = 'r' if p.get('losses_dia', 0) >= MAX_LOSSES_DIA else 'g'
-    stop_txt = '🛑 ATIVO' if p.get('losses_dia', 0) >= MAX_LOSSES_DIA else '🟢 OK'
-
     return HTML.format(
         iniciado_em=p['iniciado_em'], saldo=p['saldo'],
+        saldo_practice=p.get('saldo_practice', 0.0),
         iq_cor=iq_cor, iq_st=iq_st,
         wins=p['wins'], losses=p['losses'],
-        losses_dia=p.get('losses_dia', 0), max_losses_dia=MAX_LOSSES_DIA,
-        stop_cor=stop_cor, stop_txt=stop_txt,
         bot_cls=bot_cls, bot_txt=bot_txt,
         ex_cls=ex_cls, ex_txt=ex_txt,
         score_minimo=p['score_minimo'],
@@ -316,7 +308,7 @@ def load_estado():
             e['ultimo_trade'] = {k: v for k, v in e.get('ultimo_trade', {}).items() if agora - v < 600}
             return e
         except: pass
-    return {'wins': 0, 'losses': 0, 'losses_seq': 0, 'losses_dia': 0, 'data_losses_dia': '', 'saldo_inicial': None, 'ultimo_trade': {}}
+    return {'wins': 0, 'losses': 0, 'losses_seq': 0, 'saldo_inicial': None, 'ultimo_trade': {}}
 
 def save_estado(e):
     try:
@@ -523,10 +515,8 @@ def analisar_par(iq, par):
 _enviados = {}
 
 def ciclo(iq, estado):
-    BRT   = pytz.timezone('America/Sao_Paulo')
-    agora = datetime.datetime.now(BRT)
+    agora = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-3)))
     ts    = agora.strftime('%H:%M')
-    hoje  = agora.strftime('%Y-%m-%d')
 
     if not janela_ativa(agora):
         log(f'[{ts}] Fora da janela')
@@ -534,20 +524,6 @@ def ciclo(iq, estado):
 
     if agora.minute in MINUTOS_BLOQUEADOS:
         log(f'[{ts}] Minuto bloqueado :{agora.minute:02d}')
-        return
-
-    # Reset losses_dia se mudou o dia
-    if estado.get('data_losses_dia') != hoje:
-        estado['data_losses_dia'] = hoje
-        estado['losses_dia'] = 0
-        save_estado(estado)
-
-    # Stop diário absoluto — 4 losses no dia = desliga bot permanentemente
-    if estado.get('losses_dia', 0) >= MAX_LOSSES_DIA:
-        log('🛑 STOP DIÁRIO: 4 losses no dia. Bot desligado.')
-        with _painel_lock:
-            _painel['bot_ativo'] = False
-        telegram('🛑 <b>STOP DIÁRIO ATIVADO</b>\n4 losses atingidos hoje.\nBot desligado pelo sistema.\nReinicie manualmente pelo painel amanhã.')
         return
 
     if estado['losses_seq'] >= 3:
@@ -614,38 +590,6 @@ def ciclo(iq, estado):
 
     if EXECUCAO_ATIVA:
         travar(par, 65)
-        try:
-            direcao_iq = 'call' if crz == 'CALL' else 'put'
-            ok, id_op = iq.buy(1, par, direcao_iq, 1)
-            if ok:
-                log(f'✅ Trade aberta — ID: {id_op}')
-                time.sleep(65)
-                resultado = iq.check_win_v3(id_op)
-                BRT = pytz.timezone('America/Sao_Paulo')
-                hoje = datetime.datetime.now(BRT).strftime('%Y-%m-%d')
-                if estado.get('data_losses_dia') != hoje:
-                    estado['data_losses_dia'] = hoje
-                    estado['losses_dia'] = 0
-                if resultado > 0:
-                    estado['wins'] += 1
-                    estado['losses_seq'] = 0
-                    with _painel_lock:
-                        _painel['wins'] = estado['wins']
-                    log(f'✅ WIN! Resultado: +${resultado:.2f}')
-                    telegram(f'✅ <b>WIN!</b> {par} {crz} — +${resultado:.2f}')
-                else:
-                    estado['losses'] += 1
-                    estado['losses_seq'] = estado.get('losses_seq', 0) + 1
-                    estado['losses_dia'] = estado.get('losses_dia', 0) + 1
-                    with _painel_lock:
-                        _painel['losses'] = estado['losses']
-                    log(f'❌ LOSS. Seq: {estado["losses_seq"]} | Dia: {estado["losses_dia"]}/{MAX_LOSSES_DIA}')
-                    telegram(f'❌ <b>LOSS</b> {par} {crz} | Seq: {estado["losses_seq"]} | Dia: {estado["losses_dia"]}/{MAX_LOSSES_DIA}')
-                save_estado(estado)
-            else:
-                log(f'Erro ao abrir trade: {id_op}')
-        except Exception as e:
-            log(f'Erro execução: {e}')
 
     telegram(msg)
     log(f'📨 SINAL → {par} {crz} Score:{score}')
@@ -671,26 +615,26 @@ if __name__ == '__main__':
         sys.exit(1)
 
     time.sleep(3)
+    iq.change_balance('REAL')
+    time.sleep(1)
+    saldo_real = iq.get_balance() or 0.0
     iq.change_balance('PRACTICE')
     time.sleep(1)
-    saldo = iq.get_balance()
+    saldo_practice = iq.get_balance() or 0.0
     with _painel_lock:
-        _painel['saldo']        = saldo
-        _painel['iq_conectado'] = True
-    log(f'Conectado! Saldo: ${saldo:.2f}')
+        _painel['saldo']          = saldo_real
+        _painel['saldo_practice'] = saldo_practice
+        _painel['iq_conectado']   = True
+    log(f'Conectado! Real: ${saldo_real:.2f} | Practice: ${saldo_practice:.2f}')
 
     telegram(
         f'🟢 <b>Sniper V10 OTC online!</b>\n'
-        f'💵 Saldo: <b>${saldo:.2f}</b>\n'
+        f'💵 Real: <b>${saldo_real:.2f}</b> | Practice: <b>${saldo_practice:.2f}</b>\n'
         f'📊 Score mín: {SCORE_MINIMO} | MACD+RSI+BB+ADX\n'
         f'👁 Modo observação — sem execução automática'
     )
 
     estado = load_estado()
-    with _painel_lock:
-        _painel['losses'] = estado.get('losses', 0)
-        _painel['wins']   = estado.get('wins', 0)
-        _painel['losses_dia'] = estado.get('losses_dia', 0)
 
     while True:
         try:
@@ -703,8 +647,15 @@ if __name__ == '__main__':
 
             # Atualiza saldo no painel a cada ciclo
             try:
-                s = iq.get_balance()
-                with _painel_lock: _painel['saldo'] = s or _painel['saldo']
+                iq.change_balance('REAL')
+                time.sleep(0.3)
+                s_real = iq.get_balance()
+                iq.change_balance('PRACTICE')
+                time.sleep(0.3)
+                s_prac = iq.get_balance()
+                with _painel_lock:
+                    if s_real: _painel['saldo'] = s_real
+                    if s_prac: _painel['saldo_practice'] = s_prac
             except: pass
 
             if not _painel['bot_ativo']:
