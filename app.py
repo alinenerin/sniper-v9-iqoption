@@ -169,14 +169,30 @@ def _conectar_iq():
     _iq_tentando = True
     try:
         _log("Conectando IQ Option...")
-        # Path correto: pasta raiz onde está a PASTA iqoptionapi
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        _log(f"Base dir: {base_dir} | exists: {os.path.exists(os.path.join(base_dir,'iqoptionapi'))}")
         if base_dir not in sys.path:
             sys.path.insert(0, base_dir)
         from iqoptionapi.stable_api import IQ_Option
+
         api = IQ_Option(IQ_EMAIL, IQ_PASS)
-        check, reason = api.connect()
+
+        # connect() com timeout via thread
+        resultado = [None, None]
+        def _do_connect():
+            try:
+                resultado[0], resultado[1] = api.connect()
+            except Exception as ex:
+                resultado[1] = str(ex)
+
+        t = threading.Thread(target=_do_connect, daemon=True)
+        t.start()
+        t.join(timeout=30)
+
+        if t.is_alive():
+            _log("IQ connect() timeout (30s) — tentará novamente em breve")
+            return
+
+        check, reason = resultado[0], resultado[1]
         _log(f"Conexão: {check} | {reason}")
         if check:
             api.change_balance("PRACTICE")
