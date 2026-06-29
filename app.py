@@ -2146,7 +2146,23 @@ atualizar();
 
 @app.route("/", methods=["GET","POST"])
 def index():
-    return Response(HTML, mimetype='text/html')
+    with _lock:
+        e = dict(estado)
+    st  = "🟢 RODANDO" if e["ativo"] else ("🛑 STOP DIÁRIO" if e["stop_diario"] else "⏸ PARADO")
+    sal = "${:.2f}".format(e["saldo"])
+    iq  = "Conectada ✅" if e["iq_ok"] else "Desconectada ❌"
+    ini = ("Desde: " + e["iniciado_em"]) if e["iniciado_em"] else ""
+    log_f = "".join("<p>"+l+"</p>" for l in reversed(e["log_forex"][-20:]))
+    log_o = "".join("<p>"+l+"</p>" for l in reversed(e["log_otc"][-20:]))
+    html = (HTML
+        .replace('id="bot_status">—', 'id="bot_status">' + st)
+        .replace('id="saldo">$0.00', 'id="saldo">' + sal)
+        .replace('id="iq_txt">—', 'id="iq_txt">' + iq)
+        .replace('id="iniciado_em"></div>', 'id="iniciado_em">' + ini + '</div>')
+        .replace('id="log_forex"></div>', 'id="log_forex">' + log_f + '</div>')
+        .replace('id="log_otc"></div>', 'id="log_otc">' + log_o + '</div>')
+    )
+    return Response(html, mimetype='text/html')
 
 @app.route("/estado")
 def get_estado_route():
