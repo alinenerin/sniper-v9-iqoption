@@ -168,7 +168,10 @@ def _conectar_iq():
     global _iq_api, _iq_ok, _iq_tentando
     _iq_tentando = True
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "iqoptionapi"))
+        # Path correto: pasta raiz onde está a PASTA iqoptionapi
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        if base_dir not in sys.path:
+            sys.path.insert(0, base_dir)
         from iqoptionapi.stable_api import IQ_Option
         api = IQ_Option(IQ_EMAIL, IQ_PASS)
         check, reason = api.connect()
