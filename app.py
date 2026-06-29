@@ -27,6 +27,7 @@ TG_TOKEN  = os.environ.get("TG_TOKEN", "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2Y
 TG_CHAT   = os.environ.get("TG_CHAT",  "5911742397")
 IQ_EMAIL  = os.environ.get("IQ_EMAIL", "laiane.aline@gmail.com")
 IQ_PASS   = os.environ.get("IQ_PASS",  "alineegui95")
+IQ_SSID   = os.environ.get("IQ_SSID",  "")
 
 BRT            = pytz.timezone("America/Sao_Paulo")
 MAX_LOSSES_DIA = 4
@@ -175,6 +176,14 @@ def _conectar_iq():
         from iqoptionapi.stable_api import IQ_Option
 
         api = IQ_Option(IQ_EMAIL, IQ_PASS)
+
+        # Se tiver SSID, injetar o cookie de sessão antes de conectar
+        if IQ_SSID:
+            _log(f"Usando SSID salvo: {IQ_SSID[:10]}...")
+            api.set_session(
+                header={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/66.0.3359.139 Safari/537.36"},
+                cookie={"ssid": IQ_SSID}
+            )
 
         # connect() com timeout via thread
         resultado = [None, None]
