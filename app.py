@@ -168,13 +168,16 @@ def _conectar_iq():
     global _iq_api, _iq_ok, _iq_tentando
     _iq_tentando = True
     try:
+        _log("Conectando IQ Option...")
         # Path correto: pasta raiz onde está a PASTA iqoptionapi
         base_dir = os.path.dirname(os.path.abspath(__file__))
+        _log(f"Base dir: {base_dir} | exists: {os.path.exists(os.path.join(base_dir,'iqoptionapi'))}")
         if base_dir not in sys.path:
             sys.path.insert(0, base_dir)
         from iqoptionapi.stable_api import IQ_Option
         api = IQ_Option(IQ_EMAIL, IQ_PASS)
         check, reason = api.connect()
+        _log(f"Conexão: {check} | {reason}")
         if check:
             api.change_balance("PRACTICE")
             _iq_api = api
