@@ -194,9 +194,9 @@ def _conectar_iq():
                 tg(f"✅ <b>IQ conectada (REST)!</b>\n💵 Saldo: ${saldo:.2f}")
                 return
         # Fallback: login com usuário/senha via REST
-        r = _iq_sess.post("https://auth.iqoption.com/api/v1.0/login",
+        r = _iq_sess.post("https://auth.iqoption.com/api/v2/login",
             json={"identifier": IQ_EMAIL, "password": IQ_PASS}, timeout=12)
-        ssid = r.json().get("data", {}).get("ssid", "")
+        ssid = r.json().get("ssid", "")
         if ssid:
             _iq_sess.cookies.set("ssid", ssid, domain="iqoption.com")
             _iq_ok = True
