@@ -1900,7 +1900,7 @@ textarea:focus{border-color:#00e676}
 
 <script>
 /*  STATUS BADGE  */
-const CORES = {
+var CORES = {
   aguardando:   'badge-on',
   confirmando:  'badge-op',
   executando:   'badge-op',
@@ -1909,7 +1909,7 @@ const CORES = {
   bloqueado:    'badge-loss',
   expirado:     'badge-exp',
 };
-const ICONS = {
+var ICONS = {
   aguardando:  'aguardando',
   confirmando: 'confirmando',
   executando:  'executando',
@@ -1927,14 +1927,14 @@ function atualizar(){
     document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
     document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
 
-    const trava = document.getElementById('trava_info');
+    var trava = document.getElementById('trava_info');
     trava.textContent = d.trava_par ? 'Trava: '+d.trava_par : '';
 
     document.getElementById('total_w').textContent  = d.forex_wins + d.otc_wins;
     document.getElementById('total_l').textContent  = d.forex_losses + d.otc_losses;
     document.getElementById('losses_dia').textContent = d.losses_dia+'/4';
 
-    const fb = document.getElementById('forex_badge');
+    var fb = document.getElementById('forex_badge');
     fb.textContent  = d.forex_status === 'operando' ? ' OPERANDO' : ' MONITORANDO';
     fb.className    = 'badge ' + (d.forex_status === 'operando' ? 'badge-op' : 'badge-on');
     document.getElementById('forex_par').textContent   = d.forex_par || '';
@@ -1942,7 +1942,7 @@ function atualizar(){
     document.getElementById('forex_w').textContent     = d.forex_wins;
     document.getElementById('forex_l').textContent     = d.forex_losses;
 
-    const ob = document.getElementById('otc_badge');
+    var ob = document.getElementById('otc_badge');
     ob.textContent = d.otc_status === 'operando' ? ' OPERANDO' : ' MONITORANDO';
     ob.className   = 'badge ' + (d.otc_status === 'operando' ? 'badge-op' : 'badge-on');
     document.getElementById('otc_par').textContent   = d.otc_par || '';
@@ -1950,22 +1950,22 @@ function atualizar(){
     document.getElementById('otc_w').textContent     = d.otc_wins;
     document.getElementById('otc_l').textContent     = d.otc_losses;
 
-    const dot = document.getElementById('iq_dot');
+    var dot = document.getElementById('iq_dot');
     dot.className = 'dot ' + (d.iq_ok ? 'dot-g' : 'dot-r');
     document.getElementById('iq_txt').textContent = d.iq_ok ? 'Conectada ' : 'Desconectada ';
 
     // Badge executor
-    const eb = document.getElementById('exec_badge');
+    var eb = document.getElementById('exec_badge');
     if(eb){
-      const on = d.executor_ativo !== false;
+      var on = d.executor_ativo !== false;
       eb.textContent = on ? 'ATIVO' : 'DESATIVADO';
       eb.style.background = on ? '#00e676' : '#ff1744';
       eb.style.color = on ? '#000' : '#fff';
     }
 
-    const lf = document.getElementById('log_forex');
+    var lf = document.getElementById('log_forex');
     lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
-    const lo = document.getElementById('log_otc');
+    var lo = document.getElementById('log_otc');
     lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
   });
 
@@ -2004,7 +2004,8 @@ document.addEventListener('DOMContentLoaded', function(){
     el.addEventListener('click', function(e){
       e.preventDefault();
       var url = el.getAttribute('data-url');
-      fetch(url, {method:'POST'})
+      var _base = window.location.origin;
+      fetch(_base+url, {method:'POST'})
         .then(function(r){ return r.json(); })
         .then(function(){ atualizar(); })
         .catch(function(err){ console.error('Erro:', err); });
@@ -2017,9 +2018,9 @@ document.addEventListener('DOMContentLoaded', function(){
 });
 
 function rodarFiltro(){
-  const txt = document.getElementById('filtro_input').value.trim();
+  var txt = document.getElementById('filtro_input').value.trim();
   if(!txt){ return; }
-  const fb = document.getElementById('filtro_feedback');
+  var fb = document.getElementById('filtro_feedback');
   fb.style.color = '#ce93d8';
   fb.textContent = ' Processando... (aguarde, consulta IQ + ForexFactory)';
   document.getElementById('filtro_resultado').innerHTML = '';
@@ -2040,13 +2041,13 @@ function rodarFiltro(){
 
 function pollFiltro(){
   fetch('/filtro').then(function(r){ return r.json(); }).then(function(d){
-    const fb  = document.getElementById('filtro_feedback');
+    var fb  = document.getElementById('filtro_feedback');
     if(d.rodando){
       fb.textContent = ' Processando... buscando velas e aplicando filtros';
       setTimeout(pollFiltro, 1500);
       return;
     }
-    const res = document.getElementById('filtro_resultado');
+    var res = document.getElementById('filtro_resultado');
     if(d.erro){ fb.style.color='#ff1744'; fb.textContent=' '+d.erro; return; }
 
     var apr = d.resultado || [];
@@ -2128,14 +2129,14 @@ function enviarTodos(){
 }
 
 function enviarSinais(){
-  const txt = document.getElementById('sinais_input').value.trim();
+  var txt = document.getElementById('sinais_input').value.trim();
   if(!txt){ return; }
   fetch('/sinais', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({sinais: txt})
   }).then(function(r){ return r.json(); }).then(function(d){
-    const fb = document.getElementById('manual_feedback');
+    var fb = document.getElementById('manual_feedback');
     if(d.ok){
       fb.style.color = '#00e676';
       fb.textContent = ' ' + d.adicionados + ' sinal(is) adicionado(s) à fila!';
