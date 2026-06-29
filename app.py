@@ -102,6 +102,31 @@ estado = {
 # Cooldowns por par (compartilhado)
 _ultimo_trade = {}
 
+# Cache de velas compartilhado — engines preenchem, filtro consome
+_velas_cache = {}       # par -> {"velas": [...], "ts": float}
+_velas_cache_lock = threading.Lock()
+VELAS_CACHE_TTL = 90    # segundos
+
+def get_candles_cached(par, n=60, tf=60):
+    """Retorna velas do cache se frescos, senão busca na IQ."""
+    now = time.time()
+    with _velas_cache_lock:
+        entry = _velas_cache.get(par)
+        if entry and (now - entry["ts"]) < VELAS_CACHE_TTL:
+            return entry["velas"]
+    velas = get_candles(par, n=n, tf=tf)
+    if velas:
+        with _velas_cache_lock:
+            _velas_cache[par] = {"velas": velas, "ts": now}
+    return velas
+
+def _atualizar_cache_par(par, n=60, tf=60):
+    """Atualiza cache de um par em background."""
+    velas = get_candles(par, n=n, tf=tf)
+    if velas:
+        with _velas_cache_lock:
+            _velas_cache[par] = {"velas": velas, "ts": time.time()}
+
 # ══════════════════════════════════════════════════════════════════
 #  LOG + TELEGRAM
 # ══════════════════════════════════════════════════════════════════
@@ -1302,7 +1327,8 @@ _filtro_lock = threading.Lock()
 def rodar_filtro(texto_bruto):
     """
     Processa lista bruta e salva resultado em _filtro_estado.
-    Roda em thread separada.
+    Roda em thread separada — NÃO bloqueia o servidor HTTP.
+    Usa cache de velas: busca todos os pares em paralelo antes de processar.
     """
     with _filtro_lock:
         _filtro_estado["rodando"]    = True
@@ -1313,15 +1339,15 @@ def rodar_filtro(texto_bruto):
     _log("🎯 SniperFiltro V9.1 iniciado", "FILTRO")
 
     try:
-        # Parse da lista bruta: aceita M1;PAR;HH:MM;DIR ou PAR;HH:MM;DIR
+        # ── Parse ─────────────────────────────────────────────────
         sinais_raw = []
         for linha in texto_bruto.splitlines():
             linha = linha.strip().upper()
             if not linha or linha.startswith("#"): continue
             partes = [p.strip() for p in linha.split(";")]
-            if len(partes) == 4:   # M1;PAR;HH:MM;DIR
+            if len(partes) == 4:
                 _, par, hora, direcao = partes
-            elif len(partes) == 3: # PAR;HH:MM;DIR
+            elif len(partes) == 3:
                 par, hora, direcao = partes
             else: continue
             if direcao not in ("CALL","PUT"): continue
@@ -1336,19 +1362,13 @@ def rodar_filtro(texto_bruto):
 
         _log(f"  {len(sinais_raw)} sinais recebidos", "FILTRO")
 
-        # CAMADA 0 — Consenso ≥60%, N≥3
+        # ── Camada 0 — Consenso ≥60%, N≥3 ────────────────────────
         md = defaultdict(list)
         for p, h, d in sinais_raw: md[h].append(d)
         cons = {}
         for m, dirs in md.items():
             ct = Counter(dirs); tot = len(dirs); mc = ct.most_common(1)[0]
             cons[m] = (mc[0], mc[1]/tot*100, tot)
-
-        if not sinais_raw:
-            with _filtro_lock:
-                _filtro_estado["erro"] = "Lista vazia após parse."
-                _filtro_estado["rodando"] = False
-            return
 
         ultimo_min = sorted(set(h for _,h,_ in sinais_raw))[-1]
         candidatos = []
@@ -1363,7 +1383,33 @@ def rodar_filtro(texto_bruto):
 
         _log(f"  {len(candidatos)} candidatos após consenso", "FILTRO")
 
-        # CAMADA 3 — Notícias FF
+        if not candidatos:
+            with _filtro_lock:
+                _filtro_estado["rodando"] = False
+            return
+
+        # ── Pré-aquecimento de cache em paralelo ──────────────────
+        # Busca todas as velas necessárias simultaneamente
+        pares_unicos = list(set(p for p,h,d,pc,n in candidatos))
+        _log(f"  🔄 Buscando velas para {len(pares_unicos)} pares...", "FILTRO")
+
+        threads_cache = []
+        for par_u in pares_unicos:
+            t = threading.Thread(
+                target=_atualizar_cache_par,
+                args=(par_u, 60, 60),
+                daemon=True
+            )
+            t.start()
+            threads_cache.append(t)
+
+        # Aguarda até 20s para todos terminarem
+        for t in threads_cache:
+            t.join(timeout=20)
+
+        _log(f"  ✅ Cache de velas pronto", "FILTRO")
+
+        # ── Camada 3 — Notícias FF ────────────────────────────────
         pares_bloq = _f_pares_bloqueados_ff()
         _log(f"  Pares bloqueados por notícia: {len(pares_bloq)}", "FILTRO")
 
@@ -1379,30 +1425,31 @@ def rodar_filtro(texto_bruto):
             if p in pares_ok:
                 continue
 
-            velas = get_candles(p, n=60, tf=60)
+            # Usa cache — sem chamar IQ direto
+            velas = get_candles_cached(p, n=60, tf=60)
             if len(velas) < 35:
                 bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":"Sem dados IQ"})
-                _log(f"  ⚠️ {p} sem dados", "FILTRO")
+                _log(f"  ⚠️ {p} sem dados no cache", "FILTRO")
                 continue
 
             closes = [v["c"] for v in velas]
             opens  = [v["o"] for v in velas]
 
-            # CAMADA 1 — Técnico
+            # Camada 1 — Técnico
             dir_tec, score, det = _f_tecnico(velas, d)
             if dir_tec is None:
                 bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":f"Técnico: {det}"})
                 _log(f"  ❌ {p} {h} {d} — Técnico: {det}", "FILTRO")
                 continue
 
-            # CAMADA 2 — Markov
+            # Camada 2 — Markov
             dir_mkv, prob_mkv = _f_markov(closes, opens)
             if dir_mkv is None or dir_mkv != d:
                 bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":f"Markov aponta {dir_mkv}"})
                 _log(f"  ❌ {p} {h} {d} — Markov: {dir_mkv}", "FILTRO")
                 continue
 
-            # CAMADA 4 — Vela anterior
+            # Camada 4 — Vela anterior
             vela_dir, body_pct, alinhada = _f_check_vela(velas, d)
             if body_pct < 25:
                 bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":f"Doji body:{body_pct:.0f}%"})
@@ -1415,7 +1462,7 @@ def rodar_filtro(texto_bruto):
             else:              score_final -= 5
 
             pares_ok.add(p)
-            ic = "💎" if score_final >= 90 else "✅" if score_final >= 70 else "🟡"
+            ic        = "💎" if score_final >= 90 else "✅" if score_final >= 70 else "🟡"
             setup_str = det.get("setup","?") if isinstance(det, dict) else "?"
             rsi_v     = det.get("rsi", 0)    if isinstance(det, dict) else 0
 
@@ -1426,7 +1473,6 @@ def rodar_filtro(texto_bruto):
                 "rsi": round(rsi_v,1), "markov": round(prob_mkv,1),
                 "vela": vela_dir, "body": round(body_pct,1),
                 "alinhada": alinhada, "ic": ic,
-                # formato pronto para executor
                 "raw": f"M1;{p};{h};{d}",
             })
             _log(f"  {ic} PASS {p} {h} {d} Score:{score_final} Setup:{setup_str} Mkv:{prob_mkv:.0f}%", "FILTRO")
@@ -1794,11 +1840,12 @@ function rodarFiltro(){
 
 function pollFiltro(){
   fetch('/filtro').then(r=>r.json()).then(d=>{
+    const fb  = document.getElementById('filtro_feedback');
     if(d.rodando){
-      setTimeout(pollFiltro, 2000);
+      fb.textContent = '⏳ Processando... buscando velas e aplicando filtros';
+      setTimeout(pollFiltro, 1500);
       return;
     }
-    const fb  = document.getElementById('filtro_feedback');
     const res = document.getElementById('filtro_resultado');
     if(d.erro){ fb.style.color='#ff1744'; fb.textContent='❌ '+d.erro; return; }
 
