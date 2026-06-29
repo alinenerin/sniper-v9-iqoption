@@ -901,6 +901,239 @@ def engine_otc():
     _log("⛔ Engine OTC encerrada.", "OTC")
 
 # ══════════════════════════════════════════════════════════════════
+#  CONFIRMAÇÃO DE VELA (IQ Option — protocolo cadastrado)
+#  Verifica últimas 5 velas M1 antes de executar sinal manual
+# ══════════════════════════════════════════════════════════════════
+def confirmar_vela_iq(par, direcao):
+    """
+    Retorna (True, motivo) se confirmado, (False, motivo) se bloqueado.
+    Regras:
+      1. Dominância: maioria das últimas 3 velas fechadas na direção do sinal
+      2. Body médio >= 0.00010 (volatilidade mínima)
+      3. Última vela fechada confirma a direção
+    """
+    try:
+        velas = get_candles(par, n=6, tf=60)
+        if len(velas) < 4:
+            return False, "Velas insuficientes"
+
+        # Usa velas fechadas (exclui a aberta atual = última)
+        fechadas = velas[:-1][-4:]
+
+        # Body médio
+        bodies = [abs(v["c"] - v["o"]) for v in fechadas]
+        body_med = sum(bodies) / len(bodies) if bodies else 0
+
+        pip_min = 0.00010
+        # Pares JPY têm pip diferente
+        if "JPY" in par:
+            pip_min = 0.010
+
+        if body_med < pip_min:
+            return False, f"Body médio {body_med:.5f} < {pip_min} (volatilidade baixa)"
+
+        # Última vela fechada
+        ultima = fechadas[-1]
+        ultima_alta = ultima["c"] > ultima["o"]
+        if direcao == "CALL" and not ultima_alta:
+            return False, f"Última vela BAIXA ≠ CALL"
+        if direcao == "PUT"  and ultima_alta:
+            return False, f"Última vela ALTA ≠ PUT"
+
+        # Dominância nas últimas 3 fechadas
+        ultimas3 = fechadas[-3:]
+        altas  = sum(1 for v in ultimas3 if v["c"] > v["o"])
+        baixas = sum(1 for v in ultimas3 if v["c"] < v["o"])
+        if direcao == "CALL" and altas < 2:
+            return False, f"Dominância insuf CALL: {altas}/3 altas"
+        if direcao == "PUT"  and baixas < 2:
+            return False, f"Dominância insuf PUT: {baixas}/3 baixas"
+
+        return True, f"✅ Body:{body_med:.5f} | Dom:{altas}A/{baixas}B | Última:{'🟢' if ultima_alta else '🔴'}"
+
+    except Exception as e:
+        return False, f"Erro confirmação: {e}"
+
+
+# ══════════════════════════════════════════════════════════════════
+#  ENGINE SINAIS MANUAIS
+# ══════════════════════════════════════════════════════════════════
+# Fila de sinais manuais: lista de dicts
+# {"id", "raw", "par", "expiracao", "hora", "direcao", "status", "motivo", "ts_add"}
+_sinais_manuais = []
+_sinais_lock    = threading.Lock()
+_sinais_counter = [0]
+
+def _novo_id():
+    _sinais_counter[0] += 1
+    return _sinais_counter[0]
+
+def _parse_sinal(linha):
+    """
+    Aceita: M1;PAR;HH:MM;CALL  ou  M3;PAR;HH:MM;PUT
+    Retorna dict ou None
+    """
+    linha = linha.strip().upper()
+    if not linha or linha.startswith("#"):
+        return None
+    partes = [p.strip() for p in linha.split(";")]
+    if len(partes) != 4:
+        return None
+    tf_str, par, hora_str, direcao = partes
+    if tf_str not in ("M1", "M3"):
+        return None
+    if direcao not in ("CALL", "PUT"):
+        return None
+    try:
+        h, m = hora_str.split(":")
+        int(h); int(m)
+    except:
+        return None
+    expiracao = 1 if tf_str == "M1" else 3
+    return {
+        "id":       _novo_id(),
+        "raw":      linha,
+        "par":      par,
+        "expiracao": expiracao,
+        "hora":     hora_str,   # HH:MM
+        "direcao":  direcao,
+        "status":   "aguardando",  # aguardando | confirmando | executando | win | loss | bloqueado | expirado
+        "motivo":   "",
+        "ts_add":   time.time(),
+    }
+
+def _atualizar_sinal(sid, status, motivo=""):
+    with _sinais_lock:
+        for s in _sinais_manuais:
+            if s["id"] == sid:
+                s["status"] = status
+                s["motivo"] = motivo
+                break
+
+def _executar_sinal(sinal):
+    sid      = sinal["id"]
+    par      = sinal["par"]
+    direcao  = sinal["direcao"]
+    hora_str = sinal["hora"]
+    expiracao = sinal["expiracao"]
+
+    _log(f"📋 Sinal manual recebido: {sinal['raw']}", "MANUAL")
+
+    # ── Aguardar o minuto da entrada ──────────────────────────────
+    while True:
+        agora = datetime.now(BRT)
+        agora_hm = agora.strftime("%H:%M")
+
+        # Expirado: passou do horário sem executar
+        try:
+            h, m = hora_str.split(":")
+            alvo_ts = agora.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+            if agora > alvo_ts + timedelta(minutes=2):
+                _atualizar_sinal(sid, "expirado", "Horário passou sem executar")
+                _log(f"⏰ Sinal {par} {direcao} {hora_str} EXPIRADO", "MANUAL")
+                return
+        except:
+            pass
+
+        if agora_hm == hora_str:
+            break
+        time.sleep(5)
+
+    _atualizar_sinal(sid, "confirmando")
+    _log(f"🔍 Confirmando vela: {par} {direcao}", "MANUAL")
+
+    # ── Confirmação de vela ───────────────────────────────────────
+    if not garantir_conexao():
+        _atualizar_sinal(sid, "bloqueado", "IQ Option desconectada")
+        _log(f"❌ {par} BLOQUEADO: IQ desconectada", "MANUAL")
+        return
+
+    ok, motivo_vela = confirmar_vela_iq(par, direcao)
+    if not ok:
+        _atualizar_sinal(sid, "bloqueado", f"Vela ❌ {motivo_vela}")
+        _log(f"❌ {par} BLOQUEADO por vela: {motivo_vela}", "MANUAL")
+        tg(
+            f"🚫 <b>Sinal Manual BLOQUEADO</b>\n"
+            f"Par: {par} {direcao} {hora_str}\n"
+            f"Motivo: {motivo_vela}"
+        )
+        return
+
+    _log(f"✅ Vela confirmada: {motivo_vela}", "MANUAL")
+
+    # ── Stop diário ───────────────────────────────────────────────
+    if check_stop_diario():
+        _atualizar_sinal(sid, "bloqueado", "Stop diário ativo")
+        _log(f"🛑 {par} BLOQUEADO: stop diário", "MANUAL")
+        return
+
+    # ── Trava global ──────────────────────────────────────────────
+    espera = 0
+    while not trava_livre():
+        time.sleep(2)
+        espera += 2
+        if espera > 30:
+            _atualizar_sinal(sid, "bloqueado", "Trava global — timeout")
+            _log(f"🔒 {par} BLOQUEADO: trava não liberou em 30s", "MANUAL")
+            return
+
+    # ── Execução ──────────────────────────────────────────────────
+    _atualizar_sinal(sid, "executando")
+    saldo = get_saldo()
+    with _lock:
+        estado["saldo"] = saldo
+    stake = round(max(1.0, saldo * 0.02), 2)
+
+    trava_set(par)
+    tg(
+        f"🎯 <b>Sinal Manual EXECUTANDO</b>\n"
+        f"<code>{sinal['raw']}</code>\n"
+        f"💰 Stake: ${stake:.2f}\n"
+        f"📡 Vela: {motivo_vela}"
+    )
+
+    id_op = abrir_trade(par, direcao, stake, expiracao)
+    if not id_op:
+        trava_release()
+        _atualizar_sinal(sid, "bloqueado", "Falha ao abrir ordem")
+        _log(f"❌ {par} falha ao abrir ordem", "MANUAL")
+        return
+
+    # ── Resultado ─────────────────────────────────────────────────
+    if expiracao == 1:
+        win, valor = checar_resultado_m1(id_op, stake)
+    else:
+        win, valor = checar_resultado_m3(id_op, stake)
+
+    trava_release()
+    computar_resultado(win, valor, par, direcao, stake, "MANUAL")
+    _atualizar_sinal(sid, "win" if win else "loss",
+                     f"+${valor:.2f}" if win else f"-${stake:.2f}")
+    _log(f"{'✅ WIN' if win else '❌ LOSS'} Manual {par} {direcao} {'+'if win else '-'}${valor if win else stake:.2f}", "MANUAL")
+
+
+def engine_manual():
+    """Monitora a fila e dispara thread por sinal."""
+    _log("📋 Engine MANUAL iniciada", "MANUAL")
+    processados = set()
+    while True:
+        try:
+            with _sinais_lock:
+                pendentes = [s for s in _sinais_manuais
+                             if s["status"] == "aguardando" and s["id"] not in processados]
+            for sinal in pendentes:
+                processados.add(sinal["id"])
+                threading.Thread(
+                    target=_executar_sinal,
+                    args=(sinal,),
+                    daemon=True
+                ).start()
+        except Exception as e:
+            _log(f"Erro engine manual: {e}", "MANUAL")
+        time.sleep(3)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  MOTOR UNIFICADO
 # ══════════════════════════════════════════════════════════════════
 def iniciar_motor():
@@ -914,8 +1147,9 @@ def iniciar_motor():
         f"🛡 Stop diário unificado: {MAX_LOSSES_DIA} losses"
     )
 
-    threading.Thread(target=engine_forex, daemon=True).start()
-    threading.Thread(target=engine_otc,   daemon=True).start()
+    threading.Thread(target=engine_forex,  daemon=True).start()
+    threading.Thread(target=engine_otc,    daemon=True).start()
+    threading.Thread(target=engine_manual, daemon=True).start()
 
 # ══════════════════════════════════════════════════════════════════
 #  FLASK — PAINEL DARK MODE
@@ -967,6 +1201,22 @@ h1{text-align:center;font-size:1.4rem;letter-spacing:3px;margin-bottom:18px;
 .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}
 .dot-g{background:#00e676}.dot-r{background:#ff1744}.dot-y{background:#ffd600}
 .trava-info{font-size:.72rem;color:#555;margin-top:4px}
+/* Manual */
+.manual-box{background:#0d1a0d;border:1px solid #00e67622;border-radius:14px;padding:14px 16px;margin-bottom:12px}
+.manual-title{font-size:.9rem;font-weight:700;color:#00e676;margin-bottom:8px}
+textarea{width:100%;background:#0a0a0a;border:1px solid #333;border-radius:8px;
+         color:#e0e0e0;font-family:monospace;font-size:.8rem;padding:10px;
+         resize:vertical;min-height:90px;outline:none}
+textarea:focus{border-color:#00e676}
+.btn-manual{background:#00e676;color:#000;font-weight:700}
+.btn-manual:hover{opacity:.82}
+.sinal-row{display:flex;align-items:center;gap:8px;padding:5px 0;
+           border-bottom:1px solid #1a1a1a;font-size:.75rem;flex-wrap:wrap}
+.sinal-raw{font-family:monospace;color:#ccc}
+.sinal-motivo{color:#666;font-size:.68rem}
+.badge-win {background:#00e67622;color:#00e676}
+.badge-loss{background:#ff174422;color:#ff1744}
+.badge-exp {background:#55555522;color:#777}
 </style>
 </head>
 <body>
@@ -1077,27 +1327,61 @@ h1{text-align:center;font-size:1.4rem;letter-spacing:3px;margin-bottom:18px;
     <button class="btn btn-go"   onclick="iniciar()">▶ INICIAR</button>
     <button class="btn btn-stop" onclick="parar()">⏹ PARAR</button>
   </div>
+
+  <!-- ── SINAIS MANUAIS ─────────────────────────────────────────── -->
+  <div class="manual-box">
+    <div class="manual-title">📋 SINAIS MANUAIS</div>
+    <div style="font-size:.7rem;color:#666;margin-bottom:8px">
+      Formato: <code style="color:#aaa">M1;PAR;HH:MM;CALL</code> &nbsp;·&nbsp; um por linha<br>
+      Engines automáticas continuam rodando em paralelo.
+    </div>
+    <textarea id="sinais_input" placeholder="M1;EURUSD-OTC;09:52;CALL&#10;M3;GBPUSD;09:53;PUT&#10;M1;USDJPY-OTC;09:54;CALL"></textarea>
+    <button class="btn btn-manual" onclick="enviarSinais()" style="margin-top:8px">
+      📤 ENVIAR SINAIS
+    </button>
+    <div id="manual_feedback" style="margin-top:8px;font-size:.75rem;color:#ffd600"></div>
+
+    <!-- Fila de sinais -->
+    <div id="fila_sinais" style="margin-top:10px"></div>
+  </div>
+
 </div>
 
 <script>
+/* ── STATUS BADGE ── */
+const CORES = {
+  aguardando:   'badge-on',
+  confirmando:  'badge-op',
+  executando:   'badge-op',
+  win:          'badge-win',
+  loss:         'badge-loss',
+  bloqueado:    'badge-loss',
+  expirado:     'badge-exp',
+};
+const ICONS = {
+  aguardando:  '⏳',
+  confirmando: '🔍',
+  executando:  '⚡',
+  win:         '✅',
+  loss:        '❌',
+  bloqueado:   '🚫',
+  expirado:    '⏰',
+};
+
 function atualizar(){
   fetch('/estado').then(r=>r.json()).then(d=>{
-    // Geral
     document.getElementById('bot_status').textContent = d.ativo ? '🟢 RODANDO' : (d.stop_diario ? '🛑 STOP DIÁRIO' : '⏸ PARADO');
     document.getElementById('saldo').textContent = '$'+d.saldo.toFixed(2);
     document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
     document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
 
-    // Trava
     const trava = document.getElementById('trava_info');
     trava.textContent = d.trava_par ? '🔒 Trava ativa: '+d.trava_par : '';
 
-    // Stop diário
     document.getElementById('total_w').textContent  = d.forex_wins + d.otc_wins;
     document.getElementById('total_l').textContent  = d.forex_losses + d.otc_losses;
     document.getElementById('losses_dia').textContent = d.losses_dia+'/4';
 
-    // Forex
     const fb = document.getElementById('forex_badge');
     fb.textContent  = d.forex_status === 'operando' ? '⚡ OPERANDO' : '👁 MONITORANDO';
     fb.className    = 'badge ' + (d.forex_status === 'operando' ? 'badge-op' : 'badge-on');
@@ -1106,7 +1390,6 @@ function atualizar(){
     document.getElementById('forex_w').textContent     = d.forex_wins;
     document.getElementById('forex_l').textContent     = d.forex_losses;
 
-    // OTC
     const ob = document.getElementById('otc_badge');
     ob.textContent = d.otc_status === 'operando' ? '⚡ OPERANDO' : '👁 MONITORANDO';
     ob.className   = 'badge ' + (d.otc_status === 'operando' ? 'badge-op' : 'badge-on');
@@ -1115,21 +1398,58 @@ function atualizar(){
     document.getElementById('otc_w').textContent     = d.otc_wins;
     document.getElementById('otc_l').textContent     = d.otc_losses;
 
-    // IQ
     const dot = document.getElementById('iq_dot');
     dot.className = 'dot ' + (d.iq_ok ? 'dot-g' : 'dot-r');
     document.getElementById('iq_txt').textContent = d.iq_ok ? 'Conectada ✅' : 'Desconectada ❌';
 
-    // Logs
     const lf = document.getElementById('log_forex');
     lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
     const lo = document.getElementById('log_otc');
     lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
   });
+
+  /* Fila de sinais manuais */
+  fetch('/sinais').then(r=>r.json()).then(lista=>{
+    const el = document.getElementById('fila_sinais');
+    if(!lista.length){ el.innerHTML=''; return; }
+    el.innerHTML = lista.map(s=>{
+      const cor  = CORES[s.status]  || 'badge-on';
+      const icon = ICONS[s.status]  || '•';
+      return `<div class="sinal-row">
+        <span class="badge ${cor}">${icon} ${s.status.toUpperCase()}</span>
+        <span class="sinal-raw">${s.raw}</span>
+        ${s.motivo ? '<span class="sinal-motivo">'+s.motivo+'</span>' : ''}
+      </div>`;
+    }).join('');
+  });
 }
+
 function iniciar(){ fetch('/iniciar',{method:'POST'}).then(atualizar); }
 function parar()  { fetch('/parar',  {method:'POST'}).then(atualizar); }
-setInterval(atualizar,3000);
+
+function enviarSinais(){
+  const txt = document.getElementById('sinais_input').value.trim();
+  if(!txt){ return; }
+  fetch('/sinais', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({sinais: txt})
+  }).then(r=>r.json()).then(d=>{
+    const fb = document.getElementById('manual_feedback');
+    if(d.ok){
+      fb.style.color = '#00e676';
+      fb.textContent = '✅ ' + d.adicionados + ' sinal(is) adicionado(s) à fila!';
+      document.getElementById('sinais_input').value = '';
+    } else {
+      fb.style.color = '#ff1744';
+      fb.textContent = '❌ ' + (d.msg || 'Erro ao processar sinais.');
+    }
+    setTimeout(()=>{ fb.textContent=''; }, 5000);
+    atualizar();
+  });
+}
+
+setInterval(atualizar, 3000);
 atualizar();
 </script>
 </body>
@@ -1168,11 +1488,42 @@ def reset_stop():
     _log("⚠️ Stop diário resetado manualmente.")
     return jsonify({"ok": True})
 
+@app.route("/sinais", methods=["GET"])
+def get_sinais():
+    with _sinais_lock:
+        return jsonify(list(_sinais_manuais[-20:]))  # últimos 20
+
+@app.route("/sinais", methods=["POST"])
+def post_sinais():
+    from flask import request as freq
+    data = freq.get_json(silent=True) or {}
+    texto = data.get("sinais", "").strip()
+    if not texto:
+        return jsonify({"ok": False, "msg": "Nenhum sinal enviado."})
+
+    linhas = texto.splitlines()
+    adicionados = 0
+    erros = []
+    with _sinais_lock:
+        for linha in linhas:
+            s = _parse_sinal(linha)
+            if s:
+                _sinais_manuais.append(s)
+                adicionados += 1
+                _log(f"📋 Sinal manual adicionado: {s['raw']}", "MANUAL")
+            elif linha.strip() and not linha.strip().startswith("#"):
+                erros.append(linha.strip())
+
+    if adicionados == 0:
+        return jsonify({"ok": False, "msg": f"Formato inválido: {', '.join(erros[:3])}"})
+    return jsonify({"ok": True, "adicionados": adicionados, "erros": erros})
+
 # ══════════════════════════════════════════════════════════════════
 #  MAIN
 # ══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    threading.Thread(target=_conectar_iq, daemon=True).start()
+    threading.Thread(target=_conectar_iq,    daemon=True).start()
+    threading.Thread(target=engine_manual,   daemon=True).start()  # sempre ativa
     port = int(os.environ.get("PORT", 8080))
     _log(f"🌐 Sniper Híbrido V10 — porta {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
