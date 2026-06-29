@@ -1134,6 +1134,320 @@ def engine_manual():
 
 
 # ══════════════════════════════════════════════════════════════════
+#  SNIPER FILTRO V9.1 — integrado
+# ══════════════════════════════════════════════════════════════════
+from collections import Counter, defaultdict
+
+FF_URL_FILTRO = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+BLOQUEADOS_FIXOS_FILTRO = ["BTCUSD", "BTCUSD-OTC"]
+
+MOEDA_PARES_FF = {
+    "USD": ["EURUSD","GBPUSD","AUDUSD","NZDUSD","USDCAD","USDJPY","USDCHF",
+            "EURUSD-OTC","GBPUSD-OTC","AUDUSD-OTC","USDCAD-OTC","USDJPY-OTC"],
+    "EUR": ["EURUSD","EURJPY","EURAUD","EURCAD","EURGBP","EURCHF",
+            "EURUSD-OTC","EURJPY-OTC","EURAUD-OTC","EURCAD-OTC","EURGBP-OTC"],
+    "GBP": ["GBPUSD","GBPJPY","GBPAUD","GBPCAD","EURGBP","GBPCHF",
+            "GBPUSD-OTC","GBPJPY-OTC","GBPAUD-OTC","EURGBP-OTC","GBPCHF-OTC"],
+    "JPY": ["USDJPY","EURJPY","GBPJPY","AUDJPY","CADJPY","NZDJPY",
+            "USDJPY-OTC","EURJPY-OTC","GBPJPY-OTC","AUDJPY-OTC","CADJPY-OTC","NZDJPY-OTC"],
+    "AUD": ["AUDUSD","AUDJPY","EURAUD","GBPAUD","AUDCAD","AUDCHF",
+            "AUDUSD-OTC","AUDJPY-OTC","EURAUD-OTC","GBPAUD-OTC","AUDCAD-OTC","AUDCHF-OTC"],
+    "CAD": ["USDCAD","CADJPY","AUDCAD","GBPCAD","EURCAD","NZDCAD",
+            "USDCAD-OTC","CADJPY-OTC","AUDCAD-OTC","EURCAD-OTC","NZDCAD-OTC"],
+    "NZD": ["NZDUSD","NZDJPY","NZDCAD","NZDCHF",
+            "NZDUSD-OTC","NZDJPY-OTC","NZDCAD-OTC"],
+    "CHF": ["USDCHF","EURCHF","GBPCHF","AUDCHF","NZDCHF","CADCHF",
+            "USDCHF-OTC","GBPCHF-OTC","AUDCHF-OTC"],
+}
+
+def _f_ema(vals, n):
+    if len(vals) < n: return vals[-1]
+    k = 2/(n+1); e = vals[0]
+    for v in vals[1:]: e = v*k + e*(1-k)
+    return e
+
+def _f_rsi(closes, n=14):
+    if len(closes) < n+1: return 50
+    g = [max(closes[i]-closes[i-1], 0) for i in range(1, len(closes))]
+    l = [max(closes[i-1]-closes[i], 0) for i in range(1, len(closes))]
+    ag = sum(g[-n:])/n; al = sum(l[-n:])/n
+    return round(100 - 100/(1+ag/al), 1) if al > 0 else 50
+
+def _f_bw(closes, n=20):
+    if len(closes) < n: return 0
+    sma = sum(closes[-n:])/n
+    std = (sum((c-sma)**2 for c in closes[-n:])/n)**0.5
+    return ((sma+2*std)-(sma-2*std))/sma
+
+def _f_markov(closes, opens):
+    cores = ["V" if closes[i] >= opens[i] else "M" for i in range(len(closes))]
+    cores = list(reversed(cores))
+    cor = cores[0]; seq = 1
+    for c in cores[1:]:
+        if c == cor: seq += 1
+        else: break
+    max_seq = 1; tmp = 1
+    for i in range(1, len(cores)):
+        if cores[i] == cores[i-1]: tmp += 1; max_seq = max(max_seq, tmp)
+        else: tmp = 1
+    rec = cores[:30]
+    tr = {"VV":0,"VM":0,"MV":0,"MM":0}
+    for i in range(len(rec)-1):
+        k = rec[i]+rec[i+1]
+        if k in tr: tr[k] += 1
+    exaustao = seq >= max_seq*0.6 and seq >= 3
+    if cor == "V":
+        tot = tr["VV"]+tr["VM"]
+        p_cont = tr["VV"]/tot if tot > 0 else 0.5
+        p_rev  = tr["VM"]/tot if tot > 0 else 0.5
+        s_cont, s_rev = "CALL","PUT"
+    else:
+        tot = tr["MM"]+tr["MV"]
+        p_cont = tr["MM"]/tot if tot > 0 else 0.5
+        p_rev  = tr["MV"]/tot if tot > 0 else 0.5
+        s_cont, s_rev = "PUT","CALL"
+    if exaustao and p_rev > 0.5:       return s_rev,  round(p_rev*100, 1)
+    elif p_cont > 0.55 and not exaustao: return s_cont, round(p_cont*100, 1)
+    elif p_rev >= 0.65:                 return s_rev,  round(p_rev*100, 1)
+    return None, 50
+
+def _f_pares_bloqueados_ff():
+    bloqueados = set()
+    try:
+        import datetime as _dt
+        now_utc = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+        r = requests.get(FF_URL_FILTRO, timeout=8).json()
+        for e in r:
+            try:
+                t = _dt.datetime.strptime(e["date"], "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=None)
+                diff = (t - now_utc).total_seconds()/60
+                if -30 <= diff <= 120 and e.get("impact") == "High":
+                    moeda = e.get("currency","").upper()
+                    for p in MOEDA_PARES_FF.get(moeda, []):
+                        bloqueados.add(p)
+            except: pass
+    except: pass
+    return bloqueados
+
+def _f_tecnico(velas, sinal):
+    closes = [v["c"] for v in velas]
+    opens  = [v["o"] for v in velas]
+    highs  = [v["h"] for v in velas]
+    lows   = [v["l"] for v in velas]
+    pip    = 0.01 if closes[-1] > 50 else 0.0001
+    atr    = sum(highs[i]-lows[i] for i in range(-5, 0))/5
+    atrm   = sum(highs[i]-lows[i] for i in range(-20,-5))/15
+    corpo_med = sum(abs(closes[i]-opens[i]) for i in range(-5,0))/5
+    bw_val = _f_bw(closes)
+    if atr < atrm*0.30:       return None, 0, "ATR baixo"
+    if corpo_med < pip*0.10:  return None, 0, "Corpo fraco"
+    if bw_val < 0.00008:      return None, 0, "BW baixo"
+    e9  = _f_ema(closes[-20:], 9)
+    e25 = _f_ema(closes[-35:], 25)
+    r   = _f_rsi(closes)
+    c   = closes[-1]
+    dir_tec = None; score = 0; setup = []
+    if e9>e25 and c>e25 and r<75:
+        dir_tec="CALL"; score=50; setup.append("TEND")
+        if r<55: score+=15
+        dist=abs(c-e9)/pip
+        if dist<=10: score+=15
+        elif dist>20: score-=10
+    elif e9<e25 and c<e25 and r>25:
+        dir_tec="PUT"; score=50; setup.append("TEND")
+        if r>45: score+=15
+        dist=abs(c-e9)/pip
+        if dist<=10: score+=15
+        elif dist>20: score-=10
+    if not dir_tec:
+        dist=abs(c-e9)/pip
+        if e9>e25 and dist<5 and c>e25 and r<72:
+            dir_tec="CALL"; score=80; setup.append("PULL")
+        elif e9<e25 and dist<5 and c<e25 and r>28:
+            dir_tec="PUT"; score=80; setup.append("PULL")
+    if not dir_tec:
+        body_v  = abs(closes[-1]-opens[-1])
+        h_range = highs[-1]-lows[-1] if highs[-1]>lows[-1] else 0.00001
+        wick_dn = min(closes[-1],opens[-1])-lows[-1]
+        wick_up = highs[-1]-max(closes[-1],opens[-1])
+        if r<32 and wick_dn>body_v*1.5 and wick_dn/h_range>0.35:
+            dir_tec="CALL"; score=85; setup.append("REV")
+        elif r>68 and wick_up>body_v*1.5 and wick_up/h_range>0.35:
+            dir_tec="PUT"; score=85; setup.append("REV")
+    if not dir_tec or score < 50:
+        return None, 0, "Sem setup"
+    if dir_tec != sinal:
+        return None, 0, f"Técnico aponta {dir_tec} ≠ {sinal}"
+    return dir_tec, score, {"setup":"+".join(setup),"rsi":r,"bw":round(bw_val*100,2),"score":score}
+
+def _f_check_vela(velas, sinal):
+    v = velas[-1]
+    body  = abs(v["c"]-v["o"])
+    total = v["h"]-v["l"]
+    body_pct = body/total*100 if total > 0 else 0
+    direcao  = "UP" if v["c"] >= v["o"] else "DN"
+    alinhada = (sinal=="CALL" and direcao=="UP") or (sinal=="PUT" and direcao=="DN")
+    return direcao, body_pct, alinhada
+
+# Estado do filtro (resultado da última rodada)
+_filtro_estado = {
+    "rodando":    False,
+    "resultado":  [],   # lista de dicts com par/hora/dir/score/setup/etc
+    "bloqueados": [],
+    "ts":         0,
+    "erro":       "",
+}
+_filtro_lock = threading.Lock()
+
+def rodar_filtro(texto_bruto):
+    """
+    Processa lista bruta e salva resultado em _filtro_estado.
+    Roda em thread separada.
+    """
+    with _filtro_lock:
+        _filtro_estado["rodando"]    = True
+        _filtro_estado["resultado"]  = []
+        _filtro_estado["bloqueados"] = []
+        _filtro_estado["erro"]       = ""
+
+    _log("🎯 SniperFiltro V9.1 iniciado", "FILTRO")
+
+    try:
+        # Parse da lista bruta: aceita M1;PAR;HH:MM;DIR ou PAR;HH:MM;DIR
+        sinais_raw = []
+        for linha in texto_bruto.splitlines():
+            linha = linha.strip().upper()
+            if not linha or linha.startswith("#"): continue
+            partes = [p.strip() for p in linha.split(";")]
+            if len(partes) == 4:   # M1;PAR;HH:MM;DIR
+                _, par, hora, direcao = partes
+            elif len(partes) == 3: # PAR;HH:MM;DIR
+                par, hora, direcao = partes
+            else: continue
+            if direcao not in ("CALL","PUT"): continue
+            if par in BLOQUEADOS_FIXOS_FILTRO: continue
+            sinais_raw.append((par, hora, direcao))
+
+        if not sinais_raw:
+            with _filtro_lock:
+                _filtro_estado["erro"]    = "Nenhum sinal válido na lista."
+                _filtro_estado["rodando"] = False
+            return
+
+        _log(f"  {len(sinais_raw)} sinais recebidos", "FILTRO")
+
+        # CAMADA 0 — Consenso ≥60%, N≥3
+        md = defaultdict(list)
+        for p, h, d in sinais_raw: md[h].append(d)
+        cons = {}
+        for m, dirs in md.items():
+            ct = Counter(dirs); tot = len(dirs); mc = ct.most_common(1)[0]
+            cons[m] = (mc[0], mc[1]/tot*100, tot)
+
+        if not sinais_raw:
+            with _filtro_lock:
+                _filtro_estado["erro"] = "Lista vazia após parse."
+                _filtro_estado["rodando"] = False
+            return
+
+        ultimo_min = sorted(set(h for _,h,_ in sinais_raw))[-1]
+        candidatos = []
+        vistos = set()
+        for p, h, d in sorted(sinais_raw, key=lambda x: x[1]):
+            if p+h in vistos: continue
+            vistos.add(p+h)
+            if h == ultimo_min: continue
+            dc, pc, n = cons.get(h, ("X", 0, 0))
+            if d != dc or pc < 60 or n < 3: continue
+            candidatos.append((p, h, d, pc, n))
+
+        _log(f"  {len(candidatos)} candidatos após consenso", "FILTRO")
+
+        # CAMADA 3 — Notícias FF
+        pares_bloq = _f_pares_bloqueados_ff()
+        _log(f"  Pares bloqueados por notícia: {len(pares_bloq)}", "FILTRO")
+
+        aprovados  = []
+        bloqueados = []
+        pares_ok   = set()
+
+        for p, h, d, pc, n in candidatos:
+            if p in pares_bloq:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":"📅 Notícia alto impacto"})
+                _log(f"  📅 BLOQ {p} {h} — notícia", "FILTRO")
+                continue
+            if p in pares_ok:
+                continue
+
+            velas = get_candles(p, n=60, tf=60)
+            if len(velas) < 35:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":"Sem dados IQ"})
+                _log(f"  ⚠️ {p} sem dados", "FILTRO")
+                continue
+
+            closes = [v["c"] for v in velas]
+            opens  = [v["o"] for v in velas]
+
+            # CAMADA 1 — Técnico
+            dir_tec, score, det = _f_tecnico(velas, d)
+            if dir_tec is None:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":f"Técnico: {det}"})
+                _log(f"  ❌ {p} {h} {d} — Técnico: {det}", "FILTRO")
+                continue
+
+            # CAMADA 2 — Markov
+            dir_mkv, prob_mkv = _f_markov(closes, opens)
+            if dir_mkv is None or dir_mkv != d:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":f"Markov aponta {dir_mkv}"})
+                _log(f"  ❌ {p} {h} {d} — Markov: {dir_mkv}", "FILTRO")
+                continue
+
+            # CAMADA 4 — Vela anterior
+            vela_dir, body_pct, alinhada = _f_check_vela(velas, d)
+            if body_pct < 25:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":f"Doji body:{body_pct:.0f}%"})
+                _log(f"  ❌ {p} {h} {d} — Doji", "FILTRO")
+                continue
+
+            score_final = score
+            if prob_mkv >= 70: score_final += 10
+            if alinhada:       score_final += 10
+            else:              score_final -= 5
+
+            pares_ok.add(p)
+            ic = "💎" if score_final >= 90 else "✅" if score_final >= 70 else "🟡"
+            setup_str = det.get("setup","?") if isinstance(det, dict) else "?"
+            rsi_v     = det.get("rsi", 0)    if isinstance(det, dict) else 0
+
+            aprovados.append({
+                "par":p, "hora":h, "dir":d,
+                "cons": round(pc,1), "n":n,
+                "score": score_final, "setup": setup_str,
+                "rsi": round(rsi_v,1), "markov": round(prob_mkv,1),
+                "vela": vela_dir, "body": round(body_pct,1),
+                "alinhada": alinhada, "ic": ic,
+                # formato pronto para executor
+                "raw": f"M1;{p};{h};{d}",
+            })
+            _log(f"  {ic} PASS {p} {h} {d} Score:{score_final} Setup:{setup_str} Mkv:{prob_mkv:.0f}%", "FILTRO")
+
+        _log(f"✅ Filtro concluído: {len(aprovados)} aprovados / {len(bloqueados)} bloqueados", "FILTRO")
+
+        with _filtro_lock:
+            _filtro_estado["resultado"]  = sorted(aprovados, key=lambda x: -x["score"])
+            _filtro_estado["bloqueados"] = bloqueados
+            _filtro_estado["ts"]         = time.time()
+
+    except Exception as e:
+        _log(f"Erro SniperFiltro: {e}", "FILTRO")
+        with _filtro_lock:
+            _filtro_estado["erro"] = str(e)
+    finally:
+        with _filtro_lock:
+            _filtro_estado["rodando"] = False
+
+
+# ══════════════════════════════════════════════════════════════════
 #  MOTOR UNIFICADO
 # ══════════════════════════════════════════════════════════════════
 def iniciar_motor():
@@ -1204,12 +1518,19 @@ h1{text-align:center;font-size:1.4rem;letter-spacing:3px;margin-bottom:18px;
 /* Manual */
 .manual-box{background:#0d1a0d;border:1px solid #00e67622;border-radius:14px;padding:14px 16px;margin-bottom:12px}
 .manual-title{font-size:.9rem;font-weight:700;color:#00e676;margin-bottom:8px}
+/* Filtro */
+.filtro-box{background:#0d0d1a;border:1px solid #9c27b022;border-radius:14px;padding:14px 16px;margin-bottom:12px}
+.filtro-title{font-size:.9rem;font-weight:700;color:#ce93d8;margin-bottom:8px}
 textarea{width:100%;background:#0a0a0a;border:1px solid #333;border-radius:8px;
          color:#e0e0e0;font-family:monospace;font-size:.8rem;padding:10px;
          resize:vertical;min-height:90px;outline:none}
 textarea:focus{border-color:#00e676}
 .btn-manual{background:#00e676;color:#000;font-weight:700}
 .btn-manual:hover{opacity:.82}
+.btn-filtro{background:#9c27b0;color:#fff;font-weight:700}
+.btn-filtro:hover{opacity:.82}
+.btn-exec-all{background:#ff6b00;color:#000;font-weight:700;margin-top:8px}
+.btn-exec-all:hover{opacity:.82}
 .sinal-row{display:flex;align-items:center;gap:8px;padding:5px 0;
            border-bottom:1px solid #1a1a1a;font-size:.75rem;flex-wrap:wrap}
 .sinal-raw{font-family:monospace;color:#ccc}
@@ -1217,6 +1538,11 @@ textarea:focus{border-color:#00e676}
 .badge-win {background:#00e67622;color:#00e676}
 .badge-loss{background:#ff174422;color:#ff1744}
 .badge-exp {background:#55555522;color:#777}
+.filtro-row{display:flex;align-items:flex-start;gap:8px;padding:7px 0;
+            border-bottom:1px solid #1a1a1a;font-size:.75rem;flex-wrap:wrap}
+.filtro-info{font-size:.68rem;color:#888;margin-top:2px}
+.filtro-bloq{opacity:.5}
+.ic-diamante{color:#ce93d8}.ic-ok{color:#00e676}.ic-aviso{color:#ffd600}
 </style>
 </head>
 <body>
@@ -1328,6 +1654,23 @@ textarea:focus{border-color:#00e676}
     <button class="btn btn-stop" onclick="parar()">⏹ PARAR</button>
   </div>
 
+  <!-- ── SNIPER FILTRO V9.1 ──────────────────────────────────────── -->
+  <div class="filtro-box">
+    <div class="filtro-title">🎯 SNIPER FILTRO V9.1</div>
+    <div style="font-size:.7rem;color:#666;margin-bottom:8px">
+      Cole a lista bruta abaixo. O filtro aplica 4 camadas (Técnico · Markov · Notícias · Vela) e mostra os aprovados.<br>
+      Engines automáticas continuam rodando normalmente.
+    </div>
+    <textarea id="filtro_input" placeholder="M1;EURUSD-OTC;09:52;CALL&#10;M1;GBPUSD-OTC;09:52;PUT&#10;M1;USDJPY-OTC;09:53;CALL&#10;..."></textarea>
+    <button class="btn btn-filtro" onclick="rodarFiltro()" style="margin-top:8px">
+      🔍 FILTRAR LISTA
+    </button>
+    <div id="filtro_feedback" style="margin-top:8px;font-size:.75rem;color:#ce93d8"></div>
+
+    <!-- Resultado do filtro -->
+    <div id="filtro_resultado" style="margin-top:10px"></div>
+  </div>
+
   <!-- ── SINAIS MANUAIS ─────────────────────────────────────────── -->
   <div class="manual-box">
     <div class="manual-title">📋 SINAIS MANUAIS</div>
@@ -1427,6 +1770,106 @@ function atualizar(){
 function iniciar(){ fetch('/iniciar',{method:'POST'}).then(atualizar); }
 function parar()  { fetch('/parar',  {method:'POST'}).then(atualizar); }
 
+function rodarFiltro(){
+  const txt = document.getElementById('filtro_input').value.trim();
+  if(!txt){ return; }
+  const fb = document.getElementById('filtro_feedback');
+  fb.style.color = '#ce93d8';
+  fb.textContent = '⏳ Processando... (aguarde, consulta IQ + ForexFactory)';
+  document.getElementById('filtro_resultado').innerHTML = '';
+  fetch('/filtro', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({lista: txt})
+  }).then(r=>r.json()).then(d=>{
+    if(d.ok){
+      fb.textContent = '✅ Filtro iniciado! Resultado aparece abaixo em segundos...';
+      pollFiltro();
+    } else {
+      fb.style.color = '#ff1744';
+      fb.textContent = '❌ '+(d.msg||'Erro.');
+    }
+  });
+}
+
+function pollFiltro(){
+  fetch('/filtro').then(r=>r.json()).then(d=>{
+    if(d.rodando){
+      setTimeout(pollFiltro, 2000);
+      return;
+    }
+    const fb  = document.getElementById('filtro_feedback');
+    const res = document.getElementById('filtro_resultado');
+    if(d.erro){ fb.style.color='#ff1744'; fb.textContent='❌ '+d.erro; return; }
+
+    const apr = d.resultado || [];
+    const blq = d.bloqueados || [];
+    let html  = '';
+
+    if(apr.length){
+      html += `<div style="font-size:.72rem;color:#ce93d8;margin-bottom:6px">
+        💎 ${apr.length} aprovado(s) — clique em ✅ para enviar ao executor</div>`;
+      apr.forEach((s,i)=>{
+        html += `<div class="filtro-row">
+          <span class="badge badge-on" style="background:#9c27b022;color:#ce93d8">${s.ic} ${s.score}pts</span>
+          <div>
+            <span class="sinal-raw">${s.raw}</span>
+            <div class="filtro-info">Setup:${s.setup} | RSI:${s.rsi} | Mkv:${s.markov}% | Vela:${s.vela}(${s.body}%) | Cons:${s.cons}%(${s.n}x)</div>
+          </div>
+          <button onclick="enviarUm('${s.raw}')"
+            style="margin-left:auto;background:#ff6b00;color:#000;border:none;
+                   border-radius:8px;padding:4px 10px;font-size:.7rem;font-weight:700;cursor:pointer">
+            ✅ Executar
+          </button>
+        </div>`;
+      });
+      html += `<button class="btn btn-exec-all" onclick="enviarTodos()">
+        📤 Enviar TODOS ao Executor (${apr.length})</button>`;
+    } else {
+      html += '<div style="color:#666;font-size:.75rem;padding:6px 0">Nenhum sinal aprovado pelo filtro.</div>';
+    }
+
+    if(blq.length){
+      html += `<div style="font-size:.68rem;color:#444;margin-top:10px;margin-bottom:4px">🚫 ${blq.length} bloqueado(s):</div>`;
+      blq.forEach(s=>{
+        html += `<div class="filtro-row filtro-bloq">
+          <span class="sinal-raw">${s.par} ${s.hora} ${s.dir}</span>
+          <span class="sinal-motivo">${s.motivo}</span>
+        </div>`;
+      });
+    }
+
+    res.innerHTML = html;
+    fb.textContent = `✅ Concluído: ${apr.length} aprovados / ${blq.length} bloqueados`;
+  });
+}
+
+function enviarUm(raw){
+  fetch('/sinais', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sinais: raw})
+  }).then(r=>r.json()).then(d=>{
+    alert(d.ok ? '✅ Sinal enviado ao executor!' : '❌ '+(d.msg||'Erro'));
+    atualizar();
+  });
+}
+
+function enviarTodos(){
+  fetch('/filtro').then(r=>r.json()).then(d=>{
+    const linhas = (d.resultado||[]).map(s=>s.raw).join('\n');
+    if(!linhas){ alert('Nenhum sinal aprovado.'); return; }
+    fetch('/sinais',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sinais: linhas})
+    }).then(r=>r.json()).then(d2=>{
+      alert(d2.ok ? `✅ ${d2.adicionados} sinal(is) enviados ao executor!` : '❌ '+(d2.msg||'Erro'));
+      atualizar();
+    });
+  });
+}
+
 function enviarSinais(){
   const txt = document.getElementById('sinais_input').value.trim();
   if(!txt){ return; }
@@ -1486,6 +1929,23 @@ def reset_stop():
         estado["losses_dia"]       = 0
         estado["data_losses_dia"]  = ""
     _log("⚠️ Stop diário resetado manualmente.")
+    return jsonify({"ok": True})
+
+@app.route("/filtro", methods=["GET"])
+def get_filtro():
+    with _filtro_lock:
+        return jsonify(dict(_filtro_estado))
+
+@app.route("/filtro", methods=["POST"])
+def post_filtro():
+    from flask import request as freq
+    data  = freq.get_json(silent=True) or {}
+    lista = data.get("lista", "").strip()
+    if not lista:
+        return jsonify({"ok": False, "msg": "Lista vazia."})
+    if _filtro_estado["rodando"]:
+        return jsonify({"ok": False, "msg": "Filtro já está rodando, aguarde."})
+    threading.Thread(target=rodar_filtro, args=(lista,), daemon=True).start()
     return jsonify({"ok": True})
 
 @app.route("/sinais", methods=["GET"])
