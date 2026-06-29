@@ -18,7 +18,7 @@ subprocess.call(
 
 import time, math, threading, requests, pytz
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
+from flask import Flask, jsonify, render_template_string, request as freq, Response
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
@@ -1720,6 +1720,17 @@ textarea:focus{border-color:#00e676}
 .filtro-bloq{opacity:.5}
 .ic-diamante{color:#ce93d8}.ic-ok{color:#00e676}.ic-aviso{color:#ffd600}
 </style>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Sniper V10">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <script>
+    if('serviceWorker' in navigator){
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
 </head>
 <body>
 <div class="wrap">
@@ -1742,12 +1753,8 @@ textarea:focus{border-color:#00e676}
     </div>
     <div class="trava-info" id="trava_info"></div>
     <div class="grid2" style="margin-top:14px">
-      <form method="POST" action="/iniciar" style="margin:0">
-        <button type="submit" class="btn btn-go">▶ INICIAR</button>
-      </form>
-      <form method="POST" action="/parar" style="margin:0">
-        <button type="submit" class="btn btn-stop">⏹ PARAR</button>
-      </form>
+      <button class="btn btn-go"   id="btn-iniciar" data-url="/iniciar" data-reload="1">▶ INICIAR</button>
+      <button class="btn btn-stop" id="btn-parar" data-url="/parar" data-reload="1">⏹ PARAR</button>
     </div>
   </div>
 
@@ -1760,12 +1767,8 @@ textarea:focus{border-color:#00e676}
       Controla se os sinais aprovados serão executados automaticamente na IQ Option.
     </div>
     <div class="grid2">
-      <form method="POST" action="/executor/ligar" style="margin:0">
-        <button type="submit" class="btn btn-exec-on">⚡ EXECUTOR ON</button>
-      </form>
-      <form method="POST" action="/executor/desligar" style="margin:0">
-        <button type="submit" class="btn btn-exec-off">🚫 EXECUTOR OFF</button>
-      </form>
+      <button class="btn btn-exec-on" id="btn-exec-on" data-url="/executor/ligar" data-reload="1">⚡ EXECUTOR ON</button>
+      <button class="btn btn-exec-off" id="btn-exec-off" data-url="/executor/desligar" data-reload="1">🚫 EXECUTOR OFF</button>
     </div>
   </div>
 
@@ -1809,12 +1812,8 @@ textarea:focus{border-color:#00e676}
       </div>
     </div>
     <div class="grid2" style="margin-top:10px">
-      <form method="POST" action="/forex/ligar" style="margin:0">
-        <button type="submit" class="btn btn-go">▶ FOREX ON</button>
-      </form>
-      <form method="POST" action="/forex/desligar" style="margin:0">
-        <button type="submit" class="btn btn-stop">⏹ FOREX OFF</button>
-      </form>
+      <button class="btn btn-go" id="btn-forex-on" data-url="/forex/ligar" data-reload="1">▶ FOREX ON</button>
+      <button class="btn btn-stop" id="btn-forex-off" data-url="/forex/desligar" data-reload="1">⏹ FOREX OFF</button>
     </div>
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
@@ -1845,12 +1844,8 @@ textarea:focus{border-color:#00e676}
       </div>
     </div>
     <div class="grid2" style="margin-top:10px">
-      <form method="POST" action="/otc/ligar" style="margin:0">
-        <button type="submit" class="btn btn-go">▶ OTC ON</button>
-      </form>
-      <form method="POST" action="/otc/desligar" style="margin:0">
-        <button type="submit" class="btn btn-stop">⏹ OTC OFF</button>
-      </form>
+      <button class="btn btn-go" id="btn-otc-on" data-url="/otc/ligar" data-reload="1">▶ OTC ON</button>
+      <button class="btn btn-stop" id="btn-otc-off" data-url="/otc/desligar" data-reload="1">⏹ OTC OFF</button>
     </div>
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
@@ -1925,8 +1920,9 @@ const ICONS = {
 };
 
 function atualizar(){
-  fetch('/estado').then(r=>r.json()).then(d=>{
-    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? 'STOP DIARIO' : 'PARADO');
+  var base = window.location.origin;
+  fetch(base+'/estado').then(function(r){ return r.json(); }).then(function(d){
+    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? 'STOP' : 'PARADO');
     document.getElementById('saldo').textContent = '$'+(d.saldo||0).toFixed(2);
     document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
     document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
@@ -1968,16 +1964,16 @@ function atualizar(){
     }
 
     const lf = document.getElementById('log_forex');
-    lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
+    lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
     const lo = document.getElementById('log_otc');
-    lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
+    lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
   });
 
   /* Fila de sinais manuais */
-  fetch('/sinais').then(r=>r.json()).then(lista=>{
+  fetch(base+'/sinais').then(function(r){ return r.json(); }).then(function(lista){
     const el = document.getElementById('fila_sinais');
     if(!lista.length){ el.innerHTML=''; return; }
-    el.innerHTML = lista.map(s=>{
+    el.innerHTML = lista.map(function(s){
       const cor  = CORES[s.status]  || 'badge-on';
       const icon = ICONS[s.status]  || '';
       return `<div class="sinal-row">
@@ -1989,7 +1985,10 @@ function atualizar(){
   });
 }
 
-function post(url){ return fetch(url,{method:'POST'}).then(r=>r.json()); }
+function post(url){
+  var base = window.location.origin;
+  return fetch(base+url, {method:'POST'}).then(function(r){ return r.json(); });
+}
 
 function iniciar(){ post('/iniciar').then(atualizar); }
 function parar()  { post('/parar').then(atualizar); }
@@ -2025,7 +2024,7 @@ function rodarFiltro(){
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({lista: txt})
-  }).then(r=>r.json()).then(d=>{
+  }).then(function(r){ return r.json(); }).then(function(d){
     if(d.ok){
       fb.textContent = ' Filtro iniciado! Resultado aparece abaixo em segundos...';
       pollFiltro();
@@ -2037,7 +2036,7 @@ function rodarFiltro(){
 }
 
 function pollFiltro(){
-  fetch('/filtro').then(r=>r.json()).then(d=>{
+  fetch('/filtro').then(function(r){ return r.json(); }).then(function(d){
     const fb  = document.getElementById('filtro_feedback');
     if(d.rodando){
       fb.textContent = ' Processando... buscando velas e aplicando filtros';
@@ -2094,21 +2093,21 @@ function enviarUm(raw){
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({sinais: raw})
-  }).then(r=>r.json()).then(d=>{
+  }).then(function(r){ return r.json(); }).then(function(d){
     alert(d.ok ? ' Sinal enviado ao executor!' : ' '+(d.msg||'Erro'));
     atualizar();
   });
 }
 
 function enviarTodos(){
-  fetch('/filtro').then(r=>r.json()).then(d=>{
+  fetch('/filtro').then(function(r){ return r.json(); }).then(function(d){
     const linhas = (d.resultado||[]).map(s=>s.raw).join('\n');
     if(!linhas){ alert('Nenhum sinal aprovado.'); return; }
     fetch('/sinais',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({sinais: linhas})
-    }).then(r=>r.json()).then(d2=>{
+    }).then(function(r){ return r.json(); }).then(d2=>{
       alert(d2.ok ? ` ${d2.adicionados} sinal(is) enviados ao executor!` : ' '+(d2.msg||'Erro'));
       atualizar();
     });
@@ -2122,7 +2121,7 @@ function enviarSinais(){
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({sinais: txt})
-  }).then(r=>r.json()).then(d=>{
+  }).then(function(r){ return r.json(); }).then(function(d){
     const fb = document.getElementById('manual_feedback');
     if(d.ok){
       fb.style.color = '#00e676';
@@ -2132,7 +2131,7 @@ function enviarSinais(){
       fb.style.color = '#ff1744';
       fb.textContent = ' ' + (d.msg || 'Erro ao processar sinais.');
     }
-    setTimeout(()=>{ fb.textContent=''; }, 5000);
+    setTimeout(function(){ fb.textContent=''; }, 5000);
     atualizar();
   });
 }
@@ -2144,25 +2143,9 @@ atualizar();
 </html>
 """
 
-@app.route("/", methods=["GET","POST"])
+@app.route("/")
 def index():
-    with _lock:
-        e = dict(estado)
-    st  = "🟢 RODANDO" if e["ativo"] else ("🛑 STOP DIÁRIO" if e["stop_diario"] else "⏸ PARADO")
-    sal = "${:.2f}".format(e["saldo"])
-    iq  = "Conectada ✅" if e["iq_ok"] else "Desconectada ❌"
-    ini = ("Desde: " + e["iniciado_em"]) if e["iniciado_em"] else ""
-    log_f = "".join("<p>"+l+"</p>" for l in reversed(e["log_forex"][-20:]))
-    log_o = "".join("<p>"+l+"</p>" for l in reversed(e["log_otc"][-20:]))
-    html = (HTML
-        .replace('id="bot_status">—', 'id="bot_status">' + st)
-        .replace('id="saldo">$0.00', 'id="saldo">' + sal)
-        .replace('id="iq_txt">—', 'id="iq_txt">' + iq)
-        .replace('id="iniciado_em"></div>', 'id="iniciado_em">' + ini + '</div>')
-        .replace('id="log_forex"></div>', 'id="log_forex">' + log_f + '</div>')
-        .replace('id="log_otc"></div>', 'id="log_otc">' + log_o + '</div>')
-    )
-    return Response(html, mimetype='text/html')
+    return Response(HTML, mimetype='text/html')
 
 @app.route("/estado")
 def get_estado_route():
@@ -2176,50 +2159,48 @@ def iniciar():
     if not estado["ativo"]:
         estado["ativo"] = True
         threading.Thread(target=iniciar_motor, daemon=True).start()
-        time.sleep(1.5)
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/parar", methods=["POST"])
 def parar():
     estado["ativo"] = False
-    time.sleep(0.3)
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/forex/ligar", methods=["POST"])
 def forex_ligar():
     estado["forex_ativo"] = True
     _log("🔵 Engine FOREX ligada manualmente", "FOREX")
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/forex/desligar", methods=["POST"])
 def forex_desligar():
     estado["forex_ativo"] = False
     _log("🔵 Engine FOREX desligada manualmente", "FOREX")
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/otc/ligar", methods=["POST"])
 def otc_ligar():
     estado["otc_ativo"] = True
     _log("🟠 Engine OTC ligada manualmente", "OTC")
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/otc/desligar", methods=["POST"])
 def otc_desligar():
     estado["otc_ativo"] = False
     _log("🟠 Engine OTC desligada manualmente", "OTC")
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/executor/ligar", methods=["POST"])
 def executor_ligar():
     estado["executor_ativo"] = True
     _log("⚡ Executor automático ATIVADO", "MANUAL")
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/executor/desligar", methods=["POST"])
 def executor_desligar():
     estado["executor_ativo"] = False
     _log("🚫 Executor automático DESATIVADO", "MANUAL")
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/reset_stop", methods=["POST"])
 def reset_stop():
@@ -2274,6 +2255,80 @@ def post_sinais():
     if adicionados == 0:
         return jsonify({"ok": False, "msg": f"Formato inválido: {', '.join(erros[:3])}"})
     return jsonify({"ok": True, "adicionados": adicionados, "erros": erros})
+
+
+# ══════════════════════════════════════════════════════════════════
+#  PWA — Manifesto, Service Worker e Icone
+# ══════════════════════════════════════════════════════════════════
+import base64 as _b64
+
+_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="24" fill="#0a0a0a"/>
+  <text x="96" y="130" font-size="110" text-anchor="middle" fill="#00e676">S</text>
+</svg>"""
+
+_MANIFEST = """{
+  "name": "Sniper V10",
+  "short_name": "Sniper",
+  "description": "Sniper Hibrido V10 — Forex e OTC",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}"""
+
+_SW_JS = """
+const CACHE = 'sniper-v10-pwa-v1';
+self.addEventListener('install',  function(e){ self.skipWaiting(); });
+self.addEventListener('activate', function(e){ e.waitUntil(self.clients.claim()); });
+self.addEventListener('fetch', function(e){
+  if(e.request.method !== 'GET'){ return; }
+  e.respondWith(
+    fetch(e.request).catch(function(){
+      return caches.match(e.request);
+    })
+  );
+});
+"""
+
+def _svg_to_png(size):
+    try:
+        import cairosvg
+        return cairosvg.svg2png(bytestring=_ICON_SVG.encode(), output_width=size, output_height=size)
+    except Exception:
+        # fallback: PNG minimo 1x1 transparente com cabecalho correto
+        import struct, zlib
+        def png_chunk(name, data):
+            c = struct.pack('>I', len(data)) + name + data
+            return c + struct.pack('>I', zlib.crc32(name+data) & 0xffffffff)
+        w = h = size
+        raw = b'\x00' + b'\xff\x00\x00\xff' * w
+        idat = zlib.compress(raw * h)
+        return (b'\x89PNG\r\n\x1a\n'
+                + png_chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+                + png_chunk(b'IDAT', idat)
+                + png_chunk(b'IEND', b''))
+
+@app.route("/manifest.json")
+def pwa_manifest():
+    return Response(_MANIFEST, mimetype='application/manifest+json')
+
+@app.route("/sw.js")
+def pwa_sw():
+    return Response(_SW_JS, mimetype='application/javascript')
+
+@app.route("/icon-192.png")
+def pwa_icon192():
+    return Response(_svg_to_png(192), mimetype='image/png')
+
+@app.route("/icon-512.png")
+def pwa_icon512():
+    return Response(_svg_to_png(512), mimetype='image/png')
 
 # ══════════════════════════════════════════════════════════════════
 #  MAIN
