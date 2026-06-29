@@ -2181,7 +2181,7 @@ def iniciar():
     if not estado["ativo"]:
         estado["ativo"] = True
         threading.Thread(target=iniciar_motor, daemon=True).start()
-    # Suporta form POST (redirect) e fetch (JSON)
+        time.sleep(1.5)   # aguarda engines iniciarem antes de redirecionar
     if freq.content_type and 'json' in freq.content_type:
         return jsonify({"ok": True})
     return redirect("/", code=303)
@@ -2189,6 +2189,7 @@ def iniciar():
 @app.route("/parar", methods=["POST"])
 def parar():
     estado["ativo"] = False
+    time.sleep(0.3)
     if freq.content_type and 'json' in freq.content_type:
         return jsonify({"ok": True})
     return redirect("/", code=303)
