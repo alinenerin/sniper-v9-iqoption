@@ -70,7 +70,7 @@ def check_news_bloqueio(now_brt):
             return True, f'🚫 NEWS {impacto}: {titulo} ({inicio.strftime("%H:%M")}–{fim.strftime("%H:%M")})'
     return False, ''
 
-sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 IQ_EMAIL     = 'laiane.aline@gmail.com'
 IQ_PASS      = 'alineegui95'
