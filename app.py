@@ -1971,17 +1971,20 @@ function atualizar(){
 
   /* Fila de sinais manuais */
   fetch(base+'/sinais').then(function(r){ return r.json(); }).then(function(lista){
-    const el = document.getElementById('fila_sinais');
+    var el = document.getElementById('fila_sinais');
     if(!lista.length){ el.innerHTML=''; return; }
-    el.innerHTML = lista.map(function(s){
-      const cor  = CORES[s.status]  || 'badge-on';
-      const icon = ICONS[s.status]  || '';
-      return `<div class="sinal-row">
-        <span class="badge ${cor}">${icon} ${s.status.toUpperCase()}</span>
-        <span class="sinal-raw">${s.raw}</span>
-        ${s.motivo ? '<span class="sinal-motivo">'+s.motivo+'</span>' : ''}
-      </div>`;
-    }).join('');
+    var html2 = '';
+    for(var k=0; k<lista.length; k++){
+      var s2 = lista[k];
+      var cor2  = CORES[s2.status]  || 'badge-on';
+      var icon2 = ICONS[s2.status]  || '';
+      html2 += '<div class="sinal-row">';
+      html2 += '<span class="badge ' + cor2 + '">' + icon2 + ' ' + s2.status.toUpperCase() + '</span>';
+      html2 += '<span class="sinal-raw">' + s2.raw + '</span>';
+      if(s2.motivo) html2 += '<span class="sinal-motivo">' + s2.motivo + '</span>';
+      html2 += '</div>';
+    }
+    el.innerHTML = html2;
   });
 }
 
@@ -2046,69 +2049,79 @@ function pollFiltro(){
     const res = document.getElementById('filtro_resultado');
     if(d.erro){ fb.style.color='#ff1744'; fb.textContent=' '+d.erro; return; }
 
-    const apr = d.resultado || [];
-    const blq = d.bloqueados || [];
-    let html  = '';
+    var apr = d.resultado || [];
+    var blq = d.bloqueados || [];
+    var html = '';
 
     if(apr.length){
-      html += `<div style="font-size:.72rem;color:#ce93d8;margin-bottom:6px">
-         ${apr.length} aprovado(s)  clique em  para enviar ao executor</div>`;
-      apr.forEach((s,i)=>{
-        html += `<div class="filtro-row">
-          <span class="badge badge-on" style="background:#9c27b022;color:#ce93d8">${s.ic} ${s.score}pts</span>
-          <div>
-            <span class="sinal-raw">${s.raw}</span>
-            <div class="filtro-info">Setup:${s.setup} | RSI:${s.rsi} | Mkv:${s.markov}% | Vela:${s.vela}(${s.body}%) | Cons:${s.cons}%(${s.n}x)</div>
-          </div>
-          <button onclick="enviarUm('${s.raw}')"
-            style="margin-left:auto;background:#ff6b00;color:#000;border:none;
-                   border-radius:8px;padding:4px 10px;font-size:.7rem;font-weight:700;cursor:pointer">
-             Executar
-          </button>
-        </div>`;
-      });
-      html += `<button class="btn btn-exec-all" onclick="enviarTodos()">
-         Enviar TODOS ao Executor (${apr.length})</button>`;
+      html += '<div style="font-size:.72rem;color:#ce93d8;margin-bottom:6px">' + apr.length + ' aprovado(s) — clique Executar para enviar ao executor</div>';
+      for(var i=0; i<apr.length; i++){
+        var s = apr[i];
+        var rawEsc = s.raw.replace(/'/g, "\'");
+        html += '<div class="filtro-row">';
+        html += '<span class="badge badge-on" style="background:#9c27b022;color:#ce93d8">' + s.ic + ' ' + s.score + 'pts</span>';
+        html += '<div>';
+        html += '<span class="sinal-raw">' + s.raw + '</span>';
+        html += '<div class="filtro-info">Setup:' + s.setup + ' | RSI:' + s.rsi + ' | Mkv:' + s.markov + '% | Vela:' + s.vela + '(' + s.body + '%) | Cons:' + s.cons + '%(' + s.n + 'x)</div>';
+        html += '</div>';
+        html += '<button data-raw="' + rawEsc + '" class="btn-exec-um" style="margin-left:auto;background:#ff6b00;color:#000;border:none;border-radius:8px;padding:4px 10px;font-size:.7rem;font-weight:700;cursor:pointer">Executar</button>';
+        html += '</div>';
+      }
+      html += '<button class="btn btn-exec-all" id="btn-enviar-todos">Enviar TODOS ao Executor (' + apr.length + ')</button>';
     } else {
       html += '<div style="color:#666;font-size:.75rem;padding:6px 0">Nenhum sinal aprovado pelo filtro.</div>';
     }
 
     if(blq.length){
-      html += `<div style="font-size:.68rem;color:#444;margin-top:10px;margin-bottom:4px"> ${blq.length} bloqueado(s):</div>`;
-      blq.forEach(s=>{
-        html += `<div class="filtro-row filtro-bloq">
-          <span class="sinal-raw">${s.par} ${s.hora} ${s.dir}</span>
-          <span class="sinal-motivo">${s.motivo}</span>
-        </div>`;
-      });
+      html += '<div style="font-size:.68rem;color:#444;margin-top:10px;margin-bottom:4px">' + blq.length + ' bloqueado(s):</div>';
+      for(var j=0; j<blq.length; j++){
+        var b = blq[j];
+        html += '<div class="filtro-row filtro-bloq">';
+        html += '<span class="sinal-raw">' + b.par + ' ' + b.hora + ' ' + b.dir + '</span>';
+        html += '<span class="sinal-motivo">' + b.motivo + '</span>';
+        html += '</div>';
+      }
     }
 
     res.innerHTML = html;
-    fb.textContent = ` Concluído: ${apr.length} aprovados / ${blq.length} bloqueados`;
+    fb.textContent = 'Concluido: ' + apr.length + ' aprovados / ' + blq.length + ' bloqueados';
+
+    /* bind botoes dinamicos pos-render */
+    document.querySelectorAll('.btn-exec-um').forEach(function(btn){
+      btn.addEventListener('click', function(){ enviarUm(btn.getAttribute('data-raw')); });
+    });
+    var bTodos = document.getElementById('btn-enviar-todos');
+    if(bTodos) bTodos.addEventListener('click', enviarTodos);
   });
 }
 
 function enviarUm(raw){
-  fetch('/sinais', {
+  var base = window.location.origin;
+  fetch(base+'/sinais', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({sinais: raw})
   }).then(function(r){ return r.json(); }).then(function(d){
-    alert(d.ok ? ' Sinal enviado ao executor!' : ' '+(d.msg||'Erro'));
+    alert(d.ok ? 'Sinal enviado ao executor!' : (d.msg||'Erro'));
     atualizar();
   });
 }
 
 function enviarTodos(){
-  fetch('/filtro').then(function(r){ return r.json(); }).then(function(d){
-    const linhas = (d.resultado||[]).map(s=>s.raw).join('\n');
+  var base = window.location.origin;
+  fetch(base+'/filtro').then(function(r){ return r.json(); }).then(function(d){
+    var linhas = '';
+    for(var i=0; i<(d.resultado||[]).length; i++){
+      if(i>0) linhas += '\n';
+      linhas += d.resultado[i].raw;
+    }
     if(!linhas){ alert('Nenhum sinal aprovado.'); return; }
-    fetch('/sinais',{
+    fetch(base+'/sinais',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({sinais: linhas})
-    }).then(function(r){ return r.json(); }).then(d2=>{
-      alert(d2.ok ? ` ${d2.adicionados} sinal(is) enviados ao executor!` : ' '+(d2.msg||'Erro'));
+    }).then(function(r){ return r.json(); }).then(function(d2){
+      alert(d2.ok ? (d2.adicionados + ' sinal(is) enviados ao executor!') : (d2.msg||'Erro'));
       atualizar();
     });
   });
