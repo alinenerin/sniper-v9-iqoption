@@ -802,8 +802,6 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
             _t.sleep(0.05)
         return False, "Websocket connect timeout (20s)"
 
-            pass
-
     # @tokensms.setter
     def setTokenSMS(self, response):
         token_sms = response.json()['token']
