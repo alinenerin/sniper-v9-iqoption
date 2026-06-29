@@ -28,6 +28,7 @@ TG_CHAT   = os.environ.get("TG_CHAT",  "5911742397")
 IQ_EMAIL  = os.environ.get("IQ_EMAIL", "laiane.aline@gmail.com")
 IQ_PASS   = os.environ.get("IQ_PASS",  "alineegui95")
 IQ_SSID   = os.environ.get("IQ_SSID",  "")
+POLYGON_KEY = os.environ.get("POLYGON_KEY", "gXySF0ojKao907z3vKOtpxr8opt0cbLx")
 
 BRT            = pytz.timezone("America/Sao_Paulo")
 MAX_LOSSES_DIA = 4
@@ -236,6 +237,37 @@ def garantir_conexao():
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
+    """Busca velas M1 — primário: Polygon.io | fallback: IQ Option"""
+    # Normaliza par para Polygon (remove -OTC, formata como C:EURUSD)
+    par_base = ativo.replace("-OTC", "").replace("/", "").upper()
+
+    # ── Polygon.io (sem bloqueio de IP, delay ~10min no plano free) ──
+    try:
+        import datetime as dt
+        fim   = int(time.time()) * 1000
+        inicio = fim - (n + 10) * tf * 1000
+        url = (f"https://api.polygon.io/v2/aggs/ticker/C:{par_base}"
+               f"/range/1/minute"
+               f"/{dt.datetime.utcfromtimestamp(inicio/1000).strftime('%Y-%m-%d')}"
+               f"/{dt.datetime.utcfromtimestamp(fim/1000).strftime('%Y-%m-%d')}"
+               f"?limit={n+10}&sort=asc&apiKey={POLYGON_KEY}")
+        r = requests.get(url, timeout=8)
+        data = r.json()
+        if data.get("resultsCount", 0) > 0:
+            velas = []
+            for v in data["results"][-n:]:
+                velas.append({
+                    "o": float(v["o"]),
+                    "c": float(v["c"]),
+                    "h": float(v["h"]),
+                    "l": float(v["l"]),
+                    "t": int(v["t"] / 1000),
+                })
+            return velas
+    except Exception as e:
+        _log(f"Polygon candles erro ({par_base}): {e}")
+
+    # ── IQ Option (fallback — só se conectada) ──
     if not _iq_ok or not _iq_api:
         return []
     try:
@@ -254,7 +286,7 @@ def get_candles(ativo, n=60, tf=60):
         velas.sort(key=lambda x: x["t"])
         return velas
     except Exception as e:
-        _log(f"Candles erro ({ativo}): {e}")
+        _log(f"IQ candles erro ({ativo}): {e}")
         return []
 
 def get_saldo():
