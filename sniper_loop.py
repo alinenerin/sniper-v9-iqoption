@@ -708,16 +708,11 @@ if __name__ == '__main__':
         sys.exit(0)
 
     iq = IQ_Option(IQ_EMAIL, IQ_PASS)
-    # Tenta usar SSID do ambiente para bypassar bloqueio de IP
+    # Injeta SSID via set_session para bypassar bloqueio de IP no Railway
     _ssid = os.environ.get('IQ_SSID', '')
     if _ssid:
-        log(f'Usando SSID do ambiente: {_ssid[:8]}...')
-        try:
-            import http.cookiejar as cj
-            c = cj.Cookie(0,'ssid',_ssid,None,False,'.iqoption.com',True,True,'/',False,False,None,False,None,None,{})
-            iq.api.session.cookies.set_cookie(c)
-        except Exception as _e:
-            log(f'Cookie err: {_e}')
+        log(f'Injetando SSID: {_ssid[:8]}...')
+        iq.set_session(header={}, cookie={'ssid': _ssid})
     log('Conectando IQ Option...')
     check, reason = iq.connect()
     log(f'Conexão: {check} | {reason}')
