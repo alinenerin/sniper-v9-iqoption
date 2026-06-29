@@ -18,7 +18,7 @@ subprocess.call(
 
 import time, math, threading, requests, pytz
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, render_template_string, request as freq, Response
+from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
@@ -1742,8 +1742,12 @@ textarea:focus{border-color:#00e676}
     </div>
     <div class="trava-info" id="trava_info"></div>
     <div class="grid2" style="margin-top:14px">
-      <button class="btn btn-go"   id="btn-iniciar" data-url="/iniciar" data-reload="1">▶ INICIAR</button>
-      <button class="btn btn-stop" id="btn-parar" data-url="/parar" data-reload="1">⏹ PARAR</button>
+      <form method="POST" action="/iniciar" style="margin:0">
+        <button type="submit" class="btn btn-go">▶ INICIAR</button>
+      </form>
+      <form method="POST" action="/parar" style="margin:0">
+        <button type="submit" class="btn btn-stop">⏹ PARAR</button>
+      </form>
     </div>
   </div>
 
@@ -1756,8 +1760,12 @@ textarea:focus{border-color:#00e676}
       Controla se os sinais aprovados serão executados automaticamente na IQ Option.
     </div>
     <div class="grid2">
-      <button class="btn btn-exec-on" id="btn-exec-on" data-url="/executor/ligar" data-reload="1">⚡ EXECUTOR ON</button>
-      <button class="btn btn-exec-off" id="btn-exec-off" data-url="/executor/desligar" data-reload="1">🚫 EXECUTOR OFF</button>
+      <form method="POST" action="/executor/ligar" style="margin:0">
+        <button type="submit" class="btn btn-exec-on">⚡ EXECUTOR ON</button>
+      </form>
+      <form method="POST" action="/executor/desligar" style="margin:0">
+        <button type="submit" class="btn btn-exec-off">🚫 EXECUTOR OFF</button>
+      </form>
     </div>
   </div>
 
@@ -1801,8 +1809,12 @@ textarea:focus{border-color:#00e676}
       </div>
     </div>
     <div class="grid2" style="margin-top:10px">
-      <button class="btn btn-go" id="btn-forex-on" data-url="/forex/ligar" data-reload="1">▶ FOREX ON</button>
-      <button class="btn btn-stop" id="btn-forex-off" data-url="/forex/desligar" data-reload="1">⏹ FOREX OFF</button>
+      <form method="POST" action="/forex/ligar" style="margin:0">
+        <button type="submit" class="btn btn-go">▶ FOREX ON</button>
+      </form>
+      <form method="POST" action="/forex/desligar" style="margin:0">
+        <button type="submit" class="btn btn-stop">⏹ FOREX OFF</button>
+      </form>
     </div>
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
@@ -1833,8 +1845,12 @@ textarea:focus{border-color:#00e676}
       </div>
     </div>
     <div class="grid2" style="margin-top:10px">
-      <button class="btn btn-go" id="btn-otc-on" data-url="/otc/ligar" data-reload="1">▶ OTC ON</button>
-      <button class="btn btn-stop" id="btn-otc-off" data-url="/otc/desligar" data-reload="1">⏹ OTC OFF</button>
+      <form method="POST" action="/otc/ligar" style="margin:0">
+        <button type="submit" class="btn btn-go">▶ OTC ON</button>
+      </form>
+      <form method="POST" action="/otc/desligar" style="margin:0">
+        <button type="submit" class="btn btn-stop">⏹ OTC OFF</button>
+      </form>
     </div>
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
@@ -1909,9 +1925,8 @@ const ICONS = {
 };
 
 function atualizar(){
-  var base = window.location.origin;
-  fetch(base+'/estado').then(function(r){ return r.json(); }).then(function(d){
-    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? 'STOP' : 'PARADO');
+  fetch('/estado').then(r=>r.json()).then(d=>{
+    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? 'STOP DIARIO' : 'PARADO');
     document.getElementById('saldo').textContent = '$'+(d.saldo||0).toFixed(2);
     document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
     document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
@@ -1953,16 +1968,16 @@ function atualizar(){
     }
 
     const lf = document.getElementById('log_forex');
-    lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
+    lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
     const lo = document.getElementById('log_otc');
-    lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
+    lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
   });
 
   /* Fila de sinais manuais */
-  fetch(base+'/sinais').then(function(r){ return r.json(); }).then(function(lista){
+  fetch('/sinais').then(r=>r.json()).then(lista=>{
     const el = document.getElementById('fila_sinais');
     if(!lista.length){ el.innerHTML=''; return; }
-    el.innerHTML = lista.map(function(s){
+    el.innerHTML = lista.map(s=>{
       const cor  = CORES[s.status]  || 'badge-on';
       const icon = ICONS[s.status]  || '';
       return `<div class="sinal-row">
@@ -1974,10 +1989,7 @@ function atualizar(){
   });
 }
 
-function post(url){
-  var base = window.location.origin;
-  return fetch(base+url, {method:'POST'}).then(function(r){ return r.json(); });
-}
+function post(url){ return fetch(url,{method:'POST'}).then(r=>r.json()); }
 
 function iniciar(){ post('/iniciar').then(atualizar); }
 function parar()  { post('/parar').then(atualizar); }
@@ -2013,7 +2025,7 @@ function rodarFiltro(){
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({lista: txt})
-  }).then(function(r){ return r.json(); }).then(function(d){
+  }).then(r=>r.json()).then(d=>{
     if(d.ok){
       fb.textContent = ' Filtro iniciado! Resultado aparece abaixo em segundos...';
       pollFiltro();
@@ -2025,7 +2037,7 @@ function rodarFiltro(){
 }
 
 function pollFiltro(){
-  fetch('/filtro').then(function(r){ return r.json(); }).then(function(d){
+  fetch('/filtro').then(r=>r.json()).then(d=>{
     const fb  = document.getElementById('filtro_feedback');
     if(d.rodando){
       fb.textContent = ' Processando... buscando velas e aplicando filtros';
@@ -2082,21 +2094,21 @@ function enviarUm(raw){
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({sinais: raw})
-  }).then(function(r){ return r.json(); }).then(function(d){
+  }).then(r=>r.json()).then(d=>{
     alert(d.ok ? ' Sinal enviado ao executor!' : ' '+(d.msg||'Erro'));
     atualizar();
   });
 }
 
 function enviarTodos(){
-  fetch('/filtro').then(function(r){ return r.json(); }).then(function(d){
+  fetch('/filtro').then(r=>r.json()).then(d=>{
     const linhas = (d.resultado||[]).map(s=>s.raw).join('\n');
     if(!linhas){ alert('Nenhum sinal aprovado.'); return; }
     fetch('/sinais',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({sinais: linhas})
-    }).then(function(r){ return r.json(); }).then(d2=>{
+    }).then(r=>r.json()).then(d2=>{
       alert(d2.ok ? ` ${d2.adicionados} sinal(is) enviados ao executor!` : ' '+(d2.msg||'Erro'));
       atualizar();
     });
@@ -2110,7 +2122,7 @@ function enviarSinais(){
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({sinais: txt})
-  }).then(function(r){ return r.json(); }).then(function(d){
+  }).then(r=>r.json()).then(d=>{
     const fb = document.getElementById('manual_feedback');
     if(d.ok){
       fb.style.color = '#00e676';
@@ -2120,7 +2132,7 @@ function enviarSinais(){
       fb.style.color = '#ff1744';
       fb.textContent = ' ' + (d.msg || 'Erro ao processar sinais.');
     }
-    setTimeout(function(){ fb.textContent=''; }, 5000);
+    setTimeout(()=>{ fb.textContent=''; }, 5000);
     atualizar();
   });
 }
@@ -2132,7 +2144,7 @@ atualizar();
 </html>
 """
 
-@app.route("/")
+@app.route("/", methods=["GET","POST"])
 def index():
     return Response(HTML, mimetype='text/html')
 
@@ -2148,48 +2160,50 @@ def iniciar():
     if not estado["ativo"]:
         estado["ativo"] = True
         threading.Thread(target=iniciar_motor, daemon=True).start()
-    return jsonify({"ok": True})
+        time.sleep(1.5)
+    return redirect("/", code=303)
 
 @app.route("/parar", methods=["POST"])
 def parar():
     estado["ativo"] = False
-    return jsonify({"ok": True})
+    time.sleep(0.3)
+    return redirect("/", code=303)
 
 @app.route("/forex/ligar", methods=["POST"])
 def forex_ligar():
     estado["forex_ativo"] = True
     _log("🔵 Engine FOREX ligada manualmente", "FOREX")
-    return jsonify({"ok": True})
+    return redirect("/", code=303)
 
 @app.route("/forex/desligar", methods=["POST"])
 def forex_desligar():
     estado["forex_ativo"] = False
     _log("🔵 Engine FOREX desligada manualmente", "FOREX")
-    return jsonify({"ok": True})
+    return redirect("/", code=303)
 
 @app.route("/otc/ligar", methods=["POST"])
 def otc_ligar():
     estado["otc_ativo"] = True
     _log("🟠 Engine OTC ligada manualmente", "OTC")
-    return jsonify({"ok": True})
+    return redirect("/", code=303)
 
 @app.route("/otc/desligar", methods=["POST"])
 def otc_desligar():
     estado["otc_ativo"] = False
     _log("🟠 Engine OTC desligada manualmente", "OTC")
-    return jsonify({"ok": True})
+    return redirect("/", code=303)
 
 @app.route("/executor/ligar", methods=["POST"])
 def executor_ligar():
     estado["executor_ativo"] = True
     _log("⚡ Executor automático ATIVADO", "MANUAL")
-    return jsonify({"ok": True})
+    return redirect("/", code=303)
 
 @app.route("/executor/desligar", methods=["POST"])
 def executor_desligar():
     estado["executor_ativo"] = False
     _log("🚫 Executor automático DESATIVADO", "MANUAL")
-    return jsonify({"ok": True})
+    return redirect("/", code=303)
 
 @app.route("/reset_stop", methods=["POST"])
 def reset_stop():
