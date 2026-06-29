@@ -18,7 +18,7 @@ subprocess.call(
 
 import time, math, threading, requests, pytz
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, render_template_string, request as freq
+from flask import Flask, jsonify, render_template_string, request as freq, redirect
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
@@ -1750,8 +1750,12 @@ textarea:focus{border-color:#00e676}
   </div>
 
   <div class="grid2" style="margin-bottom:12px">
-    <button class="btn btn-go"   onclick="iniciar()">▶ INICIAR</button>
-    <button class="btn btn-stop" onclick="parar()">⏹ PARAR</button>
+    <form method="POST" action="/iniciar" style="margin:0">
+      <button type="submit" class="btn btn-go">▶ INICIAR</button>
+    </form>
+    <form method="POST" action="/parar" style="margin:0">
+      <button type="submit" class="btn btn-stop">⏹ PARAR</button>
+    </form>
   </div>
 
   <!-- ── SNIPER FILTRO V9.1 ──────────────────────────────────────── -->
@@ -2023,12 +2027,17 @@ def iniciar():
     if not estado["ativo"]:
         estado["ativo"] = True
         threading.Thread(target=iniciar_motor, daemon=True).start()
-    return jsonify({"ok": True})
+    # Suporta form POST (redirect) e fetch (JSON)
+    if freq.content_type and 'json' in freq.content_type:
+        return jsonify({"ok": True})
+    return redirect("/", code=303)
 
 @app.route("/parar", methods=["POST"])
 def parar():
     estado["ativo"] = False
-    return jsonify({"ok": True})
+    if freq.content_type and 'json' in freq.content_type:
+        return jsonify({"ok": True})
+    return redirect("/", code=303)
 
 @app.route("/reset_stop", methods=["POST"])
 def reset_stop():
