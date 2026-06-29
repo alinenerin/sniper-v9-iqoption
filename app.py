@@ -18,7 +18,7 @@ subprocess.call(
 
 import time, math, threading, requests, pytz
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, render_template_string, request as freq, redirect
+from flask import Flask, jsonify, render_template_string, request as freq
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
@@ -27,7 +27,7 @@ TG_TOKEN  = os.environ.get("TG_TOKEN", "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2Y
 TG_CHAT   = os.environ.get("TG_CHAT",  "5911742397")
 IQ_EMAIL  = os.environ.get("IQ_EMAIL", "laiane.aline@gmail.com")
 IQ_PASS   = os.environ.get("IQ_PASS",  "alineegui95")
-IQ_SSID   = os.environ.get("IQ_SSID",  "")  # legado, não utilizado
+IQ_SSID   = os.environ.get("IQ_SSID",  "")
 POLYGON_KEY = os.environ.get("POLYGON_KEY", "gXySF0ojKao907z3vKOtpxr8opt0cbLx")
 
 BRT            = pytz.timezone("America/Sao_Paulo")
@@ -99,10 +99,47 @@ estado = {
     "log_forex":       [],
     "log_otc":         [],
     "log_geral":       [],
-
-    # Histórico de trades executados
-    "historico":       [],   # [{hora, par, direcao, engine, resultado, valor, saldo}]
 }
+
+# ── Persistência de estado (/data) ────────────────────────────────
+_STATE_FILE = "/data/estado_dia.json"
+_CAMPOS_PERSIST = [
+    "stop_diario", "losses_dia", "data_losses_dia", "saldo",
+    "forex_wins", "forex_losses", "otc_wins", "otc_losses",
+    "log_forex", "log_otc", "log_geral", "iniciado_em"
+]
+
+def _salvar_estado():
+    """Salva campos do dia em disco."""
+    try:
+        os.makedirs("/data", exist_ok=True)
+        dados = {k: estado[k] for k in _CAMPOS_PERSIST}
+        dados["_data"] = datetime.now(BRT).strftime("%Y-%m-%d")
+        with open(_STATE_FILE, "w") as f:
+            json.dump(dados, f)
+    except Exception as e:
+        _log(f"Erro ao salvar estado: {e}")
+
+def _carregar_estado():
+    """Carrega estado do dia se for o mesmo dia."""
+    try:
+        if not os.path.exists(_STATE_FILE):
+            return
+        with open(_STATE_FILE) as f:
+            dados = json.load(f)
+        hoje = datetime.now(BRT).strftime("%Y-%m-%d")
+        if dados.get("_data") != hoje:
+            _log("Novo dia — estado zerado.")
+            return
+        for k in _CAMPOS_PERSIST:
+            if k in dados:
+                estado[k] = dados[k]
+        _log(f"Estado do dia restaurado: {estado['forex_wins']+estado['otc_wins']}W / {estado['forex_losses']+estado['otc_losses']}L")
+    except Exception as e:
+        _log(f"Erro ao carregar estado: {e}")
+
+# Carrega ao iniciar
+_carregar_estado()
 
 # Cooldowns por par (compartilhado)
 _ultimo_trade = {}
@@ -163,32 +200,54 @@ def tg(msg):
         _log(f"Telegram erro: {e}")
 
 # ══════════════════════════════════════════════════════════════════
-#  IQ OPTION — LIB WEBSOCKET (iqoptionapi)
+#  IQ OPTION — REST PURO (sem websocket, sem lib)
 # ══════════════════════════════════════════════════════════════════
-_iq_api      = None
+_iq_sess     = requests.Session()
+_iq_sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"})
 _iq_ok       = False
 _iq_tentando = False
 
+# Mapa ativo → active_id da IQ Option
+_IQ_ACTIVE_ID = {
+    "EURUSD": 1, "EURJPY": 18, "EURGBP": 17, "GBPUSD": 2,
+    "USDJPY": 4, "AUDUSD": 3,  "USDCHF": 5,  "XAUUSD": 68,
+    "NZDUSD": 6, "USDCAD": 8,
+}
+
 def _conectar_iq():
-    global _iq_api, _iq_ok, _iq_tentando
+    global _iq_ok, _iq_tentando
     _iq_tentando = True
     try:
-        _log("Conectando IQ Option...")
-        from iqoptionapi.stable_api import IQ_Option
-        api = IQ_Option(IQ_EMAIL, IQ_PASS)
-        check, reason = api.connect()
-        if check:
-            time.sleep(2)
-            saldo = api.get_balance()
-            _iq_api = api
-            _iq_ok  = True
+        _log("Conectando IQ Option (REST)...")
+        # Tenta com SSID primeiro
+        if IQ_SSID:
+            _iq_sess.cookies.set("ssid", IQ_SSID, domain="iqoption.com")
+            r = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=10)
+            if r.status_code == 200:
+                d = r.json().get("data", {})
+                saldo = float(d.get("balance", 0))
+                _iq_ok = True
+                with _lock:
+                    estado["iq_ok"]  = True
+                    estado["saldo"]  = saldo
+                _log(f"IQ conectada via SSID! Saldo: ${saldo:.2f}")
+                return
+        # Fallback: login com usuário/senha via REST
+        r = _iq_sess.post("https://auth.iqoption.com/api/v2/login",
+            json={"identifier": IQ_EMAIL, "password": IQ_PASS}, timeout=12)
+        ssid = r.json().get("ssid", "")
+        if ssid:
+            _iq_sess.cookies.set("ssid", ssid, domain="iqoption.com")
+            _iq_ok = True
+            # Buscar saldo
+            rp = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=8)
+            saldo = float(rp.json().get("data", {}).get("balance", 0)) if rp.status_code == 200 else 0.0
             with _lock:
                 estado["iq_ok"]  = True
                 estado["saldo"]  = saldo
-            _log(f"IQ conectada! Saldo: ${saldo:.2f}")
-            tg(f"✅ <b>IQ conectada!</b>\n💵 Saldo: ${saldo:.2f}")
+            _log(f"IQ conectada via login! Saldo: ${saldo:.2f}")
         else:
-            _log(f"IQ login falhou: {reason}")
+            _log(f"IQ login falhou: {r.text[:120]}")
     except Exception as e:
         _log(f"IQ erro: {e}")
     finally:
@@ -201,29 +260,31 @@ def garantir_conexao():
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
-    """Busca velas M1 — 1º IQ lib | 2º Polygon | 3º Twelve Data"""
+    """Busca velas M1 — 1º IQ REST | 2º Polygon | 3º Twelve Data"""
     par_base = ativo.replace("-OTC", "").replace("/", "").upper()
 
-    # ── 1. IQ Option via lib websocket (tempo real) ────────────────────
-    if _iq_ok and _iq_api:
+    # ── 1. IQ Option REST (tempo real, mesmo plataforma) ──────────────
+    if _iq_ok:
         try:
-            if not _iq_api.check_connect():
-                _iq_api.connect()
-                time.sleep(2)
-            velas_raw = _iq_api.get_candles(par_base, tf, n, time.time())
-            if velas_raw:
-                velas = []
-                for v in velas_raw:
-                    velas.append({
-                        "o": float(v.get("open",  0)),
-                        "c": float(v.get("close", 0)),
-                        "h": float(v.get("max",   v.get("high",  0))),
-                        "l": float(v.get("min",   v.get("low",   0))),
-                        "t": int(v.get("from",    v.get("at",    0))),
-                    })
-                return sorted(velas, key=lambda x: x["t"])
+            active_id = _IQ_ACTIVE_ID.get(par_base)
+            if active_id:
+                r = _iq_sess.post("https://iqoption.com/api/v6/getcandles",
+                    json={"active_id": active_id, "size": tf, "count": n, "to": int(time.time())},
+                    timeout=8)
+                candles = r.json().get("data", {}).get("candles", [])
+                if candles:
+                    velas = []
+                    for v in candles:
+                        velas.append({
+                            "o": float(v.get("open", 0)),
+                            "c": float(v.get("close", 0)),
+                            "h": float(v.get("max", 0)),
+                            "l": float(v.get("min", 0)),
+                            "t": int(v.get("from", 0)),
+                        })
+                    return sorted(velas, key=lambda x: x["t"])
         except Exception as e:
-            _log(f"IQ candles erro ({par_base}): {e}")
+            _log(f"IQ candles REST erro ({par_base}): {e}")
 
     # ── 2. Polygon.io (delay ~10min no plano free) ─────────────────────
     try:
@@ -269,11 +330,10 @@ def get_candles(ativo, n=60, tf=60):
 
 def get_saldo():
     try:
-        if _iq_ok and _iq_api:
-            if not _iq_api.check_connect():
-                _iq_api.connect()
-                time.sleep(2)
-            return float(_iq_api.get_balance())
+        if _iq_ok:
+            r = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=8)
+            if r.status_code == 200:
+                return float(r.json().get("data", {}).get("balance", estado["saldo"]))
     except:
         pass
     return estado["saldo"]
@@ -318,10 +378,8 @@ def registrar_loss():
             estado["ativo"]       = False
             _log("🛑 STOP DIÁRIO: 4 losses. Bot desligado.")
             tg(
-                "🛑 <b>STOP DIÁRIO ATIVADO</b>\n"
-                "4 losses somados (Forex + OTC).\n"
-                "Bot desligado automaticamente.\n"
-                "Reinicie amanhã pelo painel."
+                "🛑 <b>STOP DIÁRIO</b>\n"
+                "4 losses atingidos. Bot desligado."
             )
             return True
         return False
@@ -671,23 +729,30 @@ def em_janela(agora, janelas):
 #  EXECUÇÃO DE TRADE
 # ══════════════════════════════════════════════════════════════════
 def abrir_trade(par, direcao, stake, expiracao_min):
-    """Abre ordem via lib IQ Option. Retorna id_op ou None."""
+    """Abre ordem via REST IQ Option. Retorna id_op ou None."""
     try:
-        if not _iq_ok or not _iq_api:
-            _log(f"abrir_trade: IQ não conectada")
-            return None
-        if not _iq_api.check_connect():
-            _iq_api.connect()
-            time.sleep(2)
         par_base = par.replace("-OTC", "").replace("/", "").upper()
-        is_otc   = "-OTC" in par.upper()
-        # turbo = M1 (binary options), binary = M3+
-        action   = "turbo" if expiracao_min <= 1 else "binary"
-        status, id_op = _iq_api.buy(stake, par_base, direcao.lower(), expiracao_min)
-        if status and id_op:
+        active_id = _IQ_ACTIVE_ID.get(par_base)
+        if not active_id:
+            _log(f"abrir_trade: active_id não encontrado para {par}")
+            return None
+        is_otc = "-OTC" in par.upper()
+        # turbo = opção binária M1; binary = M3+
+        option_type = "turbo" if expiracao_min <= 1 else "binary"
+        payload = {
+            "price":        stake,
+            "active_id":    active_id,
+            "direction":    direcao.lower(),
+            "expired":      expiracao_min,
+            "option_type":  option_type,
+        }
+        r = _iq_sess.post("https://iqoption.com/api/v6/buy", json=payload, timeout=10)
+        data = r.json()
+        id_op = data.get("data", {}).get("id") or data.get("id")
+        if id_op:
             _log(f"Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
             return id_op
-        _log(f"Falha buy {par}: status={status}")
+        _log(f"Falha buy {par}: {data}")
         return None
     except Exception as e:
         _log(f"Erro buy {par}: {e}")
@@ -701,17 +766,18 @@ def _checar_resultado_por_saldo(saldo_antes, espera_s):
     return diff > 0, abs(diff)
 
 def _checar_resultado_rest(id_op, espera_s):
-    """Verifica resultado via lib IQ Option após espera."""
+    """Verifica resultado via REST após espera."""
     time.sleep(espera_s)
-    if _iq_ok and _iq_api:
-        for _ in range(6):
-            try:
-                result = _iq_api.check_win_v3(id_op)
-                if result is not None:
-                    return result > 0, abs(result)
-            except:
-                pass
-            time.sleep(5)
+    for _ in range(6):
+        try:
+            r = _iq_sess.get(f"https://iqoption.com/api/v1.0/position/{id_op}", timeout=8)
+            d = r.json().get("data", {})
+            pnl = d.get("pnl_realized")
+            if pnl is not None:
+                return float(pnl) > 0, abs(float(pnl))
+        except:
+            pass
+        time.sleep(5)
     return None, 0
 
 def checar_resultado_m1(id_op, stake):
@@ -731,7 +797,7 @@ def checar_resultado_m3(id_op, stake):
     return _checar_resultado_por_saldo(saldo_antes, 0)
 
 def computar_resultado(win, valor, par, direcao, stake, engine):
-    """Atualiza placar, histórico e stop diário."""
+    """Atualiza placar e stop diário."""
     with _lock:
         saldo = get_saldo()
         estado["saldo"] = saldo
@@ -746,39 +812,24 @@ def computar_resultado(win, valor, par, direcao, stake, engine):
             else:
                 estado["otc_losses"] += 1
 
-        # Registrar no histórico
-        import datetime as _dt
-        entrada = {
-            "hora":      _dt.datetime.now().strftime("%H:%M"),
-            "par":       par,
-            "direcao":   direcao,
-            "engine":    engine,
-            "resultado": "WIN" if win else "LOSS",
-            "valor":     round(valor if win else -stake, 2),
-            "saldo":     round(saldo, 2),
-        }
-        estado["historico"].append(entrada)
-        if len(estado["historico"]) > 200:
-            estado["historico"] = estado["historico"][-200:]
-
     if win:
         _log(f"✅ WIN +${valor:.2f} | {par} {direcao}", engine)
         tg(
-            f"✅ <b>WIN [{engine}]</b> {par} {direcao}\n"
+            f"✅ <b>WIN</b>\n"
+            f"📊 {par} {direcao}\n"
             f"💰 +${valor:.2f} | Saldo: ${saldo:.2f}\n"
-            f"📊 Forex {estado['forex_wins']}W/{estado['forex_losses']}L "
-            f"| OTC {estado['otc_wins']}W/{estado['otc_losses']}L"
+            f"📈 {estado['forex_wins']+estado['otc_wins']}W x {estado['forex_losses']+estado['otc_losses']}L"
         )
     else:
         _log(f"❌ LOSS -${stake:.2f} | {par} {direcao} | Dia: {estado['losses_dia']+1}/{MAX_LOSSES_DIA}", engine)
         stop = registrar_loss()
         tg(
-            f"❌ <b>LOSS [{engine}]</b> {par} {direcao}\n"
+            f"❌ <b>LOSS</b>\n"
+            f"📊 {par} {direcao}\n"
             f"💸 -${stake:.2f} | Saldo: ${saldo:.2f}\n"
-            f"🛡 Losses hoje: {estado['losses_dia']}/{MAX_LOSSES_DIA}\n"
-            f"📊 Forex {estado['forex_wins']}W/{estado['forex_losses']}L "
-            f"| OTC {estado['otc_wins']}W/{estado['otc_losses']}L"
+            f"📉 {estado['forex_wins']+estado['otc_wins']}W x {estado['losses_dia']}/{MAX_LOSSES_DIA} losses hoje"
         )
+    _salvar_estado()
 
 # ══════════════════════════════════════════════════════════════════
 #  ENGINE FOREX (thread separada)
@@ -866,10 +917,9 @@ def engine_forex():
 
             hora_entrada = (agora + timedelta(minutes=1)).strftime("%H:%M")
             tg(
-                f"🎯 <b>FOREX V10</b>\n\n"
-                f"<code>M3;{par};{hora_entrada};{direcao}</code>\n\n"
-                f"📊 Score: <b>{score}</b>/170 | RSI:{det.get('rsi','?')}\n"
-                f"⚙️ {det.get('pts','')}\n📡 DXY: {dxy}"
+                f"🎯 <b>ENTRADA</b>\n"
+                f"📊 {par} {direcao}\n"
+                f"🕐 {hora_entrada} | Score: {score} | M3"
             )
             _log(f"📨 SINAL {par} {direcao} Score:{score}", "FOREX")
 
@@ -969,10 +1019,9 @@ def engine_otc():
 
             hora_entrada = (agora + timedelta(minutes=1)).strftime("%H:%M")
             tg(
-                f"🎯 <b>OTC V10</b>\n\n"
-                f"<code>M1;{par.replace('-OTC','')};{hora_entrada};{direcao}</code>\n\n"
-                f"📊 Score: <b>{score}</b>/100 | ADX:{det.get('adx','?')} RSI:{det.get('rsi','?')}\n"
-                f"⚙️ {det.get('pts','')}"
+                f"🎯 <b>ENTRADA</b>\n"
+                f"📊 {par} {direcao}\n"
+                f"🕐 {hora_entrada} | Score: {score} | M1"
             )
             _log(f"📨 SINAL {par} {direcao} Score:{score}", "OTC")
 
@@ -1149,11 +1198,6 @@ def _executar_sinal(sinal):
     if not ok:
         _atualizar_sinal(sid, "bloqueado", f"Vela ❌ {motivo_vela}")
         _log(f"❌ {par} BLOQUEADO por vela: {motivo_vela}", "MANUAL")
-        tg(
-            f"🚫 <b>Sinal Manual BLOQUEADO</b>\n"
-            f"Par: {par} {direcao} {hora_str}\n"
-            f"Motivo: {motivo_vela}"
-        )
         return
 
     _log(f"✅ Vela confirmada: {motivo_vela}", "MANUAL")
@@ -1183,10 +1227,9 @@ def _executar_sinal(sinal):
 
     trava_set(par)
     tg(
-        f"🎯 <b>Sinal Manual EXECUTANDO</b>\n"
-        f"<code>{sinal['raw']}</code>\n"
-        f"💰 Stake: ${stake:.2f}\n"
-        f"📡 Vela: {motivo_vela}"
+        f"🎯 <b>ENTRADA</b>\n"
+        f"📊 {par} {direcao}\n"
+        f"🕐 {hora_str} | 💵 ${stake:.2f}"
     )
 
     id_op = abrir_trade(par, direcao, stake, expiracao)
@@ -1572,12 +1615,7 @@ def iniciar_motor():
     with _lock:
         estado["iniciado_em"] = datetime.now(BRT).strftime("%d/%m %H:%M")
 
-    tg(
-        "🚀 <b>Sniper Híbrido V10 ON</b>\n"
-        "🔵 Forex: M3 | Score 170 | FF + DXY nativo\n"
-        "🟠 OTC  : M1 | Score 100 | 8 pares\n"
-        f"🛡 Stop diário unificado: {MAX_LOSSES_DIA} losses"
-    )
+    tg("🟢 <b>Sniper V10 ON</b>")
 
     threading.Thread(target=engine_forex,  daemon=True).start()
     threading.Thread(target=engine_otc,    daemon=True).start()
@@ -1661,29 +1699,11 @@ textarea:focus{border-color:#00e676}
 .filtro-info{font-size:.68rem;color:#888;margin-top:2px}
 .filtro-bloq{opacity:.5}
 .ic-diamante{color:#ce93d8}.ic-ok{color:#00e676}.ic-aviso{color:#ffd600}
-/* ABAS */
-.abas-nav{display:flex;gap:8px;margin-bottom:14px}
-.aba-btn{flex:1;padding:10px 6px;border:none;border-radius:10px;font-size:.8rem;font-weight:700;cursor:pointer;background:#1a1a1a;color:#666;transition:.15s}
-.aba-btn.aba-ativa{background:#00b4ff22;color:#00b4ff;border:1px solid #00b4ff44}
-.hist-table{width:100%;border-collapse:collapse;font-size:.75rem}
-.hist-table th{color:#444;font-weight:600;text-align:left;padding:6px 4px;border-bottom:1px solid #222;font-size:.65rem;text-transform:uppercase}
-.hist-table td{padding:7px 4px;border-bottom:1px solid #161616}
-.hist-resumo-box{display:flex;justify-content:space-between;align-items:center;background:#141414;border-radius:10px;padding:10px 14px;margin-bottom:12px}
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>⚡ SNIPER HÍBRIDO V10</h1>
-  <!-- NAVEGAÇÃO DE ABAS -->
-  <div class="abas-nav">
-    <button class="aba-btn" id="btn-painel"    onclick="mostrarAba('painel')">📊 Painel</button>
-    <button class="aba-btn" id="btn-historico" onclick="mostrarAba('historico')">📋 Histórico</button>
-    <button class="aba-btn" id="btn-filtro"    onclick="mostrarAba('filtro')">🎯 Filtro</button>
-    <button class="aba-btn" id="btn-manual"    onclick="mostrarAba('manual')">📤 Manual</button>
-  </div>
-
-  <!-- ABA PAINEL -->
-  <div class="aba-content" id="aba-painel">
 
   <div class="stop-bar" id="stop_bar">🛑 STOP DIÁRIO — 4 losses atingidos. Reinicie amanhã.</div>
 
@@ -1692,15 +1712,15 @@ textarea:focus{border-color:#00e676}
     <h3>Status Geral</h3>
     <div class="grid2">
       <div>
-        <div class="val b" id="bot_status">{% if ativo %}🟢 RODANDO{% elif stop_diario %}🛑 STOP DIÁRIO{% else %}⏸ PARADO{% endif %}</div>
-        <div style="font-size:.75rem;color:#555;margin-top:3px" id="iniciado_em">{% if iniciado_em %}Desde: {{ iniciado_em }}{% endif %}</div>
+        <div class="val b" id="bot_status">—</div>
+        <div style="font-size:.75rem;color:#555;margin-top:3px" id="iniciado_em"></div>
       </div>
       <div>
-        <div class="val g" id="saldo">${{ "%.2f"|format(saldo) }}</div>
+        <div class="val g" id="saldo">$0.00</div>
         <div style="font-size:.65rem;color:#555">SALDO</div>
       </div>
     </div>
-    <div class="trava-info" id="trava_info">{% if trava_par %}🔒 Trava ativa: {{ trava_par }}{% endif %}</div>
+    <div class="trava-info" id="trava_info"></div>
   </div>
 
   <!-- STOP DIÁRIO -->
@@ -1708,15 +1728,15 @@ textarea:focus{border-color:#00e676}
     <h3>Stop Diário Unificado</h3>
     <div class="grid3">
       <div class="placar-item">
-        <div class="n g" id="total_w">{{ forex_wins + otc_wins }}</div>
+        <div class="n g" id="total_w">0</div>
         <div class="l">WINS</div>
       </div>
       <div class="placar-item">
-        <div class="n r" id="total_l">{{ forex_losses + otc_losses }}</div>
+        <div class="n r" id="total_l">0</div>
         <div class="l">LOSSES</div>
       </div>
       <div class="placar-item">
-        <div class="n y" id="losses_dia">{{ losses_dia }}/4</div>
+        <div class="n y" id="losses_dia">0/4</div>
         <div class="l">HOJE/STOP</div>
       </div>
     </div>
@@ -1727,17 +1747,17 @@ textarea:focus{border-color:#00e676}
     <div class="engine-title b">🔵 ENGINE FOREX (M3 · Score 170)</div>
     <div class="grid2">
       <div>
-        <span class="badge {% if forex_status == 'operando' %}badge-op{% else %}badge-on{% endif %}" id="forex_badge">{% if forex_status == 'operando' %}⚡ OPERANDO{% else %}👁 MONITORANDO{% endif %}</span>
-        <div style="font-size:.8rem;margin-top:5px">Par: <b id="forex_par">{{ forex_par }}</b></div>
-        <div style="font-size:.75rem;color:#555">Score: <span id="forex_score">{{ forex_score }}</span></div>
+        <span class="badge" id="forex_badge">—</span>
+        <div style="font-size:.8rem;margin-top:5px">Par: <b id="forex_par">—</b></div>
+        <div style="font-size:.75rem;color:#555">Score: <span id="forex_score">0</span></div>
       </div>
       <div class="placar">
         <div class="placar-item">
-          <div class="n g" id="forex_w">{{ forex_wins }}</div>
+          <div class="n g" id="forex_w">0</div>
           <div class="l">W</div>
         </div>
         <div class="placar-item">
-          <div class="n r" id="forex_l">{{ forex_losses }}</div>
+          <div class="n r" id="forex_l">0</div>
           <div class="l">L</div>
         </div>
       </div>
@@ -1745,7 +1765,7 @@ textarea:focus{border-color:#00e676}
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
         <h3>Log Forex</h3>
-        <div class="log-wrap" id="log_forex">{% for linha in log_forex|reverse %}<p>{{ linha }}</p>{% endfor %}</div>
+        <div class="log-wrap" id="log_forex"></div>
       </div>
     </div>
   </div>
@@ -1755,17 +1775,17 @@ textarea:focus{border-color:#00e676}
     <div class="engine-title o">🟠 ENGINE OTC (M1 · Score 100)</div>
     <div class="grid2">
       <div>
-        <span class="badge {% if otc_status == 'operando' %}badge-op{% else %}badge-on{% endif %}" id="otc_badge">{% if otc_status == 'operando' %}⚡ OPERANDO{% else %}👁 MONITORANDO{% endif %}</span>
-        <div style="font-size:.8rem;margin-top:5px">Par: <b id="otc_par">{{ otc_par }}</b></div>
-        <div style="font-size:.75rem;color:#555">Score: <span id="otc_score">{{ otc_score }}</span></div>
+        <span class="badge" id="otc_badge">—</span>
+        <div style="font-size:.8rem;margin-top:5px">Par: <b id="otc_par">—</b></div>
+        <div style="font-size:.75rem;color:#555">Score: <span id="otc_score">0</span></div>
       </div>
       <div class="placar">
         <div class="placar-item">
-          <div class="n g" id="otc_w">{{ otc_wins }}</div>
+          <div class="n g" id="otc_w">0</div>
           <div class="l">W</div>
         </div>
         <div class="placar-item">
-          <div class="n r" id="otc_l">{{ otc_losses }}</div>
+          <div class="n r" id="otc_l">0</div>
           <div class="l">L</div>
         </div>
       </div>
@@ -1773,7 +1793,7 @@ textarea:focus{border-color:#00e676}
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
         <h3>Log OTC</h3>
-        <div class="log-wrap" id="log_otc">{% for linha in log_otc|reverse %}<p>{{ linha }}</p>{% endfor %}</div>
+        <div class="log-wrap" id="log_otc"></div>
       </div>
     </div>
   </div>
@@ -1781,54 +1801,14 @@ textarea:focus{border-color:#00e676}
   <!-- IQ + CONTROLES -->
   <div class="card">
     <h3>IQ Option</h3>
-    <span class="dot {% if iq_ok %}dot-g{% else %}dot-r{% endif %}" id="iq_dot"></span>
-    <span id="iq_txt">{% if iq_ok %}Conectada ✅{% else %}Desconectada ❌{% endif %}</span>
+    <span class="dot" id="iq_dot"></span>
+    <span id="iq_txt">—</span>
+    <div class="grid2" style="margin-top:12px">
+      <button class="btn btn-go"   onclick="iniciar()">▶ INICIAR</button>
+      <button class="btn btn-stop" onclick="parar()">⏹ PARAR</button>
+    </div>
   </div>
 
-  <div class="grid2" style="margin-bottom:12px">
-    <form method="POST" action="/iniciar" style="margin:0">
-      <button type="submit" class="btn btn-go">▶ INICIAR</button>
-    </form>
-    <form method="POST" action="/parar" style="margin:0">
-      <button type="submit" class="btn btn-stop">⏹ PARAR</button>
-    </form>
-  </div>
-
-  </div><!-- /aba-painel -->
-
-  <!-- ABA HISTÓRICO -->
-  <div class="aba-content" id="aba-historico" style="display:none">
-    <div class="hist-resumo-box">
-      <div>
-        <div style="font-size:.65rem;color:#555;text-transform:uppercase;letter-spacing:1px">Saldo Atual</div>
-        <div class="val g" id="hist_saldo">${{ "%.2f"|format(saldo) }}</div>
-      </div>
-      <div style="text-align:right">
-        <div style="font-size:.65rem;color:#555;text-transform:uppercase;letter-spacing:1px">Resultado do Dia</div>
-        <div style="font-size:.85rem;font-weight:700;color:#00b4ff" id="hist_resumo">—</div>
-      </div>
-    </div>
-    <div class="card" style="padding:10px;overflow-x:auto">
-      <table class="hist-table">
-        <thead>
-          <tr>
-            <th>Hora</th>
-            <th>Par</th>
-            <th>Sinal</th>
-            <th>Engine</th>
-            <th>Result.</th>
-            <th>Valor</th>
-          </tr>
-        </thead>
-        <tbody id="tabela_historico">
-          <tr><td colspan="6" style="text-align:center;color:#444;padding:16px">Nenhum trade executado ainda</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div><!-- /aba-historico -->
-
-  <!-- ABA FILTRO -->
-  <div class="aba-content" id="aba-filtro" style="display:none">
   <!-- ── SNIPER FILTRO V9.1 ──────────────────────────────────────── -->
   <div class="filtro-box">
     <div class="filtro-title">🎯 SNIPER FILTRO V9.1</div>
@@ -1845,10 +1825,7 @@ textarea:focus{border-color:#00e676}
     <!-- Resultado do filtro -->
     <div id="filtro_resultado" style="margin-top:10px"></div>
   </div>
-  </div><!-- /aba-filtro -->
 
-  <!-- ABA MANUAL -->
-  <div class="aba-content" id="aba-manual" style="display:none">
   <!-- ── SINAIS MANUAIS ─────────────────────────────────────────── -->
   <div class="manual-box">
     <div class="manual-title">📋 SINAIS MANUAIS</div>
@@ -1865,9 +1842,8 @@ textarea:focus{border-color:#00e676}
     <!-- Fila de sinais -->
     <div id="fila_sinais" style="margin-top:10px"></div>
   </div>
-  </div><!-- /aba-manual -->
 
-</div><!-- /wrap -->
+</div>
 
 <script>
 /* ── STATUS BADGE ── */
@@ -1892,7 +1868,6 @@ const ICONS = {
 
 function atualizar(){
   fetch('/estado').then(r=>r.json()).then(d=>{
-    if(!d){ return; }
     document.getElementById('bot_status').textContent = d.ativo ? '🟢 RODANDO' : (d.stop_diario ? '🛑 STOP DIÁRIO' : '⏸ PARADO');
     document.getElementById('saldo').textContent = '$'+d.saldo.toFixed(2);
     document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
@@ -1929,7 +1904,7 @@ function atualizar(){
     lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
     const lo = document.getElementById('log_otc');
     lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
-  }).catch(e=>console.error('estado err:',e));
+  });
 
   /* Fila de sinais manuais */
   fetch('/sinais').then(r=>r.json()).then(lista=>{
@@ -1947,8 +1922,8 @@ function atualizar(){
   });
 }
 
-function iniciar(){ fetch('/iniciar',{method:'POST'}).then(r=>r.json()).then(()=>{ setTimeout(atualizar,500); }).catch(e=>console.error('iniciar err:',e)); }
-function parar()  { fetch('/parar',  {method:'POST'}).then(r=>r.json()).then(()=>{ setTimeout(atualizar,500); }).catch(e=>console.error('parar err:',e)); }
+function iniciar(){ fetch('/iniciar',{method:'POST'}).then(atualizar); }
+function parar()  { fetch('/parar',  {method:'POST'}).then(atualizar); }
 
 function rodarFiltro(){
   const txt = document.getElementById('filtro_input').value.trim();
@@ -2073,53 +2048,8 @@ function enviarSinais(){
   });
 }
 
-function carregarHistorico(){
-  fetch('/historico').then(r=>r.json()).then(lista=>{
-    const el = document.getElementById('tabela_historico');
-    if(!lista || !lista.length){
-      el.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#444;padding:16px">Nenhum trade executado ainda</td></tr>';
-      return;
-    }
-    el.innerHTML = lista.map(t => {
-      const win  = t.resultado === 'WIN';
-      const cor  = win ? '#00e676' : '#ff1744';
-      const icon = win ? '✅' : '❌';
-      const sinal = t.direcao === 'CALL' ? '📈 CALL' : '📉 PUT';
-      const val  = win ? '+$'+t.valor.toFixed(2) : '-$'+Math.abs(t.valor).toFixed(2);
-      return `<tr>
-        <td style="color:#777">${t.hora}</td>
-        <td><b>${t.par}</b></td>
-        <td style="color:#aaa">${sinal}</td>
-        <td><span style="font-size:.65rem;color:#555;background:#1a1a1a;padding:1px 6px;border-radius:8px">${t.engine}</span></td>
-        <td style="color:${cor};font-weight:700">${icon} ${t.resultado}</td>
-        <td style="color:${cor};font-weight:700">${val}</td>
-      </tr>`;
-    }).join('');
-    document.getElementById('hist_saldo').textContent = '$' + lista[0].saldo.toFixed(2);
-    const wins   = lista.filter(t=>t.resultado==='WIN').length;
-    const losses = lista.filter(t=>t.resultado==='LOSS').length;
-    const taxa   = lista.length ? Math.round(wins/lista.length*100) : 0;
-    document.getElementById('hist_resumo').textContent =
-      wins + 'W / ' + losses + 'L — Taxa: ' + taxa + '%';
-  }).catch(e=>console.error('hist err:',e));
-}
-
-// Aba ativa
-function mostrarAba(aba){
-  document.querySelectorAll('.aba-content').forEach(el=>el.style.display='none');
-  document.querySelectorAll('.aba-btn').forEach(el=>el.classList.remove('aba-ativa'));
-  document.getElementById('aba-'+aba).style.display='block';
-  document.getElementById('btn-'+aba).classList.add('aba-ativa');
-  if(aba==='historico') carregarHistorico();
-}
-
 setInterval(atualizar, 3000);
-setInterval(()=>{
-  const hist = document.getElementById('aba-historico');
-  if(hist && hist.style.display !== 'none') carregarHistorico();
-}, 5000);
 atualizar();
-mostrarAba('painel');
 </script>
 </body>
 </html>
@@ -2127,52 +2057,12 @@ mostrarAba('painel');
 
 @app.route("/")
 def index():
-    with _lock:
-        e = dict(estado)
-    return render_template_string(HTML,
-        ativo        = e["ativo"],
-        stop_diario  = e["stop_diario"],
-        saldo        = e["saldo"],
-        iq_ok        = e["iq_ok"],
-        iniciado_em  = e["iniciado_em"],
-        losses_dia   = e["losses_dia"],
-        forex_wins   = e["forex_wins"],
-        forex_losses = e["forex_losses"],
-        forex_par    = e["forex_par"] or "—",
-        forex_score  = e["forex_score"],
-        forex_status = e["forex_status"],
-        otc_wins     = e["otc_wins"],
-        otc_losses   = e["otc_losses"],
-        otc_par      = e["otc_par"] or "—",
-        otc_score    = e["otc_score"],
-        otc_status   = e["otc_status"],
-        log_forex    = e["log_forex"][-20:],
-        log_otc      = e["log_otc"][-20:],
-        trava_par    = e["trava_par"],
-    )
+    return render_template_string(HTML)
 
 @app.route("/estado")
 def get_estado_route():
-    import json as _json
     with _lock:
-        resp = app.response_class(
-            response=_json.dumps(dict(estado), ensure_ascii=False),
-            status=200,
-            mimetype='application/json'
-        )
-        return resp
-
-@app.route("/historico")
-def get_historico():
-    import json as _json
-    with _lock:
-        hist = list(estado["historico"])
-    resp = app.response_class(
-        response=_json.dumps(list(reversed(hist)), ensure_ascii=False),
-        status=200,
-        mimetype='application/json'
-    )
-    return resp
+        return jsonify(dict(estado))
 
 @app.route("/iniciar", methods=["POST"])
 def iniciar():
@@ -2181,18 +2071,12 @@ def iniciar():
     if not estado["ativo"]:
         estado["ativo"] = True
         threading.Thread(target=iniciar_motor, daemon=True).start()
-        time.sleep(1.5)   # aguarda engines iniciarem antes de redirecionar
-    if freq.content_type and 'json' in freq.content_type:
-        return jsonify({"ok": True})
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/parar", methods=["POST"])
 def parar():
     estado["ativo"] = False
-    time.sleep(0.3)
-    if freq.content_type and 'json' in freq.content_type:
-        return jsonify({"ok": True})
-    return redirect("/", code=303)
+    return jsonify({"ok": True})
 
 @app.route("/reset_stop", methods=["POST"])
 def reset_stop():
