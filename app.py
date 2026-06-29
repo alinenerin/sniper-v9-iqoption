@@ -1909,8 +1909,9 @@ const ICONS = {
 };
 
 function atualizar(){
-  fetch('/estado').then(r=>r.json()).then(d=>{
-    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? 'STOP DIARIO' : 'PARADO');
+  var base = window.location.origin;
+  fetch(base+'/estado').then(function(r){ return r.json(); }).then(function(d){
+    document.getElementById('bot_status').textContent = d.ativo ? 'RODANDO' : (d.stop_diario ? 'STOP' : 'PARADO');
     document.getElementById('saldo').textContent = '$'+(d.saldo||0).toFixed(2);
     document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde: '+d.iniciado_em : '';
     document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
@@ -1952,16 +1953,16 @@ function atualizar(){
     }
 
     const lf = document.getElementById('log_forex');
-    lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
+    lf.innerHTML = (d.log_forex||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
     const lo = document.getElementById('log_otc');
-    lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(l=>'<p>'+l+'</p>').join('');
+    lo.innerHTML = (d.log_otc||[]).slice(-30).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
   });
 
   /* Fila de sinais manuais */
-  fetch('/sinais').then(r=>r.json()).then(lista=>{
+  fetch(base+'/sinais').then(function(r){ return r.json(); }).then(function(lista){
     const el = document.getElementById('fila_sinais');
     if(!lista.length){ el.innerHTML=''; return; }
-    el.innerHTML = lista.map(s=>{
+    el.innerHTML = lista.map(function(s){
       const cor  = CORES[s.status]  || 'badge-on';
       const icon = ICONS[s.status]  || '';
       return `<div class="sinal-row">
@@ -1973,7 +1974,10 @@ function atualizar(){
   });
 }
 
-function post(url){ return fetch(url,{method:'POST'}).then(r=>r.json()); }
+function post(url){
+  var base = window.location.origin;
+  return fetch(base+url, {method:'POST'}).then(function(r){ return r.json(); });
+}
 
 function iniciar(){ post('/iniciar').then(atualizar); }
 function parar()  { post('/parar').then(atualizar); }
@@ -2009,7 +2013,7 @@ function rodarFiltro(){
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({lista: txt})
-  }).then(r=>r.json()).then(d=>{
+  }).then(function(r){ return r.json(); }).then(function(d){
     if(d.ok){
       fb.textContent = ' Filtro iniciado! Resultado aparece abaixo em segundos...';
       pollFiltro();
@@ -2021,7 +2025,7 @@ function rodarFiltro(){
 }
 
 function pollFiltro(){
-  fetch('/filtro').then(r=>r.json()).then(d=>{
+  fetch('/filtro').then(function(r){ return r.json(); }).then(function(d){
     const fb  = document.getElementById('filtro_feedback');
     if(d.rodando){
       fb.textContent = ' Processando... buscando velas e aplicando filtros';
@@ -2078,21 +2082,21 @@ function enviarUm(raw){
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({sinais: raw})
-  }).then(r=>r.json()).then(d=>{
+  }).then(function(r){ return r.json(); }).then(function(d){
     alert(d.ok ? ' Sinal enviado ao executor!' : ' '+(d.msg||'Erro'));
     atualizar();
   });
 }
 
 function enviarTodos(){
-  fetch('/filtro').then(r=>r.json()).then(d=>{
+  fetch('/filtro').then(function(r){ return r.json(); }).then(function(d){
     const linhas = (d.resultado||[]).map(s=>s.raw).join('\n');
     if(!linhas){ alert('Nenhum sinal aprovado.'); return; }
     fetch('/sinais',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({sinais: linhas})
-    }).then(r=>r.json()).then(d2=>{
+    }).then(function(r){ return r.json(); }).then(d2=>{
       alert(d2.ok ? ` ${d2.adicionados} sinal(is) enviados ao executor!` : ' '+(d2.msg||'Erro'));
       atualizar();
     });
@@ -2106,7 +2110,7 @@ function enviarSinais(){
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({sinais: txt})
-  }).then(r=>r.json()).then(d=>{
+  }).then(function(r){ return r.json(); }).then(function(d){
     const fb = document.getElementById('manual_feedback');
     if(d.ok){
       fb.style.color = '#00e676';
@@ -2116,7 +2120,7 @@ function enviarSinais(){
       fb.style.color = '#ff1744';
       fb.textContent = ' ' + (d.msg || 'Erro ao processar sinais.');
     }
-    setTimeout(()=>{ fb.textContent=''; }, 5000);
+    setTimeout(function(){ fb.textContent=''; }, 5000);
     atualizar();
   });
 }
