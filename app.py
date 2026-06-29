@@ -1742,8 +1742,8 @@ textarea:focus{border-color:#00e676}
     </div>
     <div class="trava-info" id="trava_info"></div>
     <div class="grid2" style="margin-top:14px">
-      <button class="btn btn-go"   id="btn-iniciar">▶ INICIAR</button>
-      <button class="btn btn-stop" id="btn-parar">⏹ PARAR</button>
+      <button class="btn btn-go"   id="btn-iniciar" data-url="/iniciar" data-reload="1">▶ INICIAR</button>
+      <button class="btn btn-stop" id="btn-parar" data-url="/parar" data-reload="1">⏹ PARAR</button>
     </div>
   </div>
 
@@ -1756,8 +1756,8 @@ textarea:focus{border-color:#00e676}
       Controla se os sinais aprovados serão executados automaticamente na IQ Option.
     </div>
     <div class="grid2">
-      <button class="btn btn-exec-on" id="btn-exec-on">⚡ EXECUTOR ON</button>
-      <button class="btn btn-exec-off" id="btn-exec-off">🚫 EXECUTOR OFF</button>
+      <button class="btn btn-exec-on" id="btn-exec-on" data-url="/executor/ligar" data-reload="1">⚡ EXECUTOR ON</button>
+      <button class="btn btn-exec-off" id="btn-exec-off" data-url="/executor/desligar" data-reload="1">🚫 EXECUTOR OFF</button>
     </div>
   </div>
 
@@ -1801,8 +1801,8 @@ textarea:focus{border-color:#00e676}
       </div>
     </div>
     <div class="grid2" style="margin-top:10px">
-      <button class="btn btn-go" id="btn-forex-on">▶ FOREX ON</button>
-      <button class="btn btn-stop" id="btn-forex-off">⏹ FOREX OFF</button>
+      <button class="btn btn-go" id="btn-forex-on" data-url="/forex/ligar" data-reload="1">▶ FOREX ON</button>
+      <button class="btn btn-stop" id="btn-forex-off" data-url="/forex/desligar" data-reload="1">⏹ FOREX OFF</button>
     </div>
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
@@ -1833,8 +1833,8 @@ textarea:focus{border-color:#00e676}
       </div>
     </div>
     <div class="grid2" style="margin-top:10px">
-      <button class="btn btn-go" id="btn-otc-on">▶ OTC ON</button>
-      <button class="btn btn-stop" id="btn-otc-off">⏹ OTC OFF</button>
+      <button class="btn btn-go" id="btn-otc-on" data-url="/otc/ligar" data-reload="1">▶ OTC ON</button>
+      <button class="btn btn-stop" id="btn-otc-off" data-url="/otc/desligar" data-reload="1">⏹ OTC OFF</button>
     </div>
     <div style="margin-top:10px">
       <div class="card" style="margin:0;padding:8px">
@@ -1980,23 +1980,22 @@ function parar()  { post('/parar').then(atualizar); }
 function execLigar()   { post('/executor/ligar').then(atualizar); }
 function execDesligar(){ post('/executor/desligar').then(atualizar); }
 
+/* Bind botoes por data-url */
 document.addEventListener('DOMContentLoaded', function(){
-  var btns = {
-    'btn-iniciar':   iniciar,
-    'btn-parar':     parar,
-    'btn-exec-on':   execLigar,
-    'btn-exec-off':  execDesligar,
-    'btn-forex-on':  function(){ post('/forex/ligar').then(atualizar); },
-    'btn-forex-off': function(){ post('/forex/desligar').then(atualizar); },
-    'btn-otc-on':    function(){ post('/otc/ligar').then(atualizar); },
-    'btn-otc-off':   function(){ post('/otc/desligar').then(atualizar); },
-    'btn-filtrar':   rodarFiltro,
-    'btn-enviar':    enviarSinais,
-  };
-  Object.keys(btns).forEach(function(id){
-    var el = document.getElementById(id);
-    if(el){ el.addEventListener('click', btns[id]); }
+  document.querySelectorAll('[data-url]').forEach(function(el){
+    el.addEventListener('click', function(e){
+      e.preventDefault();
+      var url = el.getAttribute('data-url');
+      fetch(url, {method:'POST'})
+        .then(function(r){ return r.json(); })
+        .then(function(){ atualizar(); })
+        .catch(function(err){ console.error('Erro:', err); });
+    });
   });
+  var bFiltrar = document.getElementById('btn-filtrar');
+  if(bFiltrar) bFiltrar.addEventListener('click', rodarFiltro);
+  var bEnviar  = document.getElementById('btn-enviar');
+  if(bEnviar)  bEnviar.addEventListener('click', enviarSinais);
 });
 
 function rodarFiltro(){
