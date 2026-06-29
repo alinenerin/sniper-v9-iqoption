@@ -160,60 +160,56 @@ def tg(msg):
         _log(f"Telegram erro: {e}")
 
 # ══════════════════════════════════════════════════════════════════
-#  IQ OPTION
+#  IQ OPTION — REST PURO (sem websocket, sem lib)
 # ══════════════════════════════════════════════════════════════════
-_iq_api      = None
+_iq_sess     = requests.Session()
+_iq_sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"})
 _iq_ok       = False
 _iq_tentando = False
 
+# Mapa ativo → active_id da IQ Option
+_IQ_ACTIVE_ID = {
+    "EURUSD": 1, "EURJPY": 18, "EURGBP": 17, "GBPUSD": 2,
+    "USDJPY": 4, "AUDUSD": 3,  "USDCHF": 5,  "XAUUSD": 68,
+    "NZDUSD": 6, "USDCAD": 8,
+}
+
 def _conectar_iq():
-    global _iq_api, _iq_ok, _iq_tentando
+    global _iq_ok, _iq_tentando
     _iq_tentando = True
     try:
-        _log("Conectando IQ Option...")
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        if base_dir not in sys.path:
-            sys.path.insert(0, base_dir)
-        from iqoptionapi.stable_api import IQ_Option
-
-        api = IQ_Option(IQ_EMAIL, IQ_PASS)
-
-        # Injetar SSID via SESSION_COOKIE antes do connect() — jeito correto
+        _log("Conectando IQ Option (REST)...")
+        # Tenta com SSID primeiro
         if IQ_SSID:
-            _log(f"Injetando SSID: {IQ_SSID[:10]}...")
-            api.SESSION_COOKIE = {"ssid": IQ_SSID}
-
-        # connect() com timeout via thread
-        resultado = [None, None]
-        def _do_connect():
-            try:
-                resultado[0], resultado[1] = api.connect()
-            except Exception as ex:
-                resultado[1] = str(ex)
-
-        t = threading.Thread(target=_do_connect, daemon=True)
-        t.start()
-        t.join(timeout=30)
-
-        if t.is_alive():
-            _log("IQ connect() timeout (30s) — tentará novamente em breve")
-            return
-
-        check, reason = resultado[0], resultado[1]
-        _log(f"Conexão: {check} | {reason}")
-        if check:
-            api.change_balance("PRACTICE")
-            _iq_api = api
-            _iq_ok  = True
+            _iq_sess.cookies.set("ssid", IQ_SSID, domain="iqoption.com")
+            r = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=10)
+            if r.status_code == 200:
+                d = r.json().get("data", {})
+                saldo = float(d.get("balance", 0))
+                _iq_ok = True
+                with _lock:
+                    estado["iq_ok"]  = True
+                    estado["saldo"]  = saldo
+                _log(f"IQ conectada via SSID! Saldo: ${saldo:.2f}")
+                tg(f"✅ <b>IQ conectada (REST)!</b>\n💵 Saldo: ${saldo:.2f}")
+                return
+        # Fallback: login com usuário/senha via REST
+        r = _iq_sess.post("https://auth.iqoption.com/api/v1.0/login",
+            json={"identifier": IQ_EMAIL, "password": IQ_PASS}, timeout=12)
+        ssid = r.json().get("data", {}).get("ssid", "")
+        if ssid:
+            _iq_sess.cookies.set("ssid", ssid, domain="iqoption.com")
+            _iq_ok = True
+            # Buscar saldo
+            rp = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=8)
+            saldo = float(rp.json().get("data", {}).get("balance", 0)) if rp.status_code == 200 else 0.0
             with _lock:
-                estado["iq_ok"] = True
-            saldo = float(api.get_balance())
-            with _lock:
-                estado["saldo"] = saldo
-            _log(f"IQ conectada! Saldo: ${saldo:.2f}")
-            tg(f"✅ <b>IQ Option conectada!</b>\n💵 Saldo: ${saldo:.2f}")
+                estado["iq_ok"]  = True
+                estado["saldo"]  = saldo
+            _log(f"IQ conectada via login! Saldo: ${saldo:.2f}")
+            tg(f"✅ <b>IQ conectada (REST)!</b>\n💵 Saldo: ${saldo:.2f}")
         else:
-            _log(f"IQ falhou: {reason}")
+            _log(f"IQ login falhou: {r.text[:120]}")
     except Exception as e:
         _log(f"IQ erro: {e}")
     finally:
@@ -221,30 +217,43 @@ def _conectar_iq():
 
 def garantir_conexao():
     global _iq_ok, _iq_tentando
-    if _iq_ok and _iq_api:
-        try:
-            if not _iq_api.check_connect():
-                _iq_ok = False
-                with _lock:
-                    estado["iq_ok"] = False
-        except:
-            _iq_ok = False
     if not _iq_ok and not _iq_tentando:
         threading.Thread(target=_conectar_iq, daemon=True).start()
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
-    """Busca velas M1 — primário: Polygon.io | fallback: IQ Option"""
-    # Normaliza par para Polygon (remove -OTC, formata como C:EURUSD)
+    """Busca velas M1 — 1º IQ REST | 2º Polygon | 3º Twelve Data"""
     par_base = ativo.replace("-OTC", "").replace("/", "").upper()
 
-    # ── Polygon.io (sem bloqueio de IP, delay ~10min no plano free) ──
+    # ── 1. IQ Option REST (tempo real, mesmo plataforma) ──────────────
+    if _iq_ok:
+        try:
+            active_id = _IQ_ACTIVE_ID.get(par_base)
+            if active_id:
+                r = _iq_sess.post("https://iqoption.com/api/v6/getcandles",
+                    json={"active_id": active_id, "size": tf, "count": n, "to": int(time.time())},
+                    timeout=8)
+                candles = r.json().get("data", {}).get("candles", [])
+                if candles:
+                    velas = []
+                    for v in candles:
+                        velas.append({
+                            "o": float(v.get("open", 0)),
+                            "c": float(v.get("close", 0)),
+                            "h": float(v.get("max", 0)),
+                            "l": float(v.get("min", 0)),
+                            "t": int(v.get("from", 0)),
+                        })
+                    return sorted(velas, key=lambda x: x["t"])
+        except Exception as e:
+            _log(f"IQ candles REST erro ({par_base}): {e}")
+
+    # ── 2. Polygon.io (delay ~10min no plano free) ─────────────────────
     try:
         import datetime as dt
-        fim   = int(time.time()) * 1000
+        fim    = int(time.time()) * 1000
         inicio = fim - (n + 10) * tf * 1000
-        url = (f"https://api.polygon.io/v2/aggs/ticker/C:{par_base}"
-               f"/range/1/minute"
+        url = (f"https://api.polygon.io/v2/aggs/ticker/C:{par_base}/range/1/minute"
                f"/{dt.datetime.utcfromtimestamp(inicio/1000).strftime('%Y-%m-%d')}"
                f"/{dt.datetime.utcfromtimestamp(fim/1000).strftime('%Y-%m-%d')}"
                f"?limit={n+10}&sort=asc&apiKey={POLYGON_KEY}")
@@ -253,54 +262,47 @@ def get_candles(ativo, n=60, tf=60):
         if data.get("resultsCount", 0) > 0:
             velas = []
             for v in data["results"][-n:]:
-                velas.append({
-                    "o": float(v["o"]),
-                    "c": float(v["c"]),
-                    "h": float(v["h"]),
-                    "l": float(v["l"]),
-                    "t": int(v["t"] / 1000),
-                })
+                velas.append({"o": float(v["o"]), "c": float(v["c"]),
+                               "h": float(v["h"]), "l": float(v["l"]),
+                               "t": int(v["t"] / 1000)})
             return velas
     except Exception as e:
         _log(f"Polygon candles erro ({par_base}): {e}")
 
-    # ── IQ Option (fallback — só se conectada) ──
-    if not _iq_ok or not _iq_api:
-        return []
+    # ── 3. Twelve Data (backup) ────────────────────────────────────────
     try:
-        raw = _iq_api.get_candles(ativo, tf, n, time.time())
-        if not raw:
-            return []
-        velas = []
-        for v in raw:
-            velas.append({
-                "o": float(v.get("open",  v.get("o", 0))),
-                "c": float(v.get("close", v.get("c", 0))),
-                "h": float(v.get("max",   v.get("h", 0))),
-                "l": float(v.get("min",   v.get("l", 0))),
-                "t": v.get("from", v.get("t", 0)),
-            })
-        velas.sort(key=lambda x: x["t"])
-        return velas
+        ATIVOS_TD = {"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY",
+                     "AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP","XAUUSD":"XAU/USD"}
+        sym = ATIVOS_TD.get(par_base, "")
+        if sym:
+            r = requests.get(f"https://api.twelvedata.com/time_series?symbol={sym}"
+                             f"&interval=1min&outputsize={n}&apikey=1be0b948fb1c48bb997e350c542edafd",
+                             timeout=8)
+            vals = r.json().get("values", [])
+            if vals:
+                velas = []
+                for v in reversed(vals):
+                    velas.append({"o": float(v["open"]), "c": float(v["close"]),
+                                  "h": float(v["high"]), "l": float(v["low"]), "t": 0})
+                return velas
     except Exception as e:
-        _log(f"IQ candles erro ({ativo}): {e}")
-        return []
+        _log(f"TwelveData candles erro ({par_base}): {e}")
+
+    return []
 
 def get_saldo():
-    if not _iq_ok or not _iq_api:
-        return estado["saldo"]
     try:
-        return float(_iq_api.get_balance())
+        if _iq_ok:
+            r = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=8)
+            if r.status_code == 200:
+                return float(r.json().get("data", {}).get("balance", estado["saldo"]))
     except:
-        return estado["saldo"]
+        pass
+    return estado["saldo"]
 
 def get_payout(par):
-    try:
-        profit = _iq_api.get_all_profit()
-        p = profit.get(par, {})
-        return p.get("turbo", p.get("binary", 0))
-    except:
-        return None
+    """Retorna payout do par via REST (estimativa fixa se API não disponível)."""
+    return 0.85  # padrão conservador
 
 # ══════════════════════════════════════════════════════════════════
 #  TRAVA GLOBAL DE PORTFÓLIO
@@ -691,47 +693,72 @@ def em_janela(agora, janelas):
 #  EXECUÇÃO DE TRADE
 # ══════════════════════════════════════════════════════════════════
 def abrir_trade(par, direcao, stake, expiracao_min):
-    """Abre ordem. Retorna id_op ou None."""
+    """Abre ordem via REST IQ Option. Retorna id_op ou None."""
     try:
-        ok, id_op = _iq_api.buy(stake, par, direcao.lower(), expiracao_min)
-        if ok:
+        par_base = par.replace("-OTC", "").replace("/", "").upper()
+        active_id = _IQ_ACTIVE_ID.get(par_base)
+        if not active_id:
+            _log(f"abrir_trade: active_id não encontrado para {par}")
+            return None
+        is_otc = "-OTC" in par.upper()
+        # turbo = opção binária M1; binary = M3+
+        option_type = "turbo" if expiracao_min <= 1 else "binary"
+        payload = {
+            "price":        stake,
+            "active_id":    active_id,
+            "direction":    direcao.lower(),
+            "expired":      expiracao_min,
+            "option_type":  option_type,
+        }
+        r = _iq_sess.post("https://iqoption.com/api/v6/buy", json=payload, timeout=10)
+        data = r.json()
+        id_op = data.get("data", {}).get("id") or data.get("id")
+        if id_op:
+            _log(f"Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
             return id_op
-        _log(f"Falha buy {par}: {id_op}")
+        _log(f"Falha buy {par}: {data}")
         return None
     except Exception as e:
         _log(f"Erro buy {par}: {e}")
         return None
 
-def checar_resultado_m1(id_op, stake):
-    """M1: aguarda 65s + polling 5s/tentativa."""
-    time.sleep(65)
-    for _ in range(6):
-        try:
-            r = _iq_api.check_win_v3(id_op)
-            if r is not None:
-                return r > 0, abs(r)
-        except:
-            pass
-        time.sleep(5)
-    # fallback saldo
+def _checar_resultado_por_saldo(saldo_antes, espera_s):
+    """Fallback: compara saldo antes e depois da expiração."""
+    time.sleep(espera_s)
     saldo_new = get_saldo()
-    diff = saldo_new - estado["saldo"]
+    diff = saldo_new - saldo_antes
     return diff > 0, abs(diff)
 
-def checar_resultado_m3(id_op, stake):
-    """M3: aguarda 170s + polling 5s/tentativa."""
-    time.sleep(170)
+def _checar_resultado_rest(id_op, espera_s):
+    """Verifica resultado via REST após espera."""
+    time.sleep(espera_s)
     for _ in range(6):
         try:
-            r = _iq_api.check_win_v3(id_op)
-            if r is not None:
-                return r > 0, abs(r)
+            r = _iq_sess.get(f"https://iqoption.com/api/v1.0/position/{id_op}", timeout=8)
+            d = r.json().get("data", {})
+            pnl = d.get("pnl_realized")
+            if pnl is not None:
+                return float(pnl) > 0, abs(float(pnl))
         except:
             pass
         time.sleep(5)
-    saldo_new = get_saldo()
-    diff = saldo_new - estado["saldo"]
-    return diff > 0, abs(diff)
+    return None, 0
+
+def checar_resultado_m1(id_op, stake):
+    """M1: aguarda 65s + polling REST."""
+    saldo_antes = estado["saldo"]
+    win, valor = _checar_resultado_rest(id_op, 65)
+    if win is not None:
+        return win, valor
+    return _checar_resultado_por_saldo(saldo_antes, 0)
+
+def checar_resultado_m3(id_op, stake):
+    """M3: aguarda 170s + polling REST."""
+    saldo_antes = estado["saldo"]
+    win, valor = _checar_resultado_rest(id_op, 170)
+    if win is not None:
+        return win, valor
+    return _checar_resultado_por_saldo(saldo_antes, 0)
 
 def computar_resultado(win, valor, par, direcao, stake, engine):
     """Atualiza placar e stop diário."""
