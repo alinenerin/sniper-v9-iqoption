@@ -178,13 +178,10 @@ def _conectar_iq():
 
         api = IQ_Option(IQ_EMAIL, IQ_PASS)
 
-        # Se tiver SSID, injetar o cookie de sessão antes de conectar
+        # Injetar SSID direto na sessão HTTP (jeito correto — sem set_session/set_ssid)
         if IQ_SSID:
-            _log(f"Usando SSID salvo: {IQ_SSID[:10]}...")
-            api.set_session(
-                header={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/66.0.3359.139 Safari/537.36"},
-                cookie={"ssid": IQ_SSID}
-            )
+            _log(f"Injetando SSID: {IQ_SSID[:10]}...")
+            api.api.session.cookies.set("ssid", IQ_SSID)
 
         # connect() com timeout via thread
         resultado = [None, None]
