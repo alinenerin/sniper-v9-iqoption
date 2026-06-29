@@ -18,7 +18,7 @@ subprocess.call(
 
 import time, math, threading, requests, pytz
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request as freq
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
@@ -1938,7 +1938,6 @@ def get_filtro():
 
 @app.route("/filtro", methods=["POST"])
 def post_filtro():
-    from flask import request as freq
     data  = freq.get_json(silent=True) or {}
     lista = data.get("lista", "").strip()
     if not lista:
@@ -1955,7 +1954,6 @@ def get_sinais():
 
 @app.route("/sinais", methods=["POST"])
 def post_sinais():
-    from flask import request as freq
     data = freq.get_json(silent=True) or {}
     texto = data.get("sinais", "").strip()
     if not texto:
@@ -1986,4 +1984,4 @@ if __name__ == "__main__":
     threading.Thread(target=engine_manual,   daemon=True).start()  # sempre ativa
     port = int(os.environ.get("PORT", 8080))
     _log(f"🌐 Sniper Híbrido V10 — porta {port}")
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
