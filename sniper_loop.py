@@ -709,7 +709,22 @@ if __name__ == '__main__':
 
     iq = IQ_Option(IQ_EMAIL, IQ_PASS)
     log('Conectando IQ Option...')
-    check, reason = iq.connect()
+
+    # Conexão com timeout de 45s para não travar o container
+    _result = [None, None]
+    def _connect():
+        try:
+            _result[0], _result[1] = iq.connect()
+        except Exception as ex:
+            _result[0], _result[1] = False, str(ex)
+    _t = threading.Thread(target=_connect, daemon=True)
+    _t.start()
+    _t.join(timeout=45)
+    check, reason = _result[0], _result[1]
+    if check is None:
+        log('ERRO: connect() travou (timeout 45s). Reiniciando...')
+        sys.exit(1)
+
     log(f'Conexão: {check} | {reason}')
     if not check:
         log('ERRO: falha na conexão.')
@@ -730,7 +745,17 @@ if __name__ == '__main__':
         try:
             if not iq.check_connect():
                 log('Reconectando...')
-                iq.connect()
+                _r2 = [None, None]
+                def _reconect():
+                    try: _r2[0], _r2[1] = iq.connect()
+                    except Exception as ex: _r2[0], _r2[1] = False, str(ex)
+                _t2 = threading.Thread(target=_reconect, daemon=True)
+                _t2.start()
+                _t2.join(timeout=45)
+                if not _r2[0]:
+                    log(f'Reconexao falhou: {_r2[1]}. Tentando novamente em 30s...')
+                    time.sleep(30)
+                    continue
                 time.sleep(3)
                 iq.change_balance(ACCOUNT_TYPE)
 
