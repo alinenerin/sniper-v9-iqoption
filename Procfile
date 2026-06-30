@@ -1,1 +1,1 @@
-web: python app.py
+worker: python sniper_v11.py
