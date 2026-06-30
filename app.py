@@ -46,7 +46,7 @@ FOREX_JANELAS = [             # (h_ini, m_ini, h_fim, m_fim) BRT
     (14,  0, 16,  0),         # NY overlap
     (21,  0,  1,  0),         # Tokyo
 ]
-FOREX_MINUTOS_BLOQ = [58, 59, 0, 1, 2, 17, 32, 47]  # protocolo SFI completo
+FOREX_MINUTOS_BLOQ = [58, 59, 0, 1, 2]  # só virada de hora — Forex real descentralizado
 
 # ── ENGINE OTC ────────────────────────────────────────────────────
 OTC_SCORE_MIN = 80
