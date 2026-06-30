@@ -6,11 +6,8 @@
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 import sys, os, subprocess
-
-# ── Instala dependências ANTES de qualquer outro import ───────────────────────
 subprocess.call(
-    [sys.executable, "-m", "pip", "install", "-q",
-     "requests", "pytz", "flask", "websocket-client"],
+    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "flask"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
@@ -238,39 +235,41 @@ _IQ_ACTIVE_ID = {
 
 def _conectar_iq():
     """
-    Conecta à IQ Option priorizando SSID (pula HTTP/Cloudflare).
-    Cascata:
-      1. IQ_SSID (env var Railway)
-      2. .ssid_cache (arquivo salvo na última conexão bem-sucedida)
-      3. Login HTTP normal (fallback — pode falhar em datacenter)
-    NUNCA usa exit() — Flask continua vivo. Retry automático a cada 30s.
+    Tenta conectar à IQ Option via WebSocket.
+    NUNCA usa exit() ou sys.exit() — Flask deve continuar vivo.
+    Em caso de falha: loga, aguarda 30s e retorna (garantir_conexao reativa).
     """
     global _iq_ok, _iq_tentando, _iq_api
     _iq_tentando = True
     try:
+        _log("Conectando IQ Option (WebSocket)...")
         if not _IQ_LIB_OK:
             _log("[ERRO DE CONEXÃO] IQ lib não disponível. Aguardando 30 segundos para redefinir...")
             time.sleep(30)
             return
 
-        # ── Carrega SSID salvo (env var ou cache de disco) ─────────────
-        import iqoptionapi.global_value as _gv
-        ssid_env   = os.environ.get("IQ_SSID", "").strip()
-        ssid_cache = ""
-        try:
-            with open(".ssid_cache") as _f:
-                ssid_cache = _f.read().strip()
-        except:
-            pass
-
-        ssid_usar = ssid_env or ssid_cache
-        if ssid_usar:
-            _gv.SSID = ssid_usar
-            _log(f"🔑 SSID carregado ({'env' if ssid_env else 'cache'}): {ssid_usar[:12]}...")
-        else:
-            _log("🔑 Sem SSID salvo — tentando login HTTP...")
-
         api = _IQLib(IQ_EMAIL, IQ_PASS)
+
+        # ── Injeta SSID ANTES do connect() ─────────────────────────
+        ssid = IQ_SSID or os.environ.get("IQ_SSID", "")
+        if ssid:
+            injetado = False
+            for metodo in [
+                lambda: api.api.session.cookies.set("ssid", ssid),
+                lambda: api.session.cookies.set("ssid", ssid),
+                lambda: setattr(api, "_ssid", ssid),
+            ]:
+                try:
+                    metodo()
+                    injetado = True
+                    _log(f"SSID injetado: {ssid[:10]}...")
+                    break
+                except Exception:
+                    continue
+            if not injetado:
+                _log("SSID: não injetado (lib não expõe session) — usando login normal")
+        else:
+            _log("SSID não configurado — usando usuário/senha")
 
         try:
             check, reason = api.connect()
@@ -281,30 +280,11 @@ def _conectar_iq():
 
         if not check:
             motivo = str(reason)[:120] if reason else "sem resposta"
-            # Se falhou com SSID antigo, limpa cache e tenta na próxima rodada via HTTP
-            if ssid_usar:
-                _log(f"[ERRO DE CONEXÃO] SSID expirado ({motivo}) — limpando cache. Aguardando 30 segundos...")
-                _gv.SSID = None
-                try:
-                    os.remove(".ssid_cache")
-                except:
-                    pass
-            else:
-                _log(f"[ERRO DE CONEXÃO] {motivo} — Aguardando 30 segundos para redefinir...")
+            _log(f"[ERRO DE CONEXÃO] login falhou: {motivo} — Aguardando 30 segundos para redefinir...")
             time.sleep(30)
             return
 
-        # ── Conectado com sucesso ──────────────────────────────────────
-        # Persiste o SSID obtido para próximas reconexões (evita HTTP)
-        try:
-            ssid_novo = _gv.SSID or ""
-            if ssid_novo:
-                with open(".ssid_cache", "w") as _f:
-                    _f.write(ssid_novo)
-                _log(f"💾 SSID salvo em cache: {ssid_novo[:12]}...")
-        except:
-            pass
-
+        # ── Conectado com sucesso ──────────────────────────────────
         try:
             api.change_balance("PRACTICE")
             time.sleep(2)
@@ -316,10 +296,9 @@ def _conectar_iq():
         _iq_api = api
         _iq_ok  = True
         with _lock:
-            estado["iq_ok"]          = True
-            estado["saldo"]          = round(float(saldo_prac), 2)
-            estado["saldo_practice"] = round(float(saldo_prac), 2)
-        _log(f"✅ IQ conectada via {'SSID' if ssid_usar else 'login'}! Practice: ${saldo_prac:.2f}")
+            estado["iq_ok"]  = True
+            estado["saldo"]  = round(float(saldo_prac), 2)
+        _log(f"✅ IQ conectada! Practice: ${saldo_prac:.2f}")
 
     except Exception as e:
         _log(f"[ERRO DE CONEXÃO] {type(e).__name__}: {str(e)[:100]} — Aguardando 30 segundos para redefinir...")
@@ -2260,21 +2239,13 @@ def cmd_remoto():
         if not ssid:
             return jsonify({"ok": False, "erro": "ssid vazio"})
         try:
-            import iqoptionapi.global_value as _gv
-            _gv.SSID = ssid
-            # Persiste em disco — próximos boots não precisam de HTTP
-            try:
-                with open(".ssid_cache", "w") as _f:
-                    _f.write(ssid)
-            except:
-                pass
-            _log(f"🔑 SSID injetado e salvo em cache: {ssid[:12]}...")
-            global _iq_ok, _iq_tentando, _iq_ultima_tentativa
-            _iq_ok              = False
-            _iq_tentando        = False
-            _iq_ultima_tentativa = 0
+            os.environ["IQ_SSID"] = ssid
+            _log(f"SSID injetado externamente: {ssid[:12]}...")
+            global _iq_ok, _iq_tentando
+            _iq_ok       = False
+            _iq_tentando = False
             threading.Thread(target=_conectar_iq, daemon=True).start()
-            return jsonify({"ok": True, "msg": "SSID injetado — reconectando via WebSocket..."})
+            return jsonify({"ok": True, "msg": "SSID injetado, reconectando..."})
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)})
     return jsonify({"ok": False, "erro": f"ação desconhecida: {acao}"})
