@@ -244,15 +244,16 @@ def _conectar_iq():
             _log(f"IQ connect falhou: {reason}")
             return
 
-        # Muda para conta REAL
+        # Lê saldo Real
         api.change_balance("REAL")
         time.sleep(1)
-
         saldo_real = api.get_balance()
+
+        # Lê saldo Practice e FICA em Practice para operar
         api.change_balance("PRACTICE")
         time.sleep(0.5)
         saldo_prac = api.get_balance()
-        api.change_balance("REAL")  # volta para real para operar
+        # ← permanece em PRACTICE
 
         _iq_api = api
         _iq_ok  = True
