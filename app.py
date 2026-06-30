@@ -240,24 +240,37 @@ def _conectar_iq():
             return
 
         api = _IQLib(IQ_EMAIL, IQ_PASS)
-        check, reason = api.connect()
-        if not check:
-            _log(f"IQ connect falhou: {reason}")
+
+        # Timeout de 30s para não travar o boot
+        resultado = [None, None]
+        def _tentar():
+            try:
+                resultado[0], resultado[1] = api.connect()
+            except Exception as ex:
+                resultado[0], resultado[1] = False, str(ex)
+
+        t = threading.Thread(target=_tentar, daemon=True)
+        t.start()
+        t.join(timeout=30)
+
+        if resultado[0] is None:
+            _log("IQ connect timeout (30s) — tentando novamente mais tarde")
+            return
+        if not resultado[0]:
+            _log(f"IQ connect falhou: {resultado[1]}")
             return
 
-        # Vai direto para Practice e fica lá para operar
+        # Muda para Practice e lê saldo
         api.change_balance("PRACTICE")
         time.sleep(1)
-        saldo_prac = api.get_balance()
-        saldo_real = 0.0  # conta real zerada — não usa
-        # ← permanece em PRACTICE
+        saldo_prac = api.get_balance() or 0.0
 
         _iq_api = api
         _iq_ok  = True
         with _lock:
             estado["iq_ok"]          = True
-            estado["saldo"]          = float(saldo_prac or 0)   # operando em Practice
-            estado["saldo_practice"] = float(saldo_prac or 0)
+            estado["saldo"]          = float(saldo_prac)
+            estado["saldo_practice"] = float(saldo_prac)
         _log(f"IQ conectada! Practice: ${saldo_prac:.2f} (operando aqui)")
 
     except Exception as e:
@@ -269,6 +282,13 @@ def garantir_conexao():
     global _iq_ok, _iq_tentando
     if not _iq_ok and not _iq_tentando:
         threading.Thread(target=_conectar_iq, daemon=True).start()
+    # Se IQ caiu, tenta reconectar a cada 60s
+    if _iq_ok and _iq_api and not _iq_api.check_connect():
+        _iq_ok = False
+        with _lock:
+            estado["iq_ok"] = False
+        if not _iq_tentando:
+            threading.Thread(target=_conectar_iq, daemon=True).start()
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
