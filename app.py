@@ -1608,7 +1608,23 @@ def conectar_iq():
         if not injetado:
             log('Aviso: SSID nao injetado — usando login usuario/senha')
 
-    check, reason = iq.connect()
+    # connect() pode travar indefinidamente se o IP for bloqueado
+    # Rodamos em thread com timeout de 45s
+    _result = [None, None]
+    def _do_connect():
+        try:
+            _result[0], _result[1] = iq.connect()
+        except Exception as e:
+            _result[0], _result[1] = False, str(e)
+
+    t = threading.Thread(target=_do_connect, daemon=True)
+    t.start()
+    t.join(timeout=45)
+
+    if t.is_alive():
+        raise ConnectionError('IQ Option connect() timeout (45s) — IP bloqueado?')
+
+    check, reason = _result[0], _result[1]
     if not check:
         raise ConnectionError(f'IQ Option falhou: {reason}')
 
