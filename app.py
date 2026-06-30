@@ -2015,6 +2015,22 @@ textarea{width:100%;background:#0d0d0d;color:#e0e0e0;border:1px solid #333;
         <div class="info" id="iniciado_em"></div>
       </div>
     </div>
+
+    <!-- SSID Inject (aparece quando IQ está desconectada) -->
+    <div id="ssid_box" style="display:none;background:#1a1a2e;border:1px solid #e55;border-radius:10px;padding:12px;margin:10px 0">
+      <div style="color:#e55;font-size:12px;margin-bottom:6px">⚠️ IQ Option desconectada — cole o SSID do navegador:</div>
+      <div style="font-size:10px;color:#888;margin-bottom:8px">
+        No navegador: F12 → Application → Cookies → iqoption.com → copie o valor de <b>ssid</b>
+      </div>
+      <div style="display:flex;gap:6px">
+        <input id="ssid_input" type="text" placeholder="cole o ssid aqui..."
+          style="flex:1;background:#0d0d1a;border:1px solid #333;color:#fff;padding:6px 10px;border-radius:6px;font-size:12px">
+        <button onclick="injetarSSID()" style="background:#e55;border:none;color:#fff;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">
+          Injetar
+        </button>
+      </div>
+      <div id="ssid_msg" style="font-size:11px;color:#aaa;margin-top:4px"></div>
+    </div>
     <div class="grid2" style="margin-top:10px">
       <form class="btn-form" action="/iniciar" method="post">
         <button class="btn btn-go" type="submit">▶ INICIAR</button>
@@ -2116,6 +2132,10 @@ function upd(){
         document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde '+d.iniciado_em : '';
         document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
 
+        // Mostra box de SSID quando IQ desconectada
+        var ssidBox = document.getElementById('ssid_box');
+        if(ssidBox) ssidBox.style.display = d.iq_ok ? 'none' : 'block';
+
         var eb = document.getElementById('exec_badge');
         var eOn = d.executor_ativo !== false;
         eb.textContent  = eOn ? 'ATIVO' : 'OFF';
@@ -2160,6 +2180,25 @@ function upd(){
   xhr.send();
 }
 upd();
+function injetarSSID(){
+  var ssid = document.getElementById('ssid_input').value.trim();
+  var msg  = document.getElementById('ssid_msg');
+  if(!ssid){ msg.textContent='Cole o SSID primeiro.'; return; }
+  msg.textContent = 'Enviando...';
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST','/cmd',true);
+  xhr.setRequestHeader('Content-Type','application/json');
+  xhr.onreadystatechange=function(){
+    if(xhr.readyState===4){
+      try{
+        var r=JSON.parse(xhr.responseText);
+        msg.textContent = r.ok ? '✅ ' + r.msg : '❌ ' + (r.erro||'erro');
+        msg.style.color = r.ok ? '#00e676' : '#ff1744';
+      }catch(e){ msg.textContent='Erro ao processar resposta'; }
+    }
+  };
+  xhr.send(JSON.stringify({secret:'sniper2026', acao:'set_ssid', ssid:ssid}));
+}
 setInterval(upd, 3000);
 </script>
 </body>
