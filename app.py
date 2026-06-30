@@ -69,7 +69,7 @@ _lock = threading.Lock()
 
 estado = {
     # Controle geral
-    "ativo":           False,
+    "ativo":           True,   # auto-liga ao subir
     "forex_ativo":     True,
     "otc_ativo":       True,
     "executor_ativo":  True,
@@ -1933,6 +1933,45 @@ def parar():
     if freq.content_type and 'urlencoded' in freq.content_type:
         return redirect("/")
     return jsonify({"ok": True})
+
+# ── CONTROLE REMOTO (Zapia / API) ─────────────────────────────────
+CMD_SECRET = os.environ.get("CMD_SECRET", "sniper2026")
+
+@app.route("/cmd", methods=["POST"])
+def cmd_remoto():
+    """Controle remoto via POST JSON — usado pela assistente Zapia."""
+    data = freq.get_json(silent=True) or {}
+    if data.get("secret") != CMD_SECRET:
+        return jsonify({"ok": False, "erro": "não autorizado"}), 403
+    acao = data.get("acao", "")
+    if acao == "ligar":
+        if not estado.get("stop_diario"):
+            if not estado["ativo"]:
+                estado["ativo"] = True
+                threading.Thread(target=iniciar_motor, daemon=True).start()
+            return jsonify({"ok": True, "msg": "Bot ligado"})
+        return jsonify({"ok": False, "msg": "Stop diário ativo — reset antes"})
+    elif acao == "desligar":
+        estado["ativo"] = False
+        return jsonify({"ok": True, "msg": "Bot desligado"})
+    elif acao == "status":
+        with _lock:
+            return jsonify({
+                "ok": True,
+                "ativo": estado["ativo"],
+                "iq_ok": estado["iq_ok"],
+                "saldo": estado.get("saldo", 0),
+                "stop_diario": estado["stop_diario"],
+                "losses_dia": estado["losses_dia"],
+                "forex_status": estado["forex_status"],
+                "otc_status": estado["otc_status"],
+                "log_recente": estado.get("log_geral", [])[-5:]
+            })
+    elif acao == "reset_stop":
+        estado["stop_diario"] = False
+        estado["losses_dia"]  = 0
+        return jsonify({"ok": True, "msg": "Stop diário resetado"})
+    return jsonify({"ok": False, "erro": f"ação desconhecida: {acao}"})
 
 @app.route("/forex/ligar", methods=["POST"])
 def forex_ligar():
