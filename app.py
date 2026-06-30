@@ -1577,15 +1577,26 @@ def conectar_iq():
 
     if IQ_SSID:
         injetado = False
-        # Forma 1: lib local (api_faria) — iq.api.session
+
+        # Forma 1: global_value (lib Lu-Yi-Hsun via pip) — método correto
         try:
-            iq.api.session.cookies.set('ssid', IQ_SSID)
-            log(f'SSID injetado via iq.api.session: {IQ_SSID[:10]}...')
+            import iqoptionapi.global_value as gv
+            gv.SSID = IQ_SSID
+            log(f'SSID injetado via global_value: {IQ_SSID[:10]}...')
             injetado = True
         except Exception:
             pass
 
-        # Forma 2: lib pip Lu-Yi-Hsun — iq.session direto
+        # Forma 2: lib local (api_faria) — iq.api.session
+        if not injetado:
+            try:
+                iq.api.session.cookies.set('ssid', IQ_SSID)
+                log(f'SSID injetado via iq.api.session: {IQ_SSID[:10]}...')
+                injetado = True
+            except Exception:
+                pass
+
+        # Forma 3: iq.session direto
         if not injetado:
             try:
                 iq.session.cookies.set('ssid', IQ_SSID)
@@ -1594,13 +1605,8 @@ def conectar_iq():
             except Exception:
                 pass
 
-        # Forma 3: setar atributo interno _ssid (fallback genérico)
         if not injetado:
-            try:
-                iq._ssid = IQ_SSID
-                log(f'SSID setado via _ssid: {IQ_SSID[:10]}...')
-            except Exception as e:
-                log(f'Aviso: nao foi possivel injetar SSID ({e}) — usando login normal')
+            log('Aviso: SSID nao injetado — usando login usuario/senha')
 
     check, reason = iq.connect()
     if not check:
