@@ -1577,26 +1577,15 @@ def conectar_iq():
 
     if IQ_SSID:
         injetado = False
-
-        # Forma 1: global_value (lib Lu-Yi-Hsun via pip) — método correto
+        # Forma 1: lib local (api_faria) — iq.api.session
         try:
-            import iqoptionapi.global_value as gv
-            gv.SSID = IQ_SSID
-            log(f'SSID injetado via global_value: {IQ_SSID[:10]}...')
+            iq.api.session.cookies.set('ssid', IQ_SSID)
+            log(f'SSID injetado via iq.api.session: {IQ_SSID[:10]}...')
             injetado = True
         except Exception:
             pass
 
-        # Forma 2: lib local (api_faria) — iq.api.session
-        if not injetado:
-            try:
-                iq.api.session.cookies.set('ssid', IQ_SSID)
-                log(f'SSID injetado via iq.api.session: {IQ_SSID[:10]}...')
-                injetado = True
-            except Exception:
-                pass
-
-        # Forma 3: iq.session direto
+        # Forma 2: lib pip Lu-Yi-Hsun — iq.session direto
         if not injetado:
             try:
                 iq.session.cookies.set('ssid', IQ_SSID)
@@ -1605,26 +1594,15 @@ def conectar_iq():
             except Exception:
                 pass
 
+        # Forma 3: setar atributo interno _ssid (fallback genérico)
         if not injetado:
-            log('Aviso: SSID nao injetado — usando login usuario/senha')
+            try:
+                iq._ssid = IQ_SSID
+                log(f'SSID setado via _ssid: {IQ_SSID[:10]}...')
+            except Exception as e:
+                log(f'Aviso: nao foi possivel injetar SSID ({e}) — usando login normal')
 
-    # connect() pode travar indefinidamente se o IP for bloqueado
-    # Rodamos em thread com timeout de 45s
-    _result = [None, None]
-    def _do_connect():
-        try:
-            _result[0], _result[1] = iq.connect()
-        except Exception as e:
-            _result[0], _result[1] = False, str(e)
-
-    t = threading.Thread(target=_do_connect, daemon=True)
-    t.start()
-    t.join(timeout=45)
-
-    if t.is_alive():
-        raise ConnectionError('IQ Option connect() timeout (45s) — IP bloqueado?')
-
-    check, reason = _result[0], _result[1]
+    check, reason = iq.connect()
     if not check:
         raise ConnectionError(f'IQ Option falhou: {reason}')
 
@@ -1648,29 +1626,32 @@ def main():
     log(f'Conta: {IQ_BALANCE_TYPE} | Exec: {EXECUCAO_ATIVA}')
     log('=' * 60)
 
-    # Flask sobe PRIMEIRO — Railway precisa do health check antes do login IQ
+    # Flask sobe PRIMEIRO em thread NÃO-daemon — mantém o processo vivo no Railway
     def run_flask():
         log(f'Painel web na porta {PORT}...')
         app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
-    t_flask = threading.Thread(target=run_flask, daemon=True, name='flask')
+    t_flask = threading.Thread(target=run_flask, daemon=False, name='flask')
     t_flask.start()
-    time.sleep(2)
+    time.sleep(2)   # aguarda Flask estar ouvindo antes de tentar IQ
 
     def iniciar_engine():
+        # Retry infinito — NUNCA derruba o processo (sem sys.exit)
+        # Railway não reinicia o container enquanto o Flask responder
         iq = None
-        for tentativa in range(1, 6):
+        tentativa = 0
+        while iq is None:
+            tentativa += 1
             try:
                 iq = conectar_iq()
-                break
             except Exception as e:
-                log(f'Tentativa {tentativa}/5 falhou: {e}')
-                time.sleep(15)
+                log(f'[ERRO DE CONEXAO] Tentativa {tentativa} falhou: {e}')
+                log('[ERRO DE CONEXAO] Aguardando 30 segundos para redefinir...')
+                with _painel_lock:
+                    _painel['iq_conectado'] = False
+                time.sleep(30)
 
-        if iq is None:
-            log('FATAL: nao foi possivel conectar a IQ Option')
-            telegram('\U0001f534 <b>Sniper V12</b>: falha na conexao IQ Option.')
-            return
+        log('IQ Option conectada — iniciando canais')
 
         modo_inicial = detectar_modo()
         telegram(
@@ -1725,7 +1706,8 @@ def main():
 
     t_engine = threading.Thread(target=iniciar_engine, daemon=True, name='engine')
     t_engine.start()
-    t_flask.join()
+    # Flask é não-daemon — mantém o processo vivo sozinho
+    # t_flask.join() não é necessário
 
 
 if __name__ == '__main__':
