@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
 # ── IQ Option via lib WebSocket ────────────────────────────────────
-_IQ_LIB_PATH = os.path.join(os.path.dirname(__file__), "api_faria")
+_IQ_LIB_PATH = os.path.join(os.path.dirname(__file__), "iqoptionapi")
 if _IQ_LIB_PATH not in sys.path:
     sys.path.insert(0, _IQ_LIB_PATH)
 try:
