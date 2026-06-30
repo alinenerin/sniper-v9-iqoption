@@ -2218,6 +2218,8 @@ def post_sinais_form():
 if __name__ == "__main__":
     threading.Thread(target=_conectar_iq,    daemon=True).start()
     threading.Thread(target=engine_manual,   daemon=True).start()  # sempre ativa
+    # Auto-inicia os motores (ativo=True por padrão)
+    threading.Thread(target=iniciar_motor,   daemon=True).start()
     port = int(os.environ.get("PORT", 8080))
     _log(f"🌐 Sniper Híbrido V10 — porta {port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
