@@ -2164,6 +2164,63 @@ setInterval(upd, 3000);
 </html>
 """
 
+@app.route("/diagnostico")
+def diagnostico():
+    import socket, ssl, time
+    resultado = {}
+
+    # TESTE 1 — DNS
+    try:
+        t0 = time.time()
+        ip = socket.gethostbyname("iqoption.com")
+        resultado["dns"] = {"ok": True, "ip": ip, "ms": round((time.time()-t0)*1000)}
+    except Exception as e:
+        resultado["dns"] = {"ok": False, "erro": str(e)}
+
+    # TESTE 2 — HTTP GET
+    try:
+        import requests as _req
+        t0 = time.time()
+        r = _req.get("https://iqoption.com", timeout=10, allow_redirects=True,
+                     headers={"User-Agent": "Mozilla/5.0"})
+        resultado["http"] = {"ok": True, "status": r.status_code, "ms": round((time.time()-t0)*1000)}
+    except Exception as e:
+        resultado["http"] = {"ok": False, "erro": str(e)}
+
+    # TESTE 3 — WebSocket RAW (sem lib, sem headers extras)
+    try:
+        import websocket as _ws
+        t0 = time.time()
+        ws = _ws.create_connection(
+            "wss://iqoption.com/echo/websocket",
+            timeout=15,
+            sslopt={"cert_reqs": ssl.CERT_NONE}
+        )
+        ws.close()
+        resultado["ws_raw"] = {"ok": True, "ms": round((time.time()-t0)*1000)}
+    except Exception as e:
+        resultado["ws_raw"] = {"ok": False, "erro": str(e)}
+
+    # TESTE 4 — WebSocket RAW com headers Cloudflare
+    try:
+        import websocket as _ws
+        t0 = time.time()
+        ws = _ws.create_connection(
+            "wss://iqoption.com/echo/websocket",
+            timeout=15,
+            sslopt={"cert_reqs": ssl.CERT_NONE},
+            header={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Origin": "https://iqoption.com"
+            }
+        )
+        ws.close()
+        resultado["ws_com_headers"] = {"ok": True, "ms": round((time.time()-t0)*1000)}
+    except Exception as e:
+        resultado["ws_com_headers"] = {"ok": False, "erro": str(e)}
+
+    return jsonify(resultado)
+
 @app.route("/")
 def index():
     return Response(HTML, mimetype='text/html')
