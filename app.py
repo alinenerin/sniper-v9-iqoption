@@ -244,24 +244,20 @@ def _conectar_iq():
             _log(f"IQ connect falhou: {reason}")
             return
 
-        # Lê saldo Real
-        api.change_balance("REAL")
-        time.sleep(1)
-        saldo_real = api.get_balance()
-
-        # Lê saldo Practice e FICA em Practice para operar
+        # Vai direto para Practice e fica lá para operar
         api.change_balance("PRACTICE")
-        time.sleep(0.5)
+        time.sleep(1)
         saldo_prac = api.get_balance()
+        saldo_real = 0.0  # conta real zerada — não usa
         # ← permanece em PRACTICE
 
         _iq_api = api
         _iq_ok  = True
         with _lock:
             estado["iq_ok"]          = True
-            estado["saldo"]          = float(saldo_real or 0)
+            estado["saldo"]          = float(saldo_prac or 0)   # operando em Practice
             estado["saldo_practice"] = float(saldo_prac or 0)
-        _log(f"IQ conectada! Real: ${saldo_real:.2f} | Practice: ${saldo_prac:.2f}")
+        _log(f"IQ conectada! Practice: ${saldo_prac:.2f} (operando aqui)")
 
     except Exception as e:
         _log(f"IQ erro conexão: {e}")
