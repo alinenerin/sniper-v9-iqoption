@@ -304,6 +304,57 @@ def _conectar_iq():
     finally:
         _iq_tentando = False
 
+def _conectar_iq_com_ssid(ssid):
+    """Conecta o WebSocket injetando SSID diretamente — sem HTTP login."""
+    global _iq_ok, _iq_tentando, _iq_api
+    _iq_tentando = True
+    try:
+        _log("Reconectando com SSID injetado...")
+        if not _IQ_LIB_OK:
+            _log("IQ lib não disponível")
+            return
+
+        import iqoptionapi.global_value as _gv
+        _gv.SSID = ssid
+
+        api = _IQLib(IQ_EMAIL, IQ_PASS)
+        api.SESSION_COOKIE = {"ssid": ssid}
+
+        resultado = [None, None]
+        def _t():
+            try:
+                resultado[0], resultado[1] = api.connect()
+            except Exception as ex:
+                resultado[0], resultado[1] = False, str(ex)
+
+        th = threading.Thread(target=_t, daemon=True)
+        th.start()
+        th.join(timeout=45)
+
+        if resultado[0] is None:
+            _log("SSID connect timeout (45s)")
+            return
+        if not resultado[0]:
+            _log(f"SSID connect falhou: {resultado[1]}")
+            return
+
+        api.change_balance("PRACTICE")
+        time.sleep(1.5)
+        saldo_prac = api.get_balance() or 0.0
+
+        _iq_api = api
+        _iq_ok  = True
+        with _lock:
+            estado["iq_ok"]          = True
+            estado["saldo"]          = float(saldo_prac)
+            estado["saldo_practice"] = float(saldo_prac)
+        _log(f"✅ IQ reconectada via SSID! Practice: ${saldo_prac:.2f}")
+
+    except Exception as e:
+        _log(f"SSID connect erro: {e}")
+    finally:
+        _iq_tentando = False
+
 def garantir_conexao():
     global _iq_ok, _iq_tentando
     if not _iq_ok and not _iq_tentando:
@@ -2186,6 +2237,22 @@ def cmd_remoto():
         estado["stop_diario"] = False
         estado["losses_dia"]  = 0
         return jsonify({"ok": True, "msg": "Stop diário resetado"})
+    elif acao == "set_ssid":
+        ssid = data.get("ssid", "")
+        if not ssid:
+            return jsonify({"ok": False, "erro": "ssid vazio"})
+        try:
+            import iqoptionapi.global_value as _gv
+            _gv.SSID = ssid
+            _log(f"SSID injetado externamente: {ssid[:12]}...")
+            # Força reconexão imediata
+            global _iq_ok, _iq_tentando
+            _iq_ok      = False
+            _iq_tentando = False
+            threading.Thread(target=_conectar_iq_com_ssid, args=(ssid,), daemon=True).start()
+            return jsonify({"ok": True, "msg": "SSID injetado, reconectando..."})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)})
     return jsonify({"ok": False, "erro": f"ação desconhecida: {acao}"})
 
 @app.route("/forex/ligar", methods=["POST"])
