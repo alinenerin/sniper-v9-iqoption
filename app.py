@@ -222,37 +222,99 @@ def _conectar_iq():
     _iq_tentando = True
     try:
         _log("Conectando IQ Option (REST)...")
-        # Tenta com SSID primeiro
+
+        # Headers obrigatórios para a IQ aceitar requests não-browser
+        _iq_sess.headers.update({
+            "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+            "Accept":           "application/json, text/plain, */*",
+            "Accept-Language":  "pt-BR,pt;q=0.9,en;q=0.8",
+            "Origin":           "https://iqoption.com",
+            "Referer":          "https://iqoption.com/",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+
+        # 1. Tenta SSID salvo primeiro
         if IQ_SSID:
             _iq_sess.cookies.set("ssid", IQ_SSID, domain="iqoption.com")
             r = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=10)
             if r.status_code == 200:
-                d = r.json().get("data", {})
-                saldo = float(d.get("balance", 0))
+                try:
+                    d    = r.json().get("data", {})
+                    saldo = float(d.get("balance", 0))
+                    _iq_ok = True
+                    with _lock:
+                        estado["iq_ok"] = True
+                        estado["saldo"] = saldo
+                    _log(f"IQ conectada via SSID! Saldo: ${saldo:.2f}")
+                    return
+                except Exception:
+                    pass  # SSID expirado — cai no login
+
+        # 2. Login email/senha
+        r = _iq_sess.post(
+            "https://auth.iqoption.com/api/v2/login",
+            json={"identifier": IQ_EMAIL, "password": IQ_PASS},
+            timeout=12
+        )
+        if r.status_code not in (200, 201):
+            _log(f"IQ login HTTP {r.status_code}: {r.text[:120]}")
+            return
+
+        try:
+            body = r.json()
+        except Exception:
+            _log(f"IQ login resposta não-JSON: {r.text[:120]}")
+            return
+
+        ssid = body.get("ssid", "")
+        if not ssid:
+            # Alguns retornos trazem o ssid dentro de 'data'
+            ssid = body.get("data", {}).get("ssid", "")
+        if not ssid:
+            _log(f"IQ login sem ssid: {str(body)[:120]}")
+            return
+
+        # Aplica SSID em cookie e header
+        _iq_sess.cookies.set("ssid", ssid, domain="iqoption.com")
+        _iq_sess.headers.update({"Authorization": f"SSID {ssid}"})
+
+        # 3. Valida sessão e pega saldo real
+        time.sleep(1)
+        rp = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=10)
+        if rp.status_code == 200:
+            try:
+                d = rp.json().get("data", {})
+                # Pega saldo da conta real
+                balances = d.get("balances", [])
+                saldo_real = 0.0
+                saldo_prac = 0.0
+                for b in balances:
+                    if b.get("type") == 1:   # real
+                        saldo_real = float(b.get("amount", 0))
+                    elif b.get("type") == 4: # practice
+                        saldo_prac = float(b.get("amount", 0))
+                # fallback: campo balance direto
+                if saldo_real == 0.0:
+                    saldo_real = float(d.get("balance", 0))
                 _iq_ok = True
                 with _lock:
-                    estado["iq_ok"]  = True
-                    estado["saldo"]  = saldo
-                _log(f"IQ conectada via SSID! Saldo: ${saldo:.2f}")
-                return
-        # Fallback: login com usuário/senha via REST
-        r = _iq_sess.post("https://auth.iqoption.com/api/v2/login",
-            json={"identifier": IQ_EMAIL, "password": IQ_PASS}, timeout=12)
-        ssid = r.json().get("ssid", "")
-        if ssid:
-            _iq_sess.cookies.set("ssid", ssid, domain="iqoption.com")
-            _iq_ok = True
-            # Buscar saldo
-            rp = _iq_sess.get("https://iqoption.com/api/v1.0/profile", timeout=8)
-            saldo = float(rp.json().get("data", {}).get("balance", 0)) if rp.status_code == 200 else 0.0
-            with _lock:
-                estado["iq_ok"]  = True
-                estado["saldo"]  = saldo
-            _log(f"IQ conectada via login! Saldo: ${saldo:.2f}")
+                    estado["iq_ok"]          = True
+                    estado["saldo"]          = saldo_real
+                    estado["saldo_practice"] = saldo_prac
+                _log(f"IQ conectada! Real: ${saldo_real:.2f} | Practice: ${saldo_prac:.2f}")
+            except Exception as e:
+                _log(f"IQ perfil parse erro: {e} | {rp.text[:120]}")
+                _iq_ok = True  # sessão ok, saldo falhou — continua
+                with _lock:
+                    estado["iq_ok"] = True
         else:
-            _log(f"IQ login falhou: {r.text[:120]}")
+            _log(f"IQ perfil HTTP {rp.status_code} — sessão pode estar ok mesmo assim")
+            _iq_ok = True
+            with _lock:
+                estado["iq_ok"] = True
+
     except Exception as e:
-        _log(f"IQ erro: {e}")
+        _log(f"IQ erro conexão: {e}")
     finally:
         _iq_tentando = False
 
@@ -274,18 +336,29 @@ def get_candles(ativo, n=60, tf=60):
                 r = _iq_sess.post("https://iqoption.com/api/v6/getcandles",
                     json={"active_id": active_id, "size": tf, "count": n, "to": int(time.time())},
                     timeout=8)
-                candles = r.json().get("data", {}).get("candles", [])
-                if candles:
-                    velas = []
-                    for v in candles:
-                        velas.append({
-                            "o": float(v.get("open", 0)),
-                            "c": float(v.get("close", 0)),
-                            "h": float(v.get("max", 0)),
-                            "l": float(v.get("min", 0)),
-                            "t": int(v.get("from", 0)),
-                        })
-                    return sorted(velas, key=lambda x: x["t"])
+                # Verifica se é JSON antes de parsear
+                ct = r.headers.get("Content-Type", "")
+                if r.status_code == 200 and "json" in ct:
+                    candles = r.json().get("data", {}).get("candles", [])
+                    if candles:
+                        velas = []
+                        for v in candles:
+                            velas.append({
+                                "o": float(v.get("open", 0)),
+                                "c": float(v.get("close", 0)),
+                                "h": float(v.get("max", 0)),
+                                "l": float(v.get("min", 0)),
+                                "t": int(v.get("from", 0)),
+                            })
+                        return sorted(velas, key=lambda x: x["t"])
+                elif r.status_code in (401, 403) or "text/html" in ct:
+                    # Sessão expirou — reconecta em background
+                    global _iq_ok
+                    _iq_ok = False
+                    with _lock:
+                        estado["iq_ok"] = False
+                    threading.Thread(target=_conectar_iq, daemon=True).start()
+                    _log(f"IQ sessão expirada ({par_base}) — reconectando...")
         except Exception as e:
             _log(f"IQ candles REST erro ({par_base}): {e}")
 
