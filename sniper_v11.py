@@ -2,10 +2,10 @@
 """
 ╔══════════════════════════════════════════════════════════════════════╗
 ║          SNIPER V11 — MOTOR HÍBRIDO UNIFICADO                       ║
-║          Real (M1+M5) + OTC Weekend — 30/06/2026                    ║
+║          Real (M1+M5) + OTC Simultâneo — 30/06/2026                 ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  ARQUITETURA:                                                        ║
-║  • Modo AUTO: detecta semana (Real M1+M5) ou fim de semana (OTC)    ║
+║  • Modo AUTO: HIBRIDO (semana) = Real + OTC juntos | OTC (fds)      ║
 ║  • SCORE REAL  = Cascata EMA M1 + M5 confirmação + DXY + SMC        ║
 ║  • SCORE OTC   = MACD + ADX + BB + RSI + Shadow Rejection           ║
 ║  • MARKOV      = Probabilidade de continuação/reversão (ambos modos)║
@@ -362,20 +362,22 @@ def release_lock():
 def detectar_modo():
     """
     RATIONAL: Mercado Forex real fecha sexta ~21h UTC (18h BRT) e reabre
-    domingo ~21h UTC (18h BRT). Detectamos pelo dia da semana + hora atual.
-    Sábado inteiro e domingo até 18h BRT = OTC. Resto = Real.
+    domingo ~21h UTC (18h BRT). Durante a semana, rodamos HIBRIDO:
+    escaneamos REAL + OTC simultaneamente — a IQ Option mantém pares OTC
+    abertos 24/7, então há oportunidade nos dois mercados ao mesmo tempo.
+    Fim de semana (mercado real fechado): modo OTC puro.
     """
     now     = datetime.datetime.now(BRT)
     weekday = now.weekday()   # 0=seg ... 4=sex ... 5=sab ... 6=dom
     hora    = now.hour
 
-    if weekday == 5:           # Sábado inteiro
+    if weekday == 5:                    # Sábado inteiro
         return 'OTC'
-    if weekday == 6 and hora < 18:  # Domingo antes das 18h BRT
+    if weekday == 6 and hora < 18:      # Domingo antes das 18h BRT
         return 'OTC'
-    if weekday == 4 and hora >= 18: # Sexta após 18h BRT
+    if weekday == 4 and hora >= 18:     # Sexta após 18h BRT
         return 'OTC'
-    return 'REAL'
+    return 'HIBRIDO'                    # Semana = Real + OTC juntos
 
 # ══════════════════════════════════════════════════════════════════════════════
 # JANELA / FILTROS TEMPORAIS
@@ -1040,22 +1042,28 @@ def ciclo(iq, estado):
 
     # ── Selecionar pares ─────────────────────────────────────────────────────
     if modo == 'OTC':
-        pares = [p for p in PARES_OTC if p not in _ff_bloqueados]
-        analisar_fn = analisar_otc
+        # Fim de semana: só OTC puro
+        pares_scan = [(p, analisar_otc) for p in PARES_OTC if p not in _ff_bloqueados]
+    elif modo == 'HIBRIDO':
+        # Semana: REAL + OTC simultaneamente
+        pares_scan = (
+            [(p, analisar_real) for p in PARES_REAL if p not in _ff_bloqueados] +
+            [(p, analisar_otc)  for p in PARES_OTC  if p not in _ff_bloqueados]
+        )
     else:
-        pares = [p for p in PARES_REAL if p not in _ff_bloqueados]
-        analisar_fn = analisar_real
+        # Fallback legado 'REAL' (não deve ocorrer mais)
+        pares_scan = [(p, analisar_real) for p in PARES_REAL if p not in _ff_bloqueados]
 
-    if not pares:
+    if not pares_scan:
         log(f'[{ts}] Todos os pares bloqueados por evento')
         return
 
     agora_ts = time.time()
-    log(f'[{ts}] Modo {modo} | Escaneando {len(pares)} pares...')
+    log(f'[{ts}] Modo {modo} | Escaneando {len(pares_scan)} pares...')
 
     # ── Analisar pares ────────────────────────────────────────────────────────
     candidatos = []
-    for par in pares:
+    for par, analisar_fn in pares_scan:
         chave = f'{par}_{ts}'
         if _enviados.get(chave):
             continue
@@ -1094,7 +1102,10 @@ def ciclo(iq, estado):
     hora_entrada = (agora + datetime.timedelta(minutes=1)).strftime('%H:%M')
 
     # ── Montar mensagem Telegram ─────────────────────────────────────────────
-    modo_tag   = '🔵 OTC' if modo == 'OTC' else '📈 REAL'
+    # Label baseado no par, não no modo — no HIBRIDO temos os dois tipos
+    modo_tag   = '🔵 OTC' if '-OTC' in par else '📈 REAL'
+    # Detalhes técnicos também dependem do tipo do par
+    e_otc      = '-OTC' in par
     extras_txt = ''
     if len(candidatos) > 1:
         outros = ', '.join(f"{c['par']}({c['score']})" for c in candidatos[1:])
@@ -1102,7 +1113,7 @@ def ciclo(iq, estado):
 
     det_str = (
         f"RSI: {det.get('rsi', '—')} | "
-        f"ADX: {det.get('adx', '—')} | " if modo == 'OTC' else
+        f"ADX: {det.get('adx', '—')} | " if e_otc else
         f"RSI: {det.get('rsi', '—')} | "
         f"ATR: {det.get('atr', '—')}p | "
     ) + f"Setup: {det.get('setup', '—')} | Markov: {det.get('markov', '—')}"
@@ -1119,7 +1130,7 @@ def ciclo(iq, estado):
     if EXECUCAO_ATIVA:
         travar(par, 65)
         try:
-            ativo_iq   = par.replace('-OTC', '') if modo == 'OTC' else par
+            ativo_iq   = par.replace('-OTC', '') if e_otc else par
             dir_iq     = 'call' if direc == 'CALL' else 'put'
             ok, id_op  = iq.buy(1, ativo_iq, dir_iq, 1)
             if ok:
