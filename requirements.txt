@@ -2,3 +2,4 @@ requests>=2.31.0
 pytz>=2024.1
 websocket-client>=1.6.0
 flask>=3.0.0
+iqoptionapi @ git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git
