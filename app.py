@@ -12,11 +12,12 @@ PAINEL       : Flask dark mode | logs separados por engine
 """
 import sys, os, subprocess
 subprocess.call(
-    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "flask"],
+    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "flask",
+     "git+https://github.com/iqoptionapi/iqoptionapi.git"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
-import time, math, threading, requests, pytz
+import time, math, threading, requests, pytz, json
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
