@@ -251,9 +251,10 @@ def _conectar_iq():
             _log(f"IQ conectada! Saldo: ${saldo:.2f}")
             tg(f"IQ conectada! Saldo: ${saldo:.2f}")
         else:
-            _log(f"IQ login falhou: {reason}")
+            motivo = str(reason)[:120] if reason else "sem resposta"
+            _log(f"IQ login falhou: {motivo}")
     except Exception as e:
-        _log(f"IQ erro: {e}")
+        _log(f"IQ erro: {type(e).__name__}: {str(e)[:100]}")
     finally:
         _iq_tentando = False
 
