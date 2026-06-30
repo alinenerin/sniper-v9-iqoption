@@ -234,78 +234,32 @@ def _conectar_iq():
     global _iq_ok, _iq_tentando, _iq_api
     _iq_tentando = True
     try:
-        _log("Conectando IQ Option (websocket)...")
+        _log("Conectando IQ Option (WebSocket)...")
         if not _IQ_LIB_OK:
-            _log("IQ lib nao disponivel.")
+            _log("IQ lib não disponível.")
             return
+
         api = _IQLib(IQ_EMAIL, IQ_PASS)
-        check, reason = api.connect()
-        if check:
-            import time as _t; _t.sleep(2)
-            saldo = api.get_balance()
-            _iq_api = api
-            _iq_ok  = True
-            with _lock:
-                estado["iq_ok"]  = True
-                estado["saldo"]  = round(float(saldo), 2)
-            _log(f"IQ conectada! Saldo: ${saldo:.2f}")
-            tg(f"IQ conectada! Saldo: ${saldo:.2f}")
-        else:
+        check, reason = api.connect()   # lib já tem timeout 30s no start_websocket
+        if not check:
             motivo = str(reason)[:120] if reason else "sem resposta"
             _log(f"IQ login falhou: {motivo}")
-    except Exception as e:
-        _log(f"IQ erro: {type(e).__name__}: {str(e)[:100]}")
-    finally:
-        _iq_tentando = False
-
-def _conectar_iq_com_ssid(ssid):
-    """Conecta o WebSocket injetando SSID diretamente — sem HTTP login."""
-    global _iq_ok, _iq_tentando, _iq_api
-    _iq_tentando = True
-    try:
-        _log("Reconectando com SSID injetado...")
-        if not _IQ_LIB_OK:
-            _log("IQ lib não disponível")
-            return
-
-        import iqoptionapi.global_value as _gv
-        _gv.SSID = ssid
-
-        api = _IQLib(IQ_EMAIL, IQ_PASS)
-        api.SESSION_COOKIE = {"ssid": ssid}
-
-        resultado = [None, None]
-        def _t():
-            try:
-                resultado[0], resultado[1] = api.connect()
-            except Exception as ex:
-                resultado[0], resultado[1] = False, str(ex)
-
-        th = threading.Thread(target=_t, daemon=True)
-        th.start()
-        th.join(timeout=45)
-
-        if resultado[0] is None:
-            _log("SSID connect timeout (45s)")
-            return
-        if not resultado[0]:
-            _log(f"SSID connect falhou: {resultado[1]}")
             return
 
         api.change_balance("PRACTICE")
-        time.sleep(1.5)
+        time.sleep(2)
         saldo_prac = api.get_balance() or 0.0
 
         _iq_api = api
         _iq_ok  = True
         with _lock:
             estado["iq_ok"]          = True
-            estado["saldo"]          = float(saldo_prac)
-            estado["saldo_practice"] = float(saldo_prac)
-        _log(f"✅ IQ reconectada via SSID! Practice: ${saldo_prac:.2f}")
+            estado["saldo"]          = round(float(saldo_prac), 2)
+            estado["saldo_practice"] = round(float(saldo_prac), 2)
+        _log(f"✅ IQ conectada! Practice: ${saldo_prac:.2f}")
 
     except Exception as e:
-        _log(f"SSID connect erro: {e}")
+        _log(f"IQ erro: {type(e).__name__}: {str(e)[:100]}")
     finally:
         _iq_tentando = False
 
@@ -313,13 +267,17 @@ def garantir_conexao():
     global _iq_ok, _iq_tentando
     if not _iq_ok and not _iq_tentando:
         threading.Thread(target=_conectar_iq, daemon=True).start()
-    # Se IQ caiu, tenta reconectar a cada 60s
-    if _iq_ok and _iq_api and not _iq_api.check_connect():
-        _iq_ok = False
-        with _lock:
-            estado["iq_ok"] = False
-        if not _iq_tentando:
-            threading.Thread(target=_conectar_iq, daemon=True).start()
+    # Reconecta se WS caiu
+    if _iq_ok and _iq_api:
+        try:
+            if not _iq_api.check_connect():
+                _iq_ok = False
+                with _lock:
+                    estado["iq_ok"] = False
+                if not _iq_tentando:
+                    threading.Thread(target=_conectar_iq, daemon=True).start()
+        except:
+            pass
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
@@ -2242,7 +2200,11 @@ def cmd_remoto():
             global _iq_ok, _iq_tentando
             _iq_ok      = False
             _iq_tentando = False
-            threading.Thread(target=_conectar_iq_com_ssid, args=(ssid,), daemon=True).start()
+            # Força reconexão imediata com o SSID injetado
+            global _iq_ok, _iq_tentando
+            _iq_ok       = False
+            _iq_tentando = False
+            threading.Thread(target=_conectar_iq, daemon=True).start()
             return jsonify({"ok": True, "msg": "SSID injetado, reconectando..."})
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)})
