@@ -1569,18 +1569,38 @@ def health():
 
 def conectar_iq():
     """
-    Conexão segura via SSID cookie injection.
-    Injeta o cookie ANTES do connect() para bypass de bloqueio de IP no Railway.
+    Conexão segura. Tenta injetar SSID cookie de 3 formas diferentes
+    para compatibilidade com qualquer versão da lib iqoptionapi.
     """
     log('Conectando à IQ Option...')
     iq = IQ_Option(IQ_EMAIL, IQ_PASS)
 
     if IQ_SSID:
+        injetado = False
+        # Forma 1: lib local (api_faria) — iq.api.session
         try:
             iq.api.session.cookies.set('ssid', IQ_SSID)
-            log(f'SSID injetado: {IQ_SSID[:10]}...')
-        except Exception as e:
-            log(f'Aviso SSID: {e}')
+            log(f'SSID injetado via iq.api.session: {IQ_SSID[:10]}...')
+            injetado = True
+        except Exception:
+            pass
+
+        # Forma 2: lib pip Lu-Yi-Hsun — iq.session direto
+        if not injetado:
+            try:
+                iq.session.cookies.set('ssid', IQ_SSID)
+                log(f'SSID injetado via iq.session: {IQ_SSID[:10]}...')
+                injetado = True
+            except Exception:
+                pass
+
+        # Forma 3: setar atributo interno _ssid (fallback genérico)
+        if not injetado:
+            try:
+                iq._ssid = IQ_SSID
+                log(f'SSID setado via _ssid: {IQ_SSID[:10]}...')
+            except Exception as e:
+                log(f'Aviso: nao foi possivel injetar SSID ({e}) — usando login normal')
 
     check, reason = iq.connect()
     if not check:
