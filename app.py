@@ -1,1719 +1,2394 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║              SNIPER V12 — QUAD-CHANNEL ENGINE                               ║
-║              OTC M1 · OTC M5 · REAL M1 · REAL M5                           ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║  ARQUITETURA:                                                                ║
-║  • 4 threads independentes, cada uma com motor, score e cooldown próprios   ║
-║  • Trava global de portfólio: apenas 1 ordem aberta por vez                 ║
-║  • Resolução de conflito: M5 vence M1 | direções opostas = ambos bloqueados ║
-║  • Interface Flask dark mode com painel em tempo real                       ║
-║  • Conexão IQ Option via SSID cookie injection (sem set_ssid)               ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+SNIPER HÍBRIDO V10 — app.py
+Forex Real (V9) + OTC (V10) rodando em paralelo
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENGINE FOREX : M1 análise | M3 expiração | Score 170 | FF + DXY nativo
+ENGINE OTC   : M1 análise | M1 expiração | Score 100 | sem filtro notícias
+TRAVA GLOBAL : 65s — impede entradas simultâneas
+STOP DIÁRIO  : 4 losses (Forex + OTC somados) = desliga tudo
+PAINEL       : Flask dark mode | logs separados por engine
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
-
-import os, sys, time, json, math, threading, datetime, logging
-import urllib.request, urllib.parse
-from flask import Flask, jsonify, render_template_string, request
-
-# ── PATH IQ Option ─────────────────────────────────────────────────────────
-WORK_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(WORK_DIR, 'libs', 'api_faria'))
-
-import pytz
-from iqoptionapi.stable_api import IQ_Option
-
-BRT = pytz.timezone('America/Sao_Paulo')
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CONFIGURAÇÃO GLOBAL
-# ══════════════════════════════════════════════════════════════════════════════
-
-IQ_EMAIL   = os.getenv('IQ_EMAIL',   'laiane.aline@gmail.com')
-IQ_PASS    = os.getenv('IQ_PASS',    'alineegui95')
-IQ_SSID    = os.getenv('IQ_SSID',    '')
-TG_TOKEN   = os.getenv('TG_TOKEN',   '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg')
-TG_CHAT    = os.getenv('TG_CHAT',    '5911742397')
-TWELVE_KEY = os.getenv('TWELVE_KEY', '1be0b948fb1c48bb997e350c542edafd')
-FF_URL     = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
-PORT       = int(os.getenv('PORT', 8080))
-
-# Conta: PRACTICE ou REAL
-IQ_BALANCE_TYPE = 'PRACTICE'
-
-# Execução automática (False = só sinaliza, não executa)
-EXECUCAO_ATIVA = False
-
-# Timeframes em segundos
-TF_M1 = 60
-TF_M3 = 180
-TF_M5 = 300
-
-# Horário seco: sem operações entre 17:30 e 21:00 BRT
-HORARIO_SECO_INI = (17, 30)
-HORARIO_SECO_FIM = (21,  0)
-
-# Stop diário e sequencial
-MAX_LOSSES_DIA = 4
-MAX_LOSSES_SEQ = 3
-PAUSA_SEQ_MIN  = 30   # minutos de pausa após 3 losses seguidos
-
-# Cooldown por canal (segundos)
-COOLDOWN = {
-    'OTC_M1':  120,
-    'OTC_M5':  300,
-    'REAL_M1': 120,
-    'REAL_M5': 120,
-}
-
-# Score mínimo por canal
-SCORE_MIN = {
-    'OTC_M1':  80,
-    'OTC_M5':  85,
-    'REAL_M1': 150,
-    'REAL_M5': 150,
-}
-
-# Pares
-PARES_OTC = [
-    'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
-    'EURJPY-OTC', 'GBPJPY-OTC', 'AUDJPY-OTC', 'EURGBP-OTC',
-]
-PARES_REAL = [
-    'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD',
-    'EURJPY', 'GBPJPY', 'EURGBP', 'USDCAD',
-]
-
-# Mapa moeda → pares afetados (ForexFactory)
-MOEDA_PARES = {
-    'USD': ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD',
-            'EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC'],
-    'EUR': ['EURUSD','EURJPY','EURGBP','EURUSD-OTC','EURJPY-OTC','EURGBP-OTC'],
-    'GBP': ['GBPUSD','GBPJPY','EURGBP','GBPUSD-OTC','GBPJPY-OTC','EURGBP-OTC'],
-    'JPY': ['USDJPY','EURJPY','GBPJPY','USDJPY-OTC','EURJPY-OTC','GBPJPY-OTC'],
-    'AUD': ['AUDUSD','AUDUSD-OTC','AUDJPY-OTC'],
-    'CAD': ['USDCAD'],
-}
-
-# Arquivos de persistência
-os.makedirs(os.path.join(WORK_DIR, 'logs'), exist_ok=True)
-LOG_FILE    = os.path.join(WORK_DIR, 'logs', 'sniper_v12.log')
-ESTADO_FILE = os.path.join(WORK_DIR, 'estado_v12.json')
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LOGGING
-# ══════════════════════════════════════════════════════════════════════════════
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(message)s',
-    datefmt='%H:%M:%S',
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout),
-    ]
+import sys, os, subprocess
+subprocess.call(
+    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "flask"],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
-logger = logging.getLogger('V12')
 
-_log_buffer = []          # últimas 200 linhas para o painel
-_log_lock   = threading.Lock()
+import time, math, threading, requests, pytz
+from datetime import datetime, timedelta
+from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
-def log(msg):
-    logger.info(msg)
-    with _log_lock:
-        _log_buffer.append(f"{datetime.datetime.now(BRT).strftime('%H:%M:%S')} {msg}")
-        if len(_log_buffer) > 200:
-            _log_buffer.pop(0)
+# ── IQ Option via lib WebSocket ────────────────────────────────────
+_IQ_LIB_PATH = os.path.join(os.path.dirname(__file__), "api_faria")
+if _IQ_LIB_PATH not in sys.path:
+    sys.path.insert(0, _IQ_LIB_PATH)
+try:
+    from iqoptionapi.stable_api import IQ_Option as _IQLib
+    _IQ_LIB_OK = True
+except Exception as _e:
+    _IQ_LIB_OK = False
+    print(f"[WARN] IQ lib não carregou: {_e}")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ESTADO GLOBAL
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
+#  CONFIGURAÇÕES GLOBAIS
+# ══════════════════════════════════════════════════════════════════
+TG_TOKEN  = os.environ.get("TG_TOKEN", "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg")
+TG_CHAT   = os.environ.get("TG_CHAT",  "5911742397")
+IQ_EMAIL  = os.environ.get("IQ_EMAIL", "laiane.aline@gmail.com")
+IQ_PASS   = os.environ.get("IQ_PASS",  "alineegui95")
+IQ_SSID   = os.environ.get("IQ_SSID",  "")
+POLYGON_KEY = os.environ.get("POLYGON_KEY", "gXySF0ojKao907z3vKOtpxr8opt0cbLx")
 
-def _estado_padrao():
-    return {
-        'wins': 0, 'losses': 0,
-        'losses_dia': 0, 'losses_seq': 0,
-        'data_hoje': '', 'pausa_ate': 0,
-        'ultimo_trade': {},
-    }
+BRT            = pytz.timezone("America/Sao_Paulo")
+MAX_LOSSES_DIA = 4
+COOLDOWN       = 120   # segundos entre trades no mesmo par
 
-def load_estado():
-    try:
-        with open(ESTADO_FILE) as f:
-            e = json.load(f)
-            for k, v in _estado_padrao().items():
-                e.setdefault(k, v)
-            return e
-    except Exception:
-        return _estado_padrao()
+# ── ENGINE FOREX ──────────────────────────────────────────────────
+FOREX_SCORE_MIN  = 150        # Score mínimo (170 máx com bônus OB/FVG)
+FOREX_PAYOUT_MIN = 0.85
+FOREX_EXPIRACAO  = 3          # minutos (M3)
+FOREX_PARES = [
+    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY", "EURGBP"
+]
+FOREX_JANELAS = [             # (h_ini, m_ini, h_fim, m_fim) BRT
+    (9,  30, 15,  0),         # Londres
+    (14,  0, 16,  0),         # NY overlap
+    (21,  0,  1,  0),         # Tokyo
+]
+FOREX_MINUTOS_BLOQ = [58, 59, 0, 1, 2]  # só virada de hora — Forex real descentralizado
 
-def save_estado(e):
-    try:
-        with open(ESTADO_FILE, 'w') as f:
-            json.dump(e, f)
-    except Exception:
-        pass
+# ── ENGINE OTC ────────────────────────────────────────────────────
+OTC_SCORE_MIN = 85
+OTC_EXPIRACAO  = 1             # minutos (M1)
+OTC_PAYOUT_MIN = 0.80          # payout mínimo OTC (80%)
+OTC_PARES = [
+    "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC",
+    "EURJPY-OTC", "GBPJPY-OTC", "AUDJPY-OTC", "EURGBP-OTC",
+]
+OTC_JANELAS = [
+    (6,   0, 11, 44),
+    (13, 15, 17,  0),
+    (21,  0,  2,  0),
+]
+OTC_MINUTOS_BLOQ = [0, 1, 2, 17, 32, 47, 58, 59]
 
-_estado      = load_estado()
-_estado_lock = threading.Lock()
+# ══════════════════════════════════════════════════════════════════
+#  ESTADO GLOBAL UNIFICADO
+# ══════════════════════════════════════════════════════════════════
+_lock = threading.Lock()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAINEL (estado compartilhado com Flask)
-# ══════════════════════════════════════════════════════════════════════════════
+estado = {
+    # Controle geral
+    "ativo":           True,   # auto-liga ao subir
+    "forex_ativo":     True,
+    "otc_ativo":       True,
+    "executor_ativo":  True,
+    "stop_diario":     False,
+    "losses_dia":      0,
+    "data_losses_dia": "",
+    "saldo":           0.0,
+    "iq_ok":           False,
+    "iniciado_em":     "",
 
-_painel = {
-    'bot_ativo':      True,
-    'execucao_ativa': EXECUCAO_ATIVA,
-    'saldo':          0.0,
-    'wins':           0,
-    'losses':         0,
-    'losses_dia':     0,
-    'iq_conectado':   False,
-    'sinais':         [],       # últimos 50 sinais
-    'canais': {
-        'OTC_M1':  {'ativo': True, 'ultimo_sinal': '—', 'total': 0},
-        'OTC_M5':  {'ativo': True, 'ultimo_sinal': '—', 'total': 0},
-        'REAL_M1': {'ativo': True, 'ultimo_sinal': '—', 'total': 0},
-        'REAL_M5': {'ativo': True, 'ultimo_sinal': '—', 'total': 0},
-    },
-    'iniciado_em': datetime.datetime.now(BRT).strftime('%d/%m %H:%M'),
+    # Trava global de portfólio
+    "trava_ts":        0,      # timestamp da última entrada
+    "trava_par":       "",     # par que está travado
+
+    # Placar Forex
+    "forex_wins":      0,
+    "forex_losses":    0,
+    "forex_score":     0,
+    "forex_par":       "",
+    "forex_status":    "aguardando",
+
+    # Placar OTC
+    "otc_wins":        0,
+    "otc_losses":      0,
+    "otc_score":       0,
+    "otc_par":         "",
+    "otc_status":      "aguardando",
+
+    # Logs separados
+    "log_forex":       [],
+    "log_otc":         [],
+    "log_geral":       [],
 }
-_painel_lock = threading.Lock()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TRAVA GLOBAL DE PORTFÓLIO
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Persistência de estado (/data) ────────────────────────────────
+_STATE_FILE = "/data/estado_dia.json"
+_CAMPOS_PERSIST = [
+    "stop_diario", "losses_dia", "data_losses_dia", "saldo",
+    "forex_wins", "forex_losses", "otc_wins", "otc_losses",
+    "log_forex", "log_otc", "log_geral", "iniciado_em"
+]
 
-_portfolio_lock  = threading.Lock()
-_portfolio_trava = {'ativo': False, 'par': None, 'libera_em': 0}
-_portfolio_mutex = threading.Lock()
-
-def portfolio_livre():
-    with _portfolio_mutex:
-        if _portfolio_trava['ativo'] and time.time() < _portfolio_trava['libera_em']:
-            return False, _portfolio_trava['par']
-        _portfolio_trava['ativo'] = False
-        return True, None
-
-def travar_portfolio(par, seg=65):
-    with _portfolio_mutex:
-        _portfolio_trava['ativo']    = True
-        _portfolio_trava['par']      = par
-        _portfolio_trava['libera_em'] = time.time() + seg
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RESOLUÇÃO DE CONFLITO ENTRE CANAIS (M1 vs M5 mesmo mercado)
-# ══════════════════════════════════════════════════════════════════════════════
-# Armazena o sinal pendente de M1 por até 10s aguardando M5
-_conflito_otc  = {'dir': None, 'canal': None, 'ts': 0}
-_conflito_real = {'dir': None, 'canal': None, 'ts': 0}
-_conflito_lock = threading.Lock()
-
-CONFLITO_JANELA = 10   # segundos de janela para detectar conflito simultâneo
-
-def registrar_sinal_conflito(mercado, canal, direcao):
-    """
-    Registra sinal pendente para verificar conflito M1×M5.
-    Retorna: 'EXECUTAR', 'AGUARDAR', 'BLOQUEADO'
-    """
-    with _conflito_lock:
-        buf = _conflito_otc if mercado == 'OTC' else _conflito_real
-        agora = time.time()
-
-        # Janela expirou — registrar novo
-        if agora - buf['ts'] > CONFLITO_JANELA:
-            buf['dir']   = direcao
-            buf['canal'] = canal
-            buf['ts']    = agora
-            # M1 aguarda para ver se M5 vai conflitar
-            if canal.endswith('M1'):
-                return 'AGUARDAR'
-            # M5 pode executar direto (não precisa esperar)
-            return 'EXECUTAR'
-
-        # Dentro da janela — verificar conflito
-        outro_dir   = buf['dir']
-        outro_canal = buf['canal']
-
-        if outro_dir == direcao:
-            # Mesma direção: M5 vence, M1 bloqueado
-            if canal.endswith('M5'):
-                buf['dir']   = None
-                buf['canal'] = None
-                buf['ts']    = 0
-                return 'EXECUTAR'
-            else:
-                return 'BLOQUEADO'   # M1 cede para M5
-        else:
-            # Direções opostas: ambos bloqueados
-            buf['dir']   = None
-            buf['canal'] = None
-            buf['ts']    = 0
-            return 'BLOQUEADO'
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TELEGRAM
-# ══════════════════════════════════════════════════════════════════════════════
-
-def telegram(msg):
+def _salvar_estado():
+    """Salva campos do dia em disco."""
     try:
-        url  = f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage'
-        data = urllib.parse.urlencode({
-            'chat_id':    TG_CHAT,
-            'text':       msg,
-            'parse_mode': 'HTML',
-        }).encode()
-        urllib.request.urlopen(url, data=data, timeout=8)
+        os.makedirs("/data", exist_ok=True)
+        dados = {k: estado[k] for k in _CAMPOS_PERSIST}
+        dados["_data"] = datetime.now(BRT).strftime("%Y-%m-%d")
+        with open(_STATE_FILE, "w") as f:
+            json.dump(dados, f)
     except Exception as e:
-        log(f'Telegram erro: {e}')
+        _log(f"Erro ao salvar estado: {e}")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FOREXFACTORY
-# ══════════════════════════════════════════════════════════════════════════════
-
-_ff_cache      = {'dados': None, 'ts': 0}
-_ff_bloqueados = set()   # pares bloqueados agora
-
-def get_ff():
-    if time.time() - _ff_cache['ts'] < 300 and _ff_cache['dados']:
-        return _ff_cache['dados']
+def _carregar_estado():
+    """Carrega estado do dia se for o mesmo dia."""
     try:
-        req  = urllib.request.Request(FF_URL, headers={'User-Agent': 'Mozilla/5.0'})
-        resp = urllib.request.urlopen(req, timeout=8)
-        data = json.loads(resp.read())
-        _ff_cache['dados'] = data
-        _ff_cache['ts']    = time.time()
-        return data
+        if not os.path.exists(_STATE_FILE):
+            return
+        with open(_STATE_FILE) as f:
+            dados = json.load(f)
+        hoje = datetime.now(BRT).strftime("%Y-%m-%d")
+        if dados.get("_data") != hoje:
+            _log("Novo dia — estado zerado.")
+            return
+        for k in _CAMPOS_PERSIST:
+            if k in dados:
+                estado[k] = dados[k]
+        _log(f"Estado do dia restaurado: {estado['forex_wins']+estado['otc_wins']}W / {estado['forex_losses']+estado['otc_losses']}L")
     except Exception as e:
-        log(f'FF erro: {e}')
-        return _ff_cache['dados'] or []
+        _log(f"Erro ao carregar estado: {e}")
 
-def atualizar_ff_bloqueados():
-    """
-    Recalcula pares bloqueados por eventos HIGH do ForexFactory.
-    Janela: 30min antes e 30min depois do evento.
-    FF retorna horários em ET (UTC-4). Offset BRT = ET+1h.
-    """
-    global _ff_bloqueados
-    cal   = get_ff()
-    agora = datetime.datetime.now(BRT)
-    bloq  = set()
+# Carrega ao iniciar
+_carregar_estado()
 
-    for ev in cal:
-        if ev.get('impact') != 'High':
-            continue
-        moeda = ev.get('currency', '')
-        if moeda not in MOEDA_PARES:
-            continue
+# Cooldowns por par (compartilhado)
+_ultimo_trade = {}
+
+# Cache de velas compartilhado — engines preenchem, filtro consome
+_velas_cache = {}       # par -> {"velas": [...], "ts": float}
+_velas_cache_lock = threading.Lock()
+VELAS_CACHE_TTL = 90    # segundos
+
+def get_candles_cached(par, n=60, tf=60):
+    """Retorna velas do cache se frescos, senão busca na IQ."""
+    now = time.time()
+    with _velas_cache_lock:
+        entry = _velas_cache.get(par)
+        if entry and (now - entry["ts"]) < VELAS_CACHE_TTL:
+            return entry["velas"]
+    velas = get_candles(par, n=n, tf=tf)
+    if velas:
+        with _velas_cache_lock:
+            _velas_cache[par] = {"velas": velas, "ts": now}
+    return velas
+
+def _atualizar_cache_par(par, n=60, tf=60):
+    """Atualiza cache de um par em background."""
+    velas = get_candles(par, n=n, tf=tf)
+    if velas:
+        with _velas_cache_lock:
+            _velas_cache[par] = {"velas": velas, "ts": time.time()}
+
+# ══════════════════════════════════════════════════════════════════
+#  LOG + TELEGRAM
+# ══════════════════════════════════════════════════════════════════
+def _log(msg, engine="GERAL"):
+    agora = datetime.now(BRT).strftime("%H:%M:%S")
+    linha = f"[{agora}][{engine}] {msg}"
+    print(linha, flush=True)
+    with _lock:
+        estado["log_geral"].append(linha)
+        if engine == "FOREX":
+            estado["log_forex"].append(linha)
+            if len(estado["log_forex"]) > 100:
+                estado["log_forex"] = estado["log_forex"][-100:]
+        elif engine == "OTC":
+            estado["log_otc"].append(linha)
+            if len(estado["log_otc"]) > 100:
+                estado["log_otc"] = estado["log_otc"][-100:]
+        if len(estado["log_geral"]) > 200:
+            estado["log_geral"] = estado["log_geral"][-200:]
+
+def tg(msg):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "HTML"},
+            timeout=8
+        )
+    except Exception as e:
+        _log(f"Telegram erro: {e}")
+
+# ══════════════════════════════════════════════════════════════════
+#  IQ OPTION — REST PURO (sem websocket, sem lib)
+# ══════════════════════════════════════════════════════════════════
+_iq_sess     = requests.Session()
+_iq_sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"})
+_iq_ok       = False
+_iq_tentando = False
+_iq_api      = None   # instância da IQ_Option lib
+
+# Mapa ativo → active_id da IQ Option
+_IQ_ACTIVE_ID = {
+    "EURUSD": 1, "EURJPY": 18, "EURGBP": 17, "GBPUSD": 2,
+    "USDJPY": 4, "AUDUSD": 3,  "USDCHF": 5,  "XAUUSD": 68,
+    "NZDUSD": 6, "USDCAD": 8,
+}
+
+def _conectar_iq():
+    global _iq_ok, _iq_tentando, _iq_api
+    _iq_tentando = True
+    try:
+        _log("Conectando IQ Option (WebSocket lib)...")
+        if not _IQ_LIB_OK:
+            _log("IQ lib não disponível — usando fallbacks.")
+            return
+
+        api = _IQLib(IQ_EMAIL, IQ_PASS)
+        check, reason = api.connect()
+        if not check:
+            _log(f"IQ connect falhou: {reason}")
+            return
+
+        # Vai direto para Practice e fica lá para operar
+        api.change_balance("PRACTICE")
+        time.sleep(1)
+        saldo_prac = api.get_balance()
+        saldo_real = 0.0  # conta real zerada — não usa
+        # ← permanece em PRACTICE
+
+        _iq_api = api
+        _iq_ok  = True
+        with _lock:
+            estado["iq_ok"]          = True
+            estado["saldo"]          = float(saldo_prac or 0)   # operando em Practice
+            estado["saldo_practice"] = float(saldo_prac or 0)
+        _log(f"IQ conectada! Practice: ${saldo_prac:.2f} (operando aqui)")
+
+    except Exception as e:
+        _log(f"IQ erro conexão: {e}")
+    finally:
+        _iq_tentando = False
+
+def garantir_conexao():
+    global _iq_ok, _iq_tentando
+    if not _iq_ok and not _iq_tentando:
+        threading.Thread(target=_conectar_iq, daemon=True).start()
+    return _iq_ok
+
+def get_candles(ativo, n=60, tf=60):
+    """Busca velas M1 — 1º IQ lib WebSocket | 2º Polygon | 3º Twelve Data"""
+    global _iq_ok
+    par_base = ativo.replace("-OTC", "").replace("/", "").upper()
+
+    # ── 1. IQ Option via lib (WebSocket — tempo real) ─────────────────
+    if _iq_ok and _iq_api:
         try:
-            # Parse da data ET e conversão para BRT (+1h)
-            dt_et  = datetime.datetime.fromisoformat(ev['date'].replace('Z',''))
-            dt_brt = dt_et + datetime.timedelta(hours=1)
-            dt_brt = BRT.localize(dt_brt) if dt_brt.tzinfo is None else dt_brt
-            delta  = abs((agora - dt_brt).total_seconds())
-            if delta <= 1800:   # 30 minutos
-                for par in MOEDA_PARES[moeda]:
-                    bloq.add(par)
-        except Exception:
-            continue
+            # Garante reconexão se necessário
+            if not _iq_api.check_connect():
+                _iq_ok = False
+                with _lock:
+                    estado["iq_ok"] = False
+                threading.Thread(target=_conectar_iq, daemon=True).start()
+                _log(f"IQ desconectou ({par_base}) — reconectando...")
+            else:
+                candles = _iq_api.get_candles(par_base, tf, n, time.time())
+                if candles and len(candles) > 0:
+                    velas = []
+                    for v in candles:
+                        velas.append({
+                            "o": float(v.get("open",  v.get("o", 0))),
+                            "c": float(v.get("close", v.get("c", 0))),
+                            "h": float(v.get("max",   v.get("h", 0))),
+                            "l": float(v.get("min",   v.get("l", 0))),
+                            "t": int(v.get("from",    v.get("t", 0))),
+                        })
+                    return sorted(velas, key=lambda x: x["t"])
+        except Exception as e:
+            _log(f"IQ candles lib erro ({par_base}): {e}")
 
-    _ff_bloqueados = bloq
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DXY — Confluência para pares com USD
-# ══════════════════════════════════════════════════════════════════════════════
-
-_dxy_cache = {'up': None, 'ts': 0}
-
-def get_dxy_trend():
-    """Retorna True se DXY em alta, False se em baixa, None se indisponível."""
-    if time.time() - _dxy_cache['ts'] < 120 and _dxy_cache['up'] is not None:
-        return _dxy_cache['up']
+    # ── 2. Polygon.io (delay ~10min no plano free) ─────────────────────
     try:
-        url  = (f'https://api.twelvedata.com/time_series'
-                f'?symbol=DXY&interval=5min&outputsize=5&apikey={TWELVE_KEY}')
-        resp = urllib.request.urlopen(url, timeout=6)
-        d    = json.loads(resp.read())
-        if d.get('status') != 'ok':
-            return None
-        vals = [float(v['close']) for v in d['values'][:5]]
-        up   = vals[0] > vals[-1]
-        _dxy_cache['up'] = up
-        _dxy_cache['ts'] = time.time()
-        return up
-    except Exception:
-        return None
+        import datetime as dt
+        fim    = int(time.time()) * 1000
+        inicio = fim - (n + 10) * tf * 1000
+        url = (f"https://api.polygon.io/v2/aggs/ticker/C:{par_base}/range/1/minute"
+               f"/{dt.datetime.utcfromtimestamp(inicio/1000).strftime('%Y-%m-%d')}"
+               f"/{dt.datetime.utcfromtimestamp(fim/1000).strftime('%Y-%m-%d')}"
+               f"?limit={n+10}&sort=asc&apiKey={POLYGON_KEY}")
+        r = requests.get(url, timeout=8)
+        data = r.json()
+        if data.get("resultsCount", 0) > 0:
+            velas = []
+            for v in data["results"][-n:]:
+                velas.append({"o": float(v["o"]), "c": float(v["c"]),
+                               "h": float(v["h"]), "l": float(v["l"]),
+                               "t": int(v["t"] / 1000)})
+            return velas
+    except Exception as e:
+        _log(f"Polygon candles erro ({par_base}): {e}")
 
-def check_dxy(direction, par):
-    """Retorna (ok, msg). Bloqueia se DXY diverge do par."""
-    dxy_up = get_dxy_trend()
-    if dxy_up is None:
-        return True, 'DXY indisponível (permissivo)'
+    # ── 3. Twelve Data (backup) ────────────────────────────────────────
+    try:
+        ATIVOS_TD = {"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY",
+                     "AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP","XAUUSD":"XAU/USD"}
+        sym = ATIVOS_TD.get(par_base, "")
+        if sym:
+            r = requests.get(f"https://api.twelvedata.com/time_series?symbol={sym}"
+                             f"&interval=1min&outputsize={n}&apikey=1be0b948fb1c48bb997e350c542edafd",
+                             timeout=8)
+            vals = r.json().get("values", [])
+            if vals:
+                velas = []
+                for v in reversed(vals):
+                    velas.append({"o": float(v["open"]), "c": float(v["close"]),
+                                  "h": float(v["high"]), "l": float(v["low"]), "t": 0})
+                return velas
+    except Exception as e:
+        _log(f"TwelveData candles erro ({par_base}): {e}")
 
-    # USD como base (USDJPY, USDCAD): DXY sobe → USD sobe → CALL
-    if par.startswith('USD'):
-        ok = (dxy_up and direction == 'CALL') or (not dxy_up and direction == 'PUT')
-        return ok, '' if ok else 'DXY divergente (USD base)'
+    return []
 
-    # USD como cotada (EURUSD, GBPUSD...): DXY sobe → USD sobe → par cai → PUT
-    if 'USD' in par:
-        ok = (dxy_up and direction == 'PUT') or (not dxy_up and direction == 'CALL')
-        return ok, '' if ok else 'DXY divergente (USD cotada)'
+def get_saldo():
+    try:
+        if _iq_ok and _iq_api:
+            s = _iq_api.get_balance()
+            if s:
+                return float(s)
+    except:
+        pass
+    return estado.get("saldo", 0.0)
 
-    return True, 'Par sem USD — DXY ignorado'
+def get_payout(par):
+    """
+    Retorna payout real via lib IQ Option.
+    Cache de 60s. Fallback 0.82.
+    """
+    agora = time.time()
+    cached = _payout_cache.get(par)
+    if cached and (agora - cached["ts"]) < 60:
+        return cached["val"]
+    try:
+        if not _iq_ok or not _iq_api:
+            return 0.82
+        par_base = par.replace("-OTC", "").replace("/", "").upper()
+        is_otc   = "-OTC" in par.upper()
+        all_assets = _iq_api.get_all_open_time()
+        assets = all_assets.get("turbo", {})
+        # Busca exata
+        for name, info in assets.items():
+            name_up = name.upper().replace("-OTC","").replace("/","")
+            if name_up == par_base:
+                if is_otc and "OTC" not in name.upper(): continue
+                if not is_otc and "OTC" in name.upper(): continue
+                raw = info.get("profit", {})
+                if "commission" in raw:
+                    val = round((100 - float(raw["commission"])) / 100, 4)
+                elif "value" in raw:
+                    val = round(float(raw["value"]), 4)
+                else:
+                    val = 0.82
+                _payout_cache[par] = {"val": val, "ts": agora}
+                return val
+        # Busca parcial
+        for name, info in assets.items():
+            if par_base in name.upper().replace("-OTC","").replace("/",""):
+                raw = info.get("profit", {})
+                val = round((100 - float(raw.get("commission", 18))) / 100, 4)
+                _payout_cache[par] = {"val": val, "ts": agora}
+                return val
+    except Exception as e:
+        _log(f"get_payout erro ({par}): {e}")
+    return 0.82
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FILTROS TEMPORAIS
-# ══════════════════════════════════════════════════════════════════════════════
+# Cache de payout
+_payout_cache = {}
 
-def horario_seco(agora):
-    """True se estiver no horário seco (17:30–21:00 BRT)."""
-    hm  = agora.hour * 60 + agora.minute
-    ini = HORARIO_SECO_INI[0] * 60 + HORARIO_SECO_INI[1]
-    fim = HORARIO_SECO_FIM[0] * 60 + HORARIO_SECO_FIM[1]
-    return ini <= hm < fim
+# ══════════════════════════════════════════════════════════════════
+#  CONFIRMAÇÃO M5 — filtro de tendência maior
+# ══════════════════════════════════════════════════════════════════
+_m5_cache = {}
 
-def trap_zone_otc_m1(minuto):
-    """OTC M1: bloqueia :00,:01,:02,:17,:32,:47,:58,:59"""
-    return minuto in {0, 1, 2, 17, 32, 47, 58, 59}
+def confirmar_m5(par, direcao_m1):
+    """
+    Retorna (True, info) se M5 confirma, (False, motivo) se bloqueia.
+    EMA9 > EMA21 em M5 → tendência CALL; < → PUT.
+    Cache 5 min.
+    """
+    agora = time.time()
+    cached = _m5_cache.get(par)
+    if cached and (agora - cached["ts"]) < 300:
+        dir_m5 = cached["direcao"]
+        if dir_m5 == direcao_m1:
+            return True, f"M5 {dir_m5} ✅"
+        return False, f"M5 {dir_m5} ≠ M1 {direcao_m1} BLOQUEIO"
+    try:
+        par_base = par.replace("-OTC", "").replace("/", "").upper()
+        velas5   = get_candles(par_base, n=30, tf=300)
+        if not velas5 or len(velas5) < 15:
+            return True, "M5 sem dados (neutro)"
+        closes5 = [v["c"] for v in velas5]
+        e9_5    = ema_series(closes5, 9)
+        e21_5   = ema_series(closes5, 21)
+        if not e9_5 or not e21_5:
+            return True, "M5 EMA indispon (neutro)"
+        dir_m5 = "CALL" if e9_5[-1] > e21_5[-1] else "PUT"
+        _m5_cache[par] = {"direcao": dir_m5, "ts": agora}
+        if dir_m5 == direcao_m1:
+            return True, f"M5 {dir_m5} ✅"
+        return False, f"M5 {dir_m5} ≠ M1 {direcao_m1} BLOQUEIO"
+    except Exception as e:
+        _log(f"confirmar_m5 erro ({par}): {e}")
+        return True, "M5 erro (neutro)"
 
-def trap_zone_otc_m5(minuto):
-    """OTC M5: bloqueia apenas :59 e :00"""
-    return minuto in {59, 0}
+# ══════════════════════════════════════════════════════════════════
+#  ORDER BLOCKS / SMC (Volume Proxy)
+#  Bônus de pontuação quando preço reage a zona institucional
+# ══════════════════════════════════════════════════════════════════
+def detectar_order_block(velas, direcao):
+    """
+    Retorna (True, pts_bonus) se há OB/FVG alinhado, (False, 0) caso contrário.
+    OB Bullish: vela bearish forte antes de impulso de alta
+    OB Bearish: vela bullish forte antes de impulso de baixa
+    FVG: gap entre high/low de velas não sobrepostas
+    """
+    try:
+        if len(velas) < 10:
+            return False, 0
+        closes = [v["c"] for v in velas]
+        preco  = closes[-1]
+        pip    = 0.01 if preco > 50 else 0.0001
+        janela = velas[-20:]
 
-def trap_zone_real(minuto):
-    """REAL M1/M5: bloqueia :00,:01,:02,:17,:32,:47,:58,:59"""
-    return minuto in {0, 1, 2, 17, 32, 47, 58, 59}
+        for i in range(len(janela) - 3):
+            v0, v1, v2 = janela[i], janela[i+1], janela[i+2]
+            corpo0 = abs(v0["c"] - v0["o"]) / pip
 
-# ══════════════════════════════════════════════════════════════════════════════
-# UTILITÁRIOS MATEMÁTICOS
-# ══════════════════════════════════════════════════════════════════════════════
+            if direcao == "CALL":
+                # OB Bullish
+                if v0["c"] < v0["o"] and corpo0 >= 3:
+                    if v1["c"] > v0["c"] and v2["c"] > v1["c"]:
+                        ob_top = max(v0["o"], v0["c"])
+                        ob_bot = min(v0["o"], v0["c"])
+                        if ob_bot <= preco <= ob_top * 1.002:
+                            return True, 20
+                # FVG Bullish: gap entre high v0 e low v2
+                if v2["l"] > v0["h"] and v0["h"] <= preco <= v2["l"] * 1.001:
+                    return True, 15
 
-def _ema(closes, period):
+            elif direcao == "PUT":
+                # OB Bearish
+                if v0["c"] > v0["o"] and corpo0 >= 3:
+                    if v1["c"] < v0["c"] and v2["c"] < v1["c"]:
+                        ob_top = max(v0["o"], v0["c"])
+                        ob_bot = min(v0["o"], v0["c"])
+                        if ob_bot * 0.998 <= preco <= ob_top:
+                            return True, 20
+                # FVG Bearish: gap entre low v0 e high v2
+                if v0["l"] > v2["h"] and v2["h"] * 0.999 <= preco <= v0["l"]:
+                    return True, 15
+
+        return False, 0
+    except:
+        return False, 0
+
+# ══════════════════════════════════════════════════════════════════
+#  TRAVA GLOBAL DE PORTFÓLIO
+# ══════════════════════════════════════════════════════════════════
+TRAVA_SEGUNDOS = 65
+
+def trava_livre():
+    """Retorna True se pode abrir nova operação."""
+    with _lock:
+        return (time.time() - estado["trava_ts"]) >= TRAVA_SEGUNDOS
+
+def trava_set(par):
+    with _lock:
+        estado["trava_ts"]  = time.time()
+        estado["trava_par"] = par
+
+def trava_release():
+    with _lock:
+        estado["trava_ts"]  = 0
+        estado["trava_par"] = ""
+
+# ══════════════════════════════════════════════════════════════════
+#  STOP DIÁRIO UNIFICADO
+# ══════════════════════════════════════════════════════════════════
+def registrar_loss():
+    """Incrementa losses_dia e verifica stop. Retorna True se stop ativado."""
+    with _lock:
+        hoje = datetime.now(BRT).strftime("%Y-%m-%d")
+        if estado["data_losses_dia"] != hoje:
+            estado["data_losses_dia"] = hoje
+            estado["losses_dia"]      = 0
+        estado["losses_dia"] += 1
+        if estado["losses_dia"] >= MAX_LOSSES_DIA and not estado["stop_diario"]:
+            estado["stop_diario"] = True
+            estado["ativo"]       = False
+            _log("🛑 STOP DIÁRIO: 4 losses. Bot desligado.")
+            tg(
+                "🛑 <b>STOP DIÁRIO</b>\n"
+                "4 losses atingidos. Bot desligado."
+            )
+            return True
+        return False
+
+def check_stop_diario():
+    """Checa se stop já foi ativado e reseta contador se mudou o dia."""
+    with _lock:
+        hoje = datetime.now(BRT).strftime("%Y-%m-%d")
+        if estado["data_losses_dia"] != hoje:
+            estado["data_losses_dia"] = hoje
+            estado["losses_dia"]      = 0
+            estado["stop_diario"]     = False
+        return estado["stop_diario"]
+
+# ══════════════════════════════════════════════════════════════════
+#  INDICADORES COMPARTILHADOS
+# ══════════════════════════════════════════════════════════════════
+def ema_series(closes, period):
     if len(closes) < period:
-        return None
-    k, ema = 2 / (period + 1), closes[0]
-    for p in closes[1:]:
-        ema = p * k + ema * (1 - k)
-    return ema
-
-def _ema_series(closes, period):
-    """Retorna lista de EMAs (mesmo tamanho que closes)."""
-    if len(closes) < period:
-        return [None] * len(closes)
-    k      = 2 / (period + 1)
-    result = [None] * (period - 1)
-    ema    = sum(closes[:period]) / period
-    result.append(ema)
+        return []
+    k = 2 / (period + 1)
+    result = [sum(closes[:period]) / period]
     for p in closes[period:]:
-        ema = p * k + ema * (1 - k)
-        result.append(ema)
+        result.append(p * k + result[-1] * (1 - k))
     return result
 
-def _rsi(closes, period=14):
+def calcular_rsi(closes, period=14):
     if len(closes) < period + 1:
         return 50.0
-    gains, losses = [], []
+    gains, losses_list = [], []
     for i in range(1, len(closes)):
         d = closes[i] - closes[i-1]
         gains.append(max(d, 0))
-        losses.append(max(-d, 0))
+        losses_list.append(max(-d, 0))
     ag = sum(gains[-period:]) / period
-    al = sum(losses[-period:]) / period
+    al = sum(losses_list[-period:]) / period
     if al == 0:
         return 100.0
-    rs = ag / al
-    return 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + ag / al))
 
-def _macd(closes, fast, slow, signal):
-    if len(closes) < slow + signal:
-        return None, None, None
-    ema_f = _ema_series(closes, fast)
-    ema_s = _ema_series(closes, slow)
-    diff  = [f - s if f and s else None for f, s in zip(ema_f, ema_s)]
-    valid = [d for d in diff if d is not None]
-    if len(valid) < signal:
-        return None, None, None
-    sig_line = _ema(valid, signal)
-    macd_val = valid[-1]
-    hist     = macd_val - sig_line if sig_line else None
-    return macd_val, sig_line, hist
+def calcular_macd(closes, rapida=5, lenta=13, sinal=4):
+    if len(closes) < lenta + sinal:
+        return 0, 0
+    e_r  = ema_series(closes, rapida)
+    e_l  = ema_series(closes, lenta)
+    n    = min(len(e_r), len(e_l))
+    if n < sinal:
+        return 0, 0
+    macd_line = [e_r[-n+i] - e_l[-n+i] for i in range(n)]
+    sig       = ema_series(macd_line, sinal)
+    if not sig:
+        return 0, 0
+    return macd_line[-1], sig[-1]
 
-def _bollinger(closes, period=20, dev=2):
+def calcular_bb(closes, period=20, desvio=2):
     if len(closes) < period:
         return None, None, None
-    window = closes[-period:]
-    mean   = sum(window) / period
-    std    = math.sqrt(sum((x - mean) ** 2 for x in window) / period)
-    return mean + dev * std, mean, mean - dev * std
+    sub = closes[-period:]
+    mid = sum(sub) / period
+    std = math.sqrt(sum((x - mid)**2 for x in sub) / period)
+    return mid + desvio * std, mid, mid - desvio * std
 
-def _adx(velas, period=14):
+def calcular_adx(velas, period=14):
     if len(velas) < period + 1:
-        return 20.0
+        return 0
     trs, pdms, ndms = [], [], []
     for i in range(1, len(velas)):
-        h, l, pc = velas[i]['max'], velas[i]['min'], velas[i-1]['close']
+        h, l, pc = velas[i]["h"], velas[i]["l"], velas[i-1]["c"]
         tr  = max(h - l, abs(h - pc), abs(l - pc))
-        pdm = max(velas[i]['max'] - velas[i-1]['max'], 0)
-        ndm = max(velas[i-1]['min'] - velas[i]['min'], 0)
-        if pdm < ndm: pdm = 0
-        if ndm < pdm: ndm = 0
+        pdm = max(h - velas[i-1]["h"], 0)
+        ndm = max(velas[i-1]["l"] - l, 0)
+        if pdm > ndm:   ndm = 0
+        elif ndm > pdm: pdm = 0
+        else:           pdm = ndm = 0
         trs.append(tr); pdms.append(pdm); ndms.append(ndm)
-    atr  = sum(trs[-period:])  / period
-    apdi = sum(pdms[-period:]) / period
-    andi = sum(ndms[-period:]) / period
-    if atr == 0:
-        return 20.0
-    pdi = 100 * apdi / atr
-    ndi = 100 * andi / atr
-    dx  = 100 * abs(pdi - ndi) / (pdi + ndi) if (pdi + ndi) > 0 else 0
-    return dx
+    def smooth(arr):
+        s = sum(arr[:period])
+        res = [s]
+        for v in arr[period:]:
+            s = s - s/period + v
+            res.append(s)
+        return res
+    atr_s = smooth(trs); pdm_s = smooth(pdms); ndm_s = smooth(ndms)
+    dxs = []
+    for i in range(len(atr_s)):
+        if atr_s[i] == 0: continue
+        pdi = 100 * pdm_s[i] / atr_s[i]
+        ndi = 100 * ndm_s[i] / atr_s[i]
+        soma = pdi + ndi
+        if soma == 0: continue
+        dxs.append(100 * abs(pdi - ndi) / soma)
+    if not dxs: return 0
+    return sum(dxs[-period:]) / min(len(dxs), period)
 
-def _atr(velas, period=14):
-    if len(velas) < 2:
-        return 0
-    trs = []
-    for i in range(1, len(velas)):
-        h, l, pc = velas[i]['max'], velas[i]['min'], velas[i-1]['close']
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    window = trs[-period:]
-    return sum(window) / len(window) if window else 0
+def shadow_bloqueio(vela):
+    """Pavio > 35% do candle total = BLOQUEIO."""
+    total = vela["h"] - vela["l"]
+    if total == 0: return False
+    pavio_sup = vela["h"] - max(vela["c"], vela["o"])
+    pavio_inf = min(vela["c"], vela["o"]) - vela["l"]
+    return max(pavio_sup, pavio_inf) / total > 0.35
 
-def _markov(closes, opens, seq_min=3):
+# ══════════════════════════════════════════════════════════════════
+#  DXY NATIVO (só para Forex)
+#  EURUSD inverso + USDJPY direto → força do dólar
+# ══════════════════════════════════════════════════════════════════
+_dxy_cache = {"ts": 0, "resultado": "NEUTRO"}
+
+def calcular_dxy_nativo():
+    if time.time() - _dxy_cache["ts"] < 30:
+        return _dxy_cache["resultado"]
+    try:
+        velas_eu = get_candles("EURUSD", n=10, tf=60)
+        velas_uj = get_candles("USDJPY", n=10, tf=60)
+        if len(velas_eu) < 3 or len(velas_uj) < 3:
+            return "NEUTRO"
+        def direcao(v):
+            c = [x["c"] for x in v[-4:-1]]
+            if c[-1] > c[0]: return "ALTA"
+            if c[-1] < c[0]: return "BAIXA"
+            return "NEUTRO"
+        dir_eu = direcao(velas_eu)
+        dir_uj = direcao(velas_uj)
+        if   dir_eu == "BAIXA" and dir_uj == "ALTA":  r = "FORTE_ALTA"
+        elif dir_eu == "ALTA"  and dir_uj == "BAIXA": r = "FORTE_BAIXA"
+        elif dir_eu == dir_uj and dir_eu != "NEUTRO": r = "DIVERGENTE"
+        else:                                          r = "NEUTRO"
+        _dxy_cache["resultado"] = r
+        _dxy_cache["ts"]        = time.time()
+        return r
+    except:
+        return "NEUTRO"
+
+def dxy_bloqueia(par, direcao_sinal):
+    sem_dxy = ["EURGBP", "EURJPY"]
+    if par in sem_dxy: return False, ""
+    dxy = calcular_dxy_nativo()
+    if dxy == "DIVERGENTE":
+        return True, "DXY DIVERGENTE"
+    if par.startswith("USD"):
+        if dxy == "FORTE_ALTA"  and direcao_sinal == "PUT":  return True, "DXY forte alta / par USD base"
+        if dxy == "FORTE_BAIXA" and direcao_sinal == "CALL": return True, "DXY forte baixa / par USD base"
+    elif "USD" in par:
+        if dxy == "FORTE_ALTA"  and direcao_sinal == "CALL": return True, "DXY forte alta / par USD cota"
+        if dxy == "FORTE_BAIXA" and direcao_sinal == "PUT":  return True, "DXY forte baixa / par USD cota"
+    return False, ""
+
+# ══════════════════════════════════════════════════════════════════
+#  FOREXFACTORY (só para Forex)
+# ══════════════════════════════════════════════════════════════════
+_ff_cache = {"eventos": [], "ts": 0}
+
+def get_eventos_ff():
+    if _ff_cache["eventos"] and time.time() - _ff_cache["ts"] < 300:
+        return _ff_cache["eventos"]
+    try:
+        r = requests.get(
+            "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=5
+        )
+        _ff_cache["eventos"] = r.json()
+        _ff_cache["ts"]      = time.time()
+    except:
+        pass
+    return _ff_cache["eventos"]
+
+def ff_bloqueado(agora_brt):
     """
-    Cadeia de Markov: analisa sequência de velas para estimar
-    probabilidade de continuação ou reversão.
-    Retorna (direcao, prob_pct, nivel).
-    """
-    if len(closes) < 10:
-        return None, 50.0, 'BAIXO'
-
-    # Construir sequência de direções
-    dirs = []
-    for i in range(len(closes)):
-        dirs.append('V' if closes[i] >= opens[i] else 'M')
-
-    # Contar transições
-    tr = {'VV': 0, 'VM': 0, 'MV': 0, 'MM': 0}
-    for i in range(len(dirs) - 1):
-        key = dirs[i] + dirs[i+1]
-        if key in tr:
-            tr[key] += 1
-
-    ultima   = dirs[-1]
-    seq_atual = 1
-    for i in range(len(dirs)-2, -1, -1):
-        if dirs[i] == ultima:
-            seq_atual += 1
-        else:
-            break
-    max_seq = max(seq_atual, seq_min)
-
-    if ultima == 'V':
-        tot    = tr['VV'] + tr['VM']
-        p_cont = tr['VV'] / tot if tot > 0 else 0.5
-        p_rev  = tr['VM'] / tot if tot > 0 else 0.5
-        s_cont, s_rev = 'CALL', 'PUT'
-    else:
-        tot    = tr['MM'] + tr['MV']
-        p_cont = tr['MM'] / tot if tot > 0 else 0.5
-        p_rev  = tr['MV'] / tot if tot > 0 else 0.5
-        s_cont, s_rev = 'PUT', 'CALL'
-
-    exaustao = seq_atual >= max(max_seq * 0.7, 3)
-
-    if exaustao and p_rev > 0.5:
-        sinal = s_rev; prob = p_rev
-    elif p_cont > 0.55 and not exaustao:
-        sinal = s_cont; prob = p_cont
-    else:
-        return None, 50.0, 'BAIXO'
-
-    nivel = 'ALTO' if prob > 0.65 else 'MEDIO'
-    return sinal, round(prob * 100, 1), nivel
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BUSCA DE VELAS — IQ Option
-# ══════════════════════════════════════════════════════════════════════════════
-
-def get_velas(iq, ativo, tf_s, n=80):
-    """
-    Busca n velas do ativo no timeframe tf_s (segundos).
-    Para OTC: passa o nome com sufixo -OTC direto para a API.
+    Bloqueia entrada se houver notícia de alto impacto nos próximos 30min ou último 1min.
+    ForexFactory retorna datas em ET (UTC-4 verão). Conversão: ET +1h = BRT.
+    Formato real da API: %Y-%m-%dT%H:%M:%S
     """
     try:
-        v = iq.get_candles(ativo, tf_s, n, time.time())
-        if v and len(v) >= 5:
-            return sorted(v, key=lambda x: x['from'])
-    except Exception as e:
-        log(f'get_velas {ativo} {tf_s}s: {e}')
-    return None
+        agora_ts = agora_brt.timestamp()
+        for ev in get_eventos_ff():
+            if ev.get("impact", "").lower() != "high":
+                continue
+            try:
+                raw_date = ev.get("date", "")
+                if not raw_date:
+                    continue
+                # Formato correto: "2026-06-30T08:30:00"
+                dt_et  = datetime.strptime(raw_date, "%Y-%m-%dT%H:%M:%S")
+                # ET (UTC-4) → BRT (UTC-3) = +1h
+                dt_brt = dt_et + timedelta(hours=1)
+                dt_ts  = dt_brt.replace(tzinfo=BRT).timestamp()
+                # Janela: 1min antes até 30min depois
+                if -60 <= (dt_ts - agora_ts) <= 1800:
+                    moeda = ev.get("currency", "")
+                    titulo = ev.get("title", "")
+                    return True, f"FF🔴 {moeda} {titulo} {dt_brt.strftime('%H:%M')}"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False, ""
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MOTOR CANAL 1 — OTC M1
-# Score máximo: 100 | Mínimo: 80
-# ══════════════════════════════════════════════════════════════════════════════
-
-def analisar_otc_m1(iq, par):
+# ══════════════════════════════════════════════════════════════════
+#  SCORE ENGINE FOREX (V9) — máx 170 pts
+# ══════════════════════════════════════════════════════════════════
+def score_forex(velas):
     """
-    Lógica: MACD(5,13,4) + ADX(14) + Bollinger(20,2) + RSI(14)
-            + Shadow Rejection + Markov
-    Retorna: (direction, score, det) ou (None, 0, motivo)
+    Retorna (score, direcao, det) ou (0, None, motivo)
+    Blocos:
+      A: Direção EMA9/25/50      → máx 60 pts
+      B: RSI momentum            → máx 30 pts
+      C: Corpo/Volatilidade      → máx 60 pts
+      D: Bônus OB/FVG            → +20 pts (se score base ≥ 135)
     """
-    nome_iq = par.replace('-OTC', '')
-    velas   = get_velas(iq, nome_iq, TF_M1, 80)
-    if not velas or len(velas) < 30:
-        return None, 0, f'Velas insuf ({len(velas) if velas else 0})'
+    if len(velas) < 55:
+        return 0, None, "velas insuf"
 
-    closes = [v['close'] for v in velas]
-    opens  = [v['open']  for v in velas]
-    highs  = [v['max']   for v in velas]
-    lows   = [v['min']   for v in velas]
+    closes = [v["c"] for v in velas]
+    vela   = velas[-2]  # última fechada
 
-    # ── MACD(5,13,4) ─────────────────────────────────────────────────────────
-    macd_val, sig_val, hist = _macd(closes, 5, 13, 4)
-    if macd_val is None:
-        return None, 0, 'MACD insuf'
+    # Shadow bloqueio
+    if shadow_bloqueio(vela):
+        return 0, None, "Shadow BLOQUEIO"
 
-    # Direção pelo cruzamento da linha zero e histograma
-    if macd_val > 0 and hist and hist > 0:
-        direction = 'CALL'
-    elif macd_val < 0 and hist and hist < 0:
-        direction = 'PUT'
-    else:
-        return None, 0, 'MACD sem cruzamento claro'
+    # EMA
+    e9  = ema_series(closes, 9)
+    e25 = ema_series(closes, 25)
+    e50 = ema_series(closes, 50)
+    if not e9 or not e25 or not e50:
+        return 0, None, "EMA indispon"
 
-    score = 0
+    preco = closes[-1]
+    # Direção base pelo EMA9
+    if e9[-1] > e25[-1]:   direcao = "CALL"
+    elif e9[-1] < e25[-1]: direcao = "PUT"
+    else: return 0, None, "EMA9/25 neutro"
 
-    # MACD base: cruzamento confirmado = 30pts
-    score += 30
+    # Bloco A (60 pts)
+    pts_a = 0
+    if (direcao == "CALL" and e9[-1] > e25[-1]) or (direcao == "PUT" and e9[-1] < e25[-1]):
+        pts_a += 20
+    if (direcao == "CALL" and preco > e25[-1]) or (direcao == "PUT" and preco < e25[-1]):
+        pts_a += 20
+    if (direcao == "CALL" and e25[-1] > e50[-1]) or (direcao == "PUT" and e25[-1] < e50[-1]):
+        pts_a += 20
 
-    # ── ADX(14) ──────────────────────────────────────────────────────────────
-    adx = _adx(velas[-20:], 14)
-    if adx < 18:
-        return None, 0, f'ADX lateral ({adx:.1f} < 18)'
-    elif adx < 22:
-        score += 10   # zona cinza: pontuação reduzida
-    else:
-        score += 20   # tendência confirmada
+    # Bloco B — RSI (30 pts)
+    rsi = calcular_rsi(closes)
+    if rsi > 85 or rsi < 15:
+        return 0, None, f"RSI {rsi:.1f} exaustão BLOQUEIO"
+    pts_b = 0
+    if direcao == "CALL" and 55 <= rsi <= 75: pts_b = 30
+    if direcao == "PUT"  and 25 <= rsi <= 45: pts_b = 30
 
-    # ── RSI(14) ──────────────────────────────────────────────────────────────
-    rsi = _rsi(closes, 14)
-    if direction == 'CALL' and rsi > 75:
-        return None, 0, f'RSI exaustão CALL ({rsi:.1f})'
-    if direction == 'PUT'  and rsi < 25:
-        return None, 0, f'RSI exaustão PUT ({rsi:.1f})'
-    if direction == 'CALL' and rsi < 55:
-        score += 20
-    elif direction == 'PUT' and rsi > 45:
-        score += 20
-    else:
-        score += 10
+    # Bloco C — Corpo/Volatilidade (60 pts)
+    pts_c    = 0
+    pip      = 0.01 if preco > 50 else 0.0001
+    corpo    = abs(vela["c"] - vela["o"]) / pip
+    v_alta   = vela["c"] > vela["o"]
+    atrs     = [abs(v["c"] - v["o"]) / pip for v in velas[-6:-1]]
+    atr_med  = sum(atrs) / len(atrs) if atrs else 0
 
-    # ── Bollinger(20,2) ──────────────────────────────────────────────────────
-    bb_sup, bb_med, bb_inf = _bollinger(closes, 20, 2)
-    if bb_sup and bb_inf and (bb_sup - bb_inf) > 0:
-        pos = (closes[-1] - bb_inf) / (bb_sup - bb_inf)
-        if direction == 'CALL' and pos < 0.35:
-            score += 20   # preço no terço inferior → potencial CALL
-        elif direction == 'PUT' and pos > 0.65:
-            score += 20   # preço no terço superior → potencial PUT
-        else:
-            score += 5
+    if corpo >= 2:   pts_c += 20
+    elif corpo >= 1.5: pts_c += 10
 
-    # ── Shadow Rejection ─────────────────────────────────────────────────────
-    ult = velas[-2]
-    rng = ult['max'] - ult['min']
-    if rng > 0:
-        corpo     = abs(ult['close'] - ult['open'])
-        sup_wick  = ult['max'] - max(ult['open'], ult['close'])
-        inf_wick  = min(ult['open'], ult['close']) - ult['min']
-        pavio_max = max(sup_wick, inf_wick)
-        if corpo > 0 and (pavio_max / corpo) > 0.35:
-            return None, 0, f'Shadow Rejection OTC M1 ({pavio_max/corpo:.2f})'
+    if (direcao == "CALL" and v_alta) or (direcao == "PUT" and not v_alta):
+        pts_c += 20
 
-    # ── Markov ───────────────────────────────────────────────────────────────
-    dir_mkv, prob_mkv, nivel_mkv = _markov(closes, opens)
-    if dir_mkv and dir_mkv != direction:
-        return None, 0, f'Markov divergente ({dir_mkv})'
-    if nivel_mkv == 'ALTO':
-        score += 10
-    elif nivel_mkv == 'MEDIO':
-        score += 5
+    if atr_med >= 3:   pts_c += 20
+    elif atr_med >= 1.5: pts_c += 10
 
-    det = {
-        'score': score, 'rsi': round(rsi,1), 'adx': round(adx,1),
-        'macd': round(macd_val,5), 'hist': round(hist,5) if hist else 0,
-        'markov': f'{dir_mkv} {prob_mkv}%' if dir_mkv else '—',
-        'setup': 'MACD+ADX+BB+Shadow',
+    score_base = pts_a + pts_b + pts_c
+
+    # Bloco D — Bônus OB/FVG (20 pts)
+    pts_d = 0
+    if score_base >= 135:
+        upper, mid, lower = calcular_bb(closes)
+        if upper and lower and (upper - lower) > 0:
+            pos = (preco - lower) / (upper - lower)
+            if (direcao == "CALL" and pos <= 0.20) or (direcao == "PUT" and pos >= 0.80):
+                pts_d = 20
+
+    score = score_base + pts_d
+    det   = {
+        "rsi": f"{rsi:.1f}", "corpo": f"{corpo:.1f}p",
+        "atr": f"{atr_med:.1f}p", "bonus": pts_d,
+        "pts": f"A:{pts_a} B:{pts_b} C:{pts_c} D:{pts_d}",
     }
-    return direction, score, det
+    return score, direcao, det
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MOTOR CANAL 2 — OTC M5
-# Score máximo: 100 | Mínimo: 85 | Lógica mais rígida
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
+#  SCORE ENGINE OTC (V10) — máx 100 pts
+# ══════════════════════════════════════════════════════════════════
+def score_otc(velas):
+    """
+    Score OTC V10 REFORÇADO — máx 100 pts
+    ─────────────────────────────────────────────────────────────────
+    FILTROS OBRIGATÓRIOS (qualquer um bloqueia tudo):
+      • Shadow > 35% do candle total
+      • RSI > 82 ou < 18  (exaustão)
+      • ADX < 22          (mercado lateral — sem tendência)
+      • Corpo < 1.0 pip   (vela micro — sem força)
+      • EMA9 vs EMA21 diverge do MACD (conflito de direção)
 
-def _detectar_lateral_m5(closes, velas):
+    PONTUAÇÃO:
+      MACD(5,13,4) alinhado com EMA   → 30 pts
+      ADX ≥ 25                        → 25 pts  (22–24 = 10 pts)
+      RSI zona de força               → 20 pts
+      BB extremidade (<15% ou >85%)   → 25 pts  (meio = 0)
     """
-    Detecta mercado lateral via:
-    - BB width < 50% da média das últimas 20 velas
-    - ADX < 20
-    Retorna True se lateral.
-    """
+    if len(velas) < 35:
+        return 0, None, "velas insuf"
+
+    closes = [v["c"] for v in velas]
+    vela   = velas[-2]   # última vela fechada
+    preco  = closes[-1]
+
+    # ── Filtro 1: Shadow ────────────────────────────────────────────
+    if shadow_bloqueio(vela):
+        return 0, None, "Shadow BLOQUEIO"
+
+    # ── Filtro 2: Corpo mínimo ──────────────────────────────────────
+    pip   = 0.01 if preco > 50 else 0.0001
+    corpo = abs(vela["c"] - vela["o"]) / pip
+    if corpo < 1.0:
+        return 0, None, f"Corpo {corpo:.2f}p BLOQUEIO"
+
+    # ── Filtro 3: ADX mínimo 22 ─────────────────────────────────────
+    adx = calcular_adx(velas)
+    if adx < 22:
+        return 0, None, f"ADX {adx:.1f} lateral BLOQUEIO"
+
+    # ── MACD → define direção ───────────────────────────────────────
+    macd_val, sig_val = calcular_macd(closes)
+    if macd_val == 0 and sig_val == 0:
+        return 0, None, "MACD indispon"
+    if   macd_val > sig_val: direcao_macd = "CALL"
+    elif macd_val < sig_val: direcao_macd = "PUT"
+    else: return 0, None, "MACD neutro"
+
+    # ── Filtro 4: EMA9 vs EMA21 deve confirmar MACD ─────────────────
+    e9  = ema_series(closes, 9)
+    e21 = ema_series(closes, 21)
+    if not e9 or not e21:
+        return 0, None, "EMA indispon"
+    direcao_ema = "CALL" if e9[-1] > e21[-1] else "PUT"
+    if direcao_ema != direcao_macd:
+        return 0, None, f"MACD↕EMA conflito BLOQUEIO"
+
+    direcao = direcao_macd
+
+    # ── Filtro 5: RSI exaustão ──────────────────────────────────────
+    rsi = calcular_rsi(closes)
+    if rsi > 82 or rsi < 18:
+        return 0, None, f"RSI {rsi:.1f} exaustão BLOQUEIO"
+
+    # ── Pontuação ───────────────────────────────────────────────────
+    # MACD + EMA alinhados = 30 pts
+    pts_macd = 30
+
     # ADX
-    adx = _adx(velas[-20:], 14) if len(velas) >= 15 else 25
-    if adx > 22:
-        return False   # tendência clara, não lateral
+    pts_adx = 25 if adx >= 25 else 10   # 22-24 = 10 pts parcial
 
-    # BB width atual vs média
-    bb_sup, bb_med, bb_inf = _bollinger(closes[-20:], 20, 2)
-    if not bb_sup:
-        return False
-    bw_atual = bb_sup - bb_inf
+    # RSI zona de força
+    pts_rsi = 0
+    if direcao == "CALL" and 52 <= rsi <= 72: pts_rsi = 20
+    if direcao == "PUT"  and 28 <= rsi <= 48: pts_rsi = 20
 
-    # Média histórica do BB width
-    bw_list = []
-    for i in range(20, len(closes)):
-        s, m, i2 = _bollinger(closes[i-20:i], 20, 2)
-        if s and i2:
-            bw_list.append(s - i2)
-    bw_media = sum(bw_list) / len(bw_list) if bw_list else bw_atual
+    # BB extremidade
+    upper, mid, lower = calcular_bb(closes)
+    pts_bb = 0
+    if upper and lower and (upper - lower) > 0:
+        pos = (preco - lower) / (upper - lower)
+        if (direcao == "CALL" and pos <= 0.15) or (direcao == "PUT" and pos >= 0.85):
+            pts_bb = 25
+        # meio da BB não pontua mais — não é zona de reversão
 
-    return bw_atual < bw_media * 0.5
+    score = pts_macd + pts_adx + pts_rsi + pts_bb
 
-def analisar_otc_m5(iq, par):
-    """
-    Lógica: MACD(8,21,5) + RSI(14) + BB squeeze + EMA trava obrigatória
-            + Shadow Rejection rígido + Markov 58%+ + Lógica de caixote
-    Retorna: (direction, score, det) ou (None, 0, motivo)
-    """
-    nome_iq = par.replace('-OTC', '')
-    velas   = get_velas(iq, nome_iq, TF_M5, 60)
-    if not velas or len(velas) < 25:
-        return None, 0, f'Velas M5 insuf ({len(velas) if velas else 0})'
-
-    closes = [v['close'] for v in velas]
-    opens  = [v['open']  for v in velas]
-
-    # ── MACD(8,21,5) ─────────────────────────────────────────────────────────
-    macd_val, sig_val, hist = _macd(closes, 8, 21, 5)
-    if macd_val is None:
-        return None, 0, 'MACD M5 insuf'
-
-    if macd_val > 0 and hist and hist > 0:
-        direction = 'CALL'
-    elif macd_val < 0 and hist and hist < 0:
-        direction = 'PUT'
-    else:
-        return None, 0, 'MACD M5 sem cruzamento'
-
-    score = 0
-    score += 30   # MACD confirmado
-
-    # ── TRAVA DE EMA OBRIGATÓRIA (BLOQUEIO PURO se contra) ───────────────────
-    ema9_series = _ema_series(closes, 9)
-    ema9_atual  = ema9_series[-1]
-    ema9_ant    = ema9_series[-2] if len(ema9_series) > 1 else ema9_atual
-
-    if ema9_atual is None:
-        return None, 0, 'EMA9 M5 insuf'
-
-    if direction == 'CALL':
-        ema_subindo = ema9_atual > ema9_ant
-        preco_acima = closes[-1] > ema9_atual
-        if not ema_subindo or not preco_acima:
-            return None, 0, 'TRAVA EMA: EMA9 não aponta CALL (bloqueio puro)'
-    else:
-        ema_caindo   = ema9_atual < ema9_ant
-        preco_abaixo = closes[-1] < ema9_atual
-        if not ema_caindo or not preco_abaixo:
-            return None, 0, 'TRAVA EMA: EMA9 não aponta PUT (bloqueio puro)'
-
-    score += 15   # EMA confirmada
-
-    # ── RSI(14) ──────────────────────────────────────────────────────────────
-    rsi = _rsi(closes, 14)
-
-    # ── LÓGICA DE CAIXOTE (mercado lateral) ──────────────────────────────────
-    lateral = _detectar_lateral_m5(closes, velas)
-    if lateral:
-        # Em caixote: só CALL se RSI<40, só PUT se RSI>60, meio = VETO
-        if direction == 'CALL' and rsi >= 40:
-            return None, 0, f'Caixote CALL bloqueado (RSI={rsi:.1f} ≥ 40)'
-        if direction == 'PUT'  and rsi <= 60:
-            return None, 0, f'Caixote PUT bloqueado (RSI={rsi:.1f} ≤ 60)'
-        if 45 <= rsi <= 59:
-            return None, 0, f'Caixote RSI zona morta ({rsi:.1f})'
-        score += 15   # entrada no extremo do caixote = bônus
-    else:
-        # Mercado tendencial: exaustão padrão
-        if direction == 'CALL' and rsi > 65:
-            return None, 0, f'RSI exaustão CALL M5 ({rsi:.1f})'
-        if direction == 'PUT'  and rsi < 35:
-            return None, 0, f'RSI exaustão PUT M5 ({rsi:.1f})'
-        score += 10
-
-    # ── BB squeeze ───────────────────────────────────────────────────────────
-    bb_sup, bb_med, bb_inf = _bollinger(closes, 20, 2)
-    bw_atual = (bb_sup - bb_inf) if bb_sup and bb_inf else 0
-    bw_list  = []
-    for i in range(20, len(closes)):
-        s, m, i2 = _bollinger(closes[i-20:i], 20, 2)
-        if s and i2:
-            bw_list.append(s - i2)
-    bw_media = sum(bw_list) / len(bw_list) if bw_list else bw_atual
-    if bw_media > 0 and bw_atual < bw_media * 0.5:
-        return None, 0, 'BB squeeze: explosão iminente, direção imprevisível'
-    score += 10
-
-    # ── Shadow Rejection (mais rígido: >30%) ─────────────────────────────────
-    ult = velas[-2]
-    rng = ult['max'] - ult['min']
-    if rng > 0:
-        corpo    = abs(ult['close'] - ult['open'])
-        sup_wick = ult['max'] - max(ult['open'], ult['close'])
-        inf_wick = min(ult['open'], ult['close']) - ult['min']
-        pav_max  = max(sup_wick, inf_wick)
-        if corpo > 0 and (pav_max / corpo) > 0.30:
-            return None, 0, f'Shadow Rejection OTC M5 ({pav_max/corpo:.2f})'
-
-    # ── Markov (prob mín 58%) ─────────────────────────────────────────────────
-    dir_mkv, prob_mkv, nivel_mkv = _markov(closes, opens)
-    if dir_mkv and dir_mkv != direction:
-        return None, 0, f'Markov M5 divergente ({dir_mkv})'
-    if dir_mkv and prob_mkv < 58:
-        return None, 0, f'Markov prob insuf ({prob_mkv}% < 58%)'
-    if nivel_mkv == 'ALTO':
-        score += 10
-    elif nivel_mkv == 'MEDIO':
-        score += 5
+    # ── Bônus Order Block / FVG (+20 pts) ──────────────────────────
+    ob_ok, pts_ob = detectar_order_block(velas, direcao)
+    score += pts_ob
 
     det = {
-        'score': score, 'rsi': round(rsi,1),
-        'macd': round(macd_val,5), 'lateral': lateral,
-        'ema9': round(ema9_atual,5),
-        'markov': f'{dir_mkv} {prob_mkv}%' if dir_mkv else '—',
-        'setup': 'MACD+EMA+BB+Shadow+Markov',
+        "adx":  f"{adx:.1f}", "rsi": f"{rsi:.1f}", "corpo": f"{corpo:.1f}p",
+        "pts":  f"MACD:{pts_macd} ADX:{pts_adx} RSI:{pts_rsi} BB:{pts_bb}" + (f" OB:+{pts_ob}" if pts_ob else ""),
+        "ob":   ob_ok,
     }
-    return direction, score, det
+    return score, direcao, det
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MOTOR CANAL 3 — REAL M1
-# Score máximo: 170 | Mínimo: 150 | Expiração: M3
-# ══════════════════════════════════════════════════════════════════════════════
-
-def analisar_real_m1(iq, par):
-    """
-    Lógica: Cascata EMA(7>9>21>50) + EMA200 macro + ATR + RSI
-            + Shadow Rejection + M5 filtro + DXY + Markov
-    Escala: 0–170 (bônus de price action até +20pts)
-    """
-    # ── Velas M1 ─────────────────────────────────────────────────────────────
-    velas_m1 = get_velas(iq, par, TF_M1, 80)
-    if not velas_m1 or len(velas_m1) < 55:
-        return None, 0, f'Velas M1 insuf ({len(velas_m1) if velas_m1 else 0})'
-
-    closes = [v['close'] for v in velas_m1]
-    opens  = [v['open']  for v in velas_m1]
-    highs  = [v['max']   for v in velas_m1]
-    lows   = [v['min']   for v in velas_m1]
-
-    # ── Cascata EMA M1 (7>9>21>50) ───────────────────────────────────────────
-    e7  = _ema(closes, 7)
-    e9  = _ema(closes, 9)
-    e21 = _ema(closes, 21)
-    e50 = _ema(closes, 50)
-    if None in (e7, e9, e21, e50):
-        return None, 0, 'EMA insuf'
-
-    preco = closes[-1]
-    call_cascata = preco > e7 > e9 > e21 > e50
-    put_cascata  = preco < e7 < e9 < e21 < e50
-
-    if call_cascata:
-        direction = 'CALL'
-    elif put_cascata:
-        direction = 'PUT'
-    else:
-        return None, 0, 'Cascata EMA M1 desalinhada'
-
-    score = 40   # cascata confirmada = base
-
-    # ── EMA200 macro ─────────────────────────────────────────────────────────
-    e200 = _ema(closes, 200) if len(closes) >= 200 else None
-    if e200:
-        if direction == 'CALL' and preco < e200:
-            return None, 0, 'EMA200: preço abaixo da macro (CALL bloqueado)'
-        if direction == 'PUT'  and preco > e200:
-            return None, 0, 'EMA200: preço acima da macro (PUT bloqueado)'
-        score += 15
-
-    # ── ATR naninha ──────────────────────────────────────────────────────────
-    atr_atual = _atr(velas_m1[-2:], 1)
-    atr_media = _atr(velas_m1, 14)
-    if atr_media > 0 and atr_atual < atr_media * 0.5:
-        return None, 0, f'ATR naninha ({atr_atual:.5f} < {atr_media*0.5:.5f})'
-    score += 15
-
-    # ── Exaustão (5+ velas consecutivas) ─────────────────────────────────────
-    seq = 1
-    for i in range(len(closes)-2, max(len(closes)-8, 0), -1):
-        if (closes[i] >= opens[i]) == (closes[-1] >= opens[-1]):
-            seq += 1
+# ══════════════════════════════════════════════════════════════════
+#  JANELAS
+# ══════════════════════════════════════════════════════════════════
+def em_janela(agora, janelas):
+    hm = agora.hour * 60 + agora.minute
+    for (hi, mi, hf, mf) in janelas:
+        ini = hi * 60 + mi
+        fim = hf * 60 + mf
+        if fim < ini:
+            if hm >= ini or hm < fim: return True
         else:
-            break
-    if seq >= 5:
-        return None, 0, f'Exaustão: {seq} velas consecutivas'
+            if ini <= hm < fim: return True
+    return False
 
-    # ── RSI(14) ──────────────────────────────────────────────────────────────
-    rsi = _rsi(closes, 14)
-    if direction == 'CALL' and rsi > 70:
-        score -= 20
-    elif direction == 'PUT' and rsi < 30:
-        score -= 20
-    else:
-        score += 10
-
-    # ── Shadow Rejection ─────────────────────────────────────────────────────
-    ult = velas_m1[-2]
-    rng = ult['max'] - ult['min']
-    if rng > 0:
-        corpo    = abs(ult['close'] - ult['open'])
-        sup_wick = ult['max'] - max(ult['open'], ult['close'])
-        inf_wick = min(ult['open'], ult['close']) - ult['min']
-        pav_max  = max(sup_wick, inf_wick)
-        if corpo > 0 and (pav_max / corpo) > 0.40:
-            return None, 0, f'Shadow Rejection REAL M1 ({pav_max/corpo:.2f})'
-
-    # ── M5 filtro (não gerador — bloqueia se contra) ─────────────────────────
-    velas_m5 = get_velas(iq, par, TF_M5, 20)
-    if velas_m5 and len(velas_m5) >= 10:
-        closes5 = [v['close'] for v in velas_m5]
-        e21_m5  = _ema(closes5, 21)
-        e9_m5   = _ema(closes5, 9)
-        if e21_m5:
-            if direction == 'CALL' and closes5[-1] < e21_m5:
-                return None, 0, 'M5 filtro: bearish M5 bloqueia CALL'
-            if direction == 'PUT'  and closes5[-1] > e21_m5:
-                return None, 0, 'M5 filtro: bullish M5 bloqueia PUT'
-        if e9_m5 and e21_m5:
-            if direction == 'CALL' and e9_m5 > e21_m5:
-                score += 10   # bônus cascata M5
-            elif direction == 'PUT' and e9_m5 < e21_m5:
-                score += 10
-
-    # ── DXY ──────────────────────────────────────────────────────────────────
-    dxy_ok, dxy_msg = check_dxy(direction, par)
-    if not dxy_ok:
-        score -= 25
-        if score < SCORE_MIN['REAL_M1']:
-            return None, 0, f'DXY divergente: {dxy_msg}'
-    else:
-        score += 10
-
-    # ── Markov ───────────────────────────────────────────────────────────────
-    dir_mkv, prob_mkv, nivel_mkv = _markov(closes, opens)
-    if dir_mkv and dir_mkv != direction:
-        return None, 0, f'Markov divergente REAL M1 ({dir_mkv})'
-    if nivel_mkv == 'ALTO':
-        score += 15
-    elif nivel_mkv == 'MEDIO':
-        score += 8
-
-    # ── Bônus Price Action (até +20pts) ──────────────────────────────────────
-    # Engolfo: última vela engolfa a anterior
-    v1, v2 = velas_m1[-2], velas_m1[-1]
-    if direction == 'CALL':
-        if v2['close'] > v1['open'] and v2['open'] < v1['close']:
-            score += 10   # engolfo de alta
-    else:
-        if v2['close'] < v1['open'] and v2['open'] > v1['close']:
-            score += 10   # engolfo de baixa
-
-    # Vela de momentum: corpo > 60% do range
-    rng2  = v2['max'] - v2['min']
-    corp2 = abs(v2['close'] - v2['open'])
-    if rng2 > 0 and corp2 / rng2 > 0.60:
-        score += 10
-
-    det = {
-        'score': score, 'rsi': round(rsi,1),
-        'atr': round(atr_atual,5), 'seq': seq,
-        'e7': round(e7,5), 'e9': round(e9,5),
-        'e21': round(e21,5), 'e50': round(e50,5),
-        'markov': f'{dir_mkv} {prob_mkv}%' if dir_mkv else '—',
-        'setup': 'EMA7>9>21>50+M5filtro+DXY',
-    }
-    return direction, score, det
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MOTOR CANAL 4 — REAL M5
-# Score máximo: 170 | Mínimo: 150 | Expiração: 5 min
-# ══════════════════════════════════════════════════════════════════════════════
-
-def analisar_real_m5(iq, par):
-    """
-    Lógica: EMA cascata M5 (9>21>50) + ATR 60% + RSI + M15 proxy
-            + DXY obrigatório + Shadow Rejection + Markov 58%+
-    """
-    velas_m5 = get_velas(iq, par, TF_M5, 60)
-    if not velas_m5 or len(velas_m5) < 25:
-        return None, 0, f'Velas M5 insuf ({len(velas_m5) if velas_m5 else 0})'
-
-    closes = [v['close'] for v in velas_m5]
-    opens  = [v['open']  for v in velas_m5]
-
-    # ── Cascata EMA M5 (9>21>50) ─────────────────────────────────────────────
-    e9  = _ema(closes, 9)
-    e21 = _ema(closes, 21)
-    e50 = _ema(closes, 50)
-    if None in (e9, e21, e50):
-        return None, 0, 'EMA M5 insuf'
-
-    preco = closes[-1]
-    if preco > e9 > e21 > e50:
-        direction = 'CALL'
-    elif preco < e9 < e21 < e50:
-        direction = 'PUT'
-    else:
-        return None, 0, 'Cascata EMA M5 desalinhada'
-
-    score = 40   # cascata M5 confirmada
-
-    # ── ATR M5 (≥60% da média) ───────────────────────────────────────────────
-    atr_atual = _atr(velas_m5[-2:], 1)
-    atr_media = _atr(velas_m5, 14)
-    if atr_media > 0 and atr_atual < atr_media * 0.60:
-        return None, 0, f'ATR M5 insuf ({atr_atual:.5f} < {atr_media*0.6:.5f})'
-    score += 15
-
-    # ── RSI(14) zona estreita ─────────────────────────────────────────────────
-    rsi = _rsi(closes, 14)
-    if direction == 'CALL' and rsi > 72:
-        return None, 0, f'RSI exaustão CALL M5 ({rsi:.1f})'
-    if direction == 'PUT'  and rsi < 28:
-        return None, 0, f'RSI exaustão PUT M5 ({rsi:.1f})'
-    score += 10
-
-    # ── M15 macro proxy (15 velas M5 = ~75 minutos) ──────────────────────────
-    if len(closes) >= 15:
-        closes_m15 = closes[-15:]
-        e9_m15     = _ema(closes_m15, 9)
-        if e9_m15:
-            if direction == 'CALL' and closes[-1] < e9_m15:
-                return None, 0, 'M15 proxy: tendência bearish bloqueia CALL'
-            if direction == 'PUT'  and closes[-1] > e9_m15:
-                return None, 0, 'M15 proxy: tendência bullish bloqueia PUT'
-            score += 10
-
-    # ── DXY obrigatório (penalidade maior: -25pts) ───────────────────────────
-    dxy_ok, dxy_msg = check_dxy(direction, par)
-    if not dxy_ok:
-        score -= 25
-        if score < SCORE_MIN['REAL_M5']:
-            return None, 0, f'DXY divergente REAL M5: {dxy_msg}'
-    else:
-        score += 15
-
-    # ── Shadow Rejection (>35%) ──────────────────────────────────────────────
-    ult = velas_m5[-2]
-    rng = ult['max'] - ult['min']
-    if rng > 0:
-        corpo    = abs(ult['close'] - ult['open'])
-        sup_wick = ult['max'] - max(ult['open'], ult['close'])
-        inf_wick = min(ult['open'], ult['close']) - ult['min']
-        pav_max  = max(sup_wick, inf_wick)
-        if corpo > 0 and (pav_max / corpo) > 0.35:
-            return None, 0, f'Shadow Rejection REAL M5 ({pav_max/corpo:.2f})'
-
-    # ── Markov (prob mín 58%) ─────────────────────────────────────────────────
-    dir_mkv, prob_mkv, nivel_mkv = _markov(closes, opens)
-    if dir_mkv and dir_mkv != direction:
-        return None, 0, f'Markov divergente REAL M5 ({dir_mkv})'
-    if dir_mkv and prob_mkv < 58:
-        return None, 0, f'Markov prob insuf REAL M5 ({prob_mkv}%)'
-    if nivel_mkv == 'ALTO':
-        score += 20
-    elif nivel_mkv == 'MEDIO':
-        score += 10
-
-    # ── Bônus Price Action M5 (até +20pts) ───────────────────────────────────
-    v1, v2 = velas_m5[-2], velas_m5[-1]
-    if direction == 'CALL':
-        if v2['close'] > v1['open'] and v2['open'] < v1['close']:
-            score += 10
-    else:
-        if v2['close'] < v1['open'] and v2['open'] > v1['close']:
-            score += 10
-
-    rng2  = v2['max'] - v2['min']
-    corp2 = abs(v2['close'] - v2['open'])
-    if rng2 > 0 and corp2 / rng2 > 0.60:
-        score += 10
-
-    det = {
-        'score': score, 'rsi': round(rsi,1),
-        'atr_m5': round(atr_atual,5),
-        'e9': round(e9,5), 'e21': round(e21,5), 'e50': round(e50,5),
-        'markov': f'{dir_mkv} {prob_mkv}%' if dir_mkv else '—',
-        'setup': 'EMA9>21>50+ATR60+M15proxy+DXY',
-    }
-    return direction, score, det
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ENVIO DE SINAL + EXECUÇÃO
-# ══════════════════════════════════════════════════════════════════════════════
-
-def enviar_sinal(iq, canal, par, direction, score, det, expiracao_min):
-    """Envia sinal via Telegram e executa ordem se EXECUCAO_ATIVA."""
-    agora       = datetime.datetime.now(BRT)
-    ts          = agora.strftime('%H:%M')
-    hora_entry  = (agora + datetime.timedelta(minutes=1)).strftime('%H:%M')
-
-    # Labels
-    labels = {
-        'OTC_M1':  '🔵 OTC M1',
-        'OTC_M5':  '🔵 OTC M5',
-        'REAL_M1': '📈 REAL M1',
-        'REAL_M5': '📈 REAL M5',
-    }
-    emoji_dir = '🟢 CALL' if direction == 'CALL' else '🔴 PUT'
-    label     = labels.get(canal, canal)
-
-    det_str = (
-        f"RSI: {det.get('rsi','—')} | "
-        f"Score: {score} | "
-        f"Setup: {det.get('setup','—')} | "
-        f"Markov: {det.get('markov','—')}"
-    )
-
-    msg = (
-        f'🎯 <b>SNIPER V12 — {ts} BRT</b>\n\n'
-        f'<code>M{expiracao_min};{par};{hora_entry};{direction}</code>\n\n'
-        f'{emoji_dir} | {label}\n'
-        f'📊 {det_str}'
-    )
-
-    telegram(msg)
-    log(f'✅ SINAL [{canal}] {par} {direction} Score={score} Exp={expiracao_min}min')
-
-    # Registrar no painel
-    sinal_entry = {
-        'ts': ts, 'canal': canal, 'par': par,
-        'dir': direction, 'score': score, 'exp': expiracao_min,
-    }
-    with _painel_lock:
-        _painel['sinais'].insert(0, sinal_entry)
-        if len(_painel['sinais']) > 50:
-            _painel['sinais'].pop()
-        _painel['canais'][canal]['ultimo_sinal'] = f'{ts} {par} {direction}'
-        _painel['canais'][canal]['total']        += 1
-
-    # ── Execução automática ───────────────────────────────────────────────────
-    with _painel_lock:
-        exec_ativa = _painel['execucao_ativa']
-
-    if not exec_ativa:
-        return
-
-    travar_portfolio(par, expiracao_min * 60 + 5)
-    ativo_iq = par.replace('-OTC', '') if '-OTC' in par else par
-    dir_iq   = 'call' if direction == 'CALL' else 'put'
-
+# ══════════════════════════════════════════════════════════════════
+#  EXECUÇÃO DE TRADE
+# ══════════════════════════════════════════════════════════════════
+def abrir_trade(par, direcao, stake, expiracao_min):
+    """Abre ordem via lib IQ Option (WebSocket). Retorna id_op ou None."""
     try:
-        ok, id_op = iq.buy(1, ativo_iq, dir_iq, expiracao_min)
-        if not ok:
-            log(f'❌ Ordem rejeitada: {par}')
-            return
+        if not _iq_ok or not _iq_api:
+            _log(f"abrir_trade: IQ não conectada")
+            return None
+        par_base = par.replace("-OTC", "").replace("/", "").upper()
+        is_otc   = "-OTC" in par.upper()
+        # turbo = M1 | binary = M3+
+        option_type = "turbo" if expiracao_min <= 1 else "binary"
+        direcao_iq  = direcao.lower()  # "call" ou "put"
 
-        log(f'✅ Ordem aberta ID: {id_op}')
-        time.sleep(expiracao_min * 60 + 5)
-        resultado = iq.check_win_v3(id_op)
-
-        with _estado_lock:
-            hoje = datetime.datetime.now(BRT).strftime('%Y-%m-%d')
-            if _estado.get('data_hoje') != hoje:
-                _estado['data_hoje']   = hoje
-                _estado['losses_dia']  = 0
-                _estado['losses_seq']  = 0
-
-            if resultado > 0:
-                _estado['wins']       += 1
-                _estado['losses_seq']  = 0
-                save_estado(_estado)
-                with _painel_lock:
-                    _painel['wins'] = _estado['wins']
-                telegram(f'✅ <b>WIN!</b> {par} {direction} +${resultado:.2f}')
-            else:
-                _estado['losses']     += 1
-                _estado['losses_dia'] += 1
-                _estado['losses_seq'] += 1
-                save_estado(_estado)
-                with _painel_lock:
-                    _painel['losses']     = _estado['losses']
-                    _painel['losses_dia'] = _estado['losses_dia']
-
-                telegram(f'❌ <b>LOSS</b> {par} {direction}')
-
-                # Stop sequencial: 3 losses seguidos → pausa 30min
-                if _estado['losses_seq'] >= MAX_LOSSES_SEQ:
-                    pausa = time.time() + PAUSA_SEQ_MIN * 60
-                    _estado['pausa_ate'] = pausa
-                    save_estado(_estado)
-                    telegram(
-                        f'⏸ <b>3 LOSSES SEGUIDOS</b>\n'
-                        f'Pausa automática de {PAUSA_SEQ_MIN} minutos.'
-                    )
-
-                # Stop diário: 4 losses → shutdown
-                if _estado['losses_dia'] >= MAX_LOSSES_DIA:
-                    with _painel_lock:
-                        _painel['bot_ativo'] = False
-                    telegram(
-                        '🛑 <b>STOP DIÁRIO ATIVADO</b>\n'
-                        f'{MAX_LOSSES_DIA} losses atingidos hoje.\n'
-                        'Bot desligado. Reinicie amanhã pelo painel.'
-                    )
-
+        status, id_op = _iq_api.buy(stake, par_base, direcao_iq, expiracao_min)
+        if status and id_op:
+            _log(f"Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
+            return id_op
+        _log(f"Falha buy {par}: status={status} id={id_op}")
+        return None
     except Exception as e:
-        log(f'Erro execução {par}: {e}')
+        _log(f"Erro buy {par}: {e}")
+        return None
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LOOP DE CANAL (1 thread por canal)
-# ══════════════════════════════════════════════════════════════════════════════
+def _checar_resultado_por_saldo(saldo_antes, espera_s):
+    """Fallback: compara saldo antes e depois da expiração."""
+    time.sleep(espera_s)
+    saldo_new = get_saldo()
+    diff = saldo_new - saldo_antes
+    return diff > 0, abs(diff)
 
-_cooldown_por_canal = {c: {} for c in ['OTC_M1', 'OTC_M5', 'REAL_M1', 'REAL_M5']}
-_cooldown_lock      = threading.Lock()
+def _checar_resultado_lib(id_op, espera_s, stake):
+    """Verifica resultado via lib após espera."""
+    time.sleep(espera_s)
+    try:
+        if _iq_api:
+            resultado = _iq_api.check_win_v3(id_op)
+            if resultado is not None:
+                win   = float(resultado) > 0
+                valor = abs(float(resultado)) if win else stake
+                return win, valor
+    except Exception as e:
+        _log(f"check_win_v3 erro: {e}")
+    return None, 0
 
-def _em_cooldown(canal, par):
-    with _cooldown_lock:
-        ultimo = _cooldown_por_canal[canal].get(par, 0)
-        return time.time() - ultimo < COOLDOWN[canal]
+def checar_resultado_m1(id_op, stake):
+    """M1: aguarda 65s e verifica resultado."""
+    saldo_antes = estado["saldo"]
+    win, valor  = _checar_resultado_lib(id_op, 65, stake)
+    if win is not None:
+        return win, valor
+    return _checar_resultado_por_saldo(saldo_antes, 0)
 
-def _registrar_cooldown(canal, par):
-    with _cooldown_lock:
-        _cooldown_por_canal[canal][par] = time.time()
-        # Limpar entradas antigas
-        agora = time.time()
-        _cooldown_por_canal[canal] = {
-            p: t for p, t in _cooldown_por_canal[canal].items()
-            if agora - t < COOLDOWN[canal] * 2
-        }
+def checar_resultado_m3(id_op, stake):
+    """M3: aguarda 185s e verifica resultado."""
+    saldo_antes = estado["saldo"]
+    win, valor  = _checar_resultado_lib(id_op, 185, stake)
+    if win is not None:
+        return win, valor
+    return _checar_resultado_por_saldo(saldo_antes, 0)
 
-def loop_canal(iq, canal, pares, analisar_fn, expiracao_min, ciclo_s, trap_fn, mercado):
-    """
-    Loop genérico para qualquer canal.
-    Roda indefinidamente, alinhado ao ciclo_s.
-    """
-    log(f'[{canal}] Thread iniciada | ciclo={ciclo_s}s | exp={expiracao_min}min | pares={len(pares)}')
+def computar_resultado(win, valor, par, direcao, stake, engine):
+    """Atualiza placar e stop diário."""
+    with _lock:
+        saldo = get_saldo()
+        estado["saldo"] = saldo
+        if engine == "FOREX":
+            if win:
+                estado["forex_wins"] += 1
+            else:
+                estado["forex_losses"] += 1
+        else:
+            if win:
+                estado["otc_wins"] += 1
+            else:
+                estado["otc_losses"] += 1
 
-    while True:
+    if win:
+        _log(f"✅ WIN +${valor:.2f} | {par} {direcao}", engine)
+        tg(
+            f"✅ <b>WIN</b>\n"
+            f"📊 {par} {direcao}\n"
+            f"💰 +${valor:.2f} | Saldo: ${saldo:.2f}\n"
+            f"📈 {estado['forex_wins']+estado['otc_wins']}W x {estado['forex_losses']+estado['otc_losses']}L"
+        )
+    else:
+        _log(f"❌ LOSS -${stake:.2f} | {par} {direcao} | Dia: {estado['losses_dia']+1}/{MAX_LOSSES_DIA}", engine)
+        stop = registrar_loss()
+        tg(
+            f"❌ <b>LOSS</b>\n"
+            f"📊 {par} {direcao}\n"
+            f"💸 -${stake:.2f} | Saldo: ${saldo:.2f}\n"
+            f"📉 {estado['forex_wins']+estado['otc_wins']}W x {estado['losses_dia']}/{MAX_LOSSES_DIA} losses hoje"
+        )
+    _salvar_estado()
+
+# ══════════════════════════════════════════════════════════════════
+#  ENGINE FOREX (thread separada)
+# ══════════════════════════════════════════════════════════════════
+def engine_forex():
+    _log("🔵 Engine FOREX iniciada", "FOREX")
+    while estado["ativo"]:
         try:
-            agora = datetime.datetime.now(BRT)
-            ts    = agora.strftime('%H:%M')
+            if not estado["forex_ativo"]:
+                time.sleep(5)
+                continue
+            if check_stop_diario(): break
 
-            # ── Verificações globais ──────────────────────────────────────────
-            with _painel_lock:
-                bot_ativo = _painel['bot_ativo']
-                canal_ativo = _painel['canais'][canal]['ativo']
+            agora = datetime.now(BRT)
 
-            if not bot_ativo or not canal_ativo:
+            if not em_janela(agora, FOREX_JANELAS):
+                _log(f"Fora da janela ({agora.strftime('%H:%M')})", "FOREX")
+                time.sleep(30)
+                continue
+
+            if agora.minute in FOREX_MINUTOS_BLOQ:
                 time.sleep(10)
                 continue
 
-            # ── Pausa sequencial ──────────────────────────────────────────────
-            with _estado_lock:
-                pausa_ate = _estado.get('pausa_ate', 0)
-            if time.time() < pausa_ate:
-                restante = int(pausa_ate - time.time())
-                log(f'[{canal}] Pausa sequencial: {restante}s restantes')
-                time.sleep(min(restante, 30))
+            if not garantir_conexao():
+                time.sleep(15)
                 continue
 
-            # ── Horário seco ──────────────────────────────────────────────────
-            if horario_seco(agora):
-                log(f'[{canal}] Horário seco (17:30–21:00 BRT)')
-                time.sleep(60)
+            bloq, motivo = ff_bloqueado(agora)
+            if bloq:
+                _log(f"🚫 {motivo}", "FOREX")
+                time.sleep(30)
                 continue
 
-            # ── Trap zone ─────────────────────────────────────────────────────
-            if trap_fn(agora.minute):
-                log(f'[{canal}] Trap zone :{agora.minute:02d}')
+            if not trava_livre():
                 time.sleep(5)
                 continue
 
-            # ── Atualizar FF bloqueados ───────────────────────────────────────
-            atualizar_ff_bloqueados()
+            saldo = get_saldo()
+            with _lock:
+                estado["saldo"] = saldo
+            stake = round(max(1.0, saldo * 0.02), 2)
 
-            # ── Modo de mercado ───────────────────────────────────────────────
-            modo    = detectar_modo()
-            e_otc   = mercado == 'OTC'
-            e_real  = mercado == 'REAL'
+            dxy = calcular_dxy_nativo()
+            _log(f"DXY: {dxy}", "FOREX")
 
-            # Canais REAL só operam em modo HIBRIDO (semana)
-            if e_real and modo == 'OTC_PURO':
-                log(f'[{canal}] Mercado real fechado — aguardando abertura')
-                time.sleep(60)
-                continue
-
-            # ── Stop diário ───────────────────────────────────────────────────
-            with _estado_lock:
-                hoje = agora.strftime('%Y-%m-%d')
-                if _estado.get('data_hoje') != hoje:
-                    _estado['data_hoje']   = hoje
-                    _estado['losses_dia']  = 0
-                    _estado['losses_seq']  = 0
-                    save_estado(_estado)
-                losses_dia = _estado.get('losses_dia', 0)
-
-            if losses_dia >= MAX_LOSSES_DIA:
-                log(f'[{canal}] STOP DIÁRIO ativo ({losses_dia} losses)')
-                time.sleep(60)
-                continue
-
-            log(f'[{canal}] Escaneando {len(pares)} pares...')
-
-            # ── Escanear pares ────────────────────────────────────────────────
             candidatos = []
-            for par in pares:
-                if par in _ff_bloqueados:
-                    log(f'  [{canal}] {par}: bloqueado FF')
+            agora_ts   = time.time()
+
+            for par in FOREX_PARES:
+                if agora_ts - _ultimo_trade.get(par, 0) < COOLDOWN:
                     continue
-                if _em_cooldown(canal, par):
+                payout = get_payout(par)
+                if payout is not None and payout < FOREX_PAYOUT_MIN:
+                    continue
+                velas = get_candles(par, n=60, tf=60)
+                if len(velas) < 55:
+                    continue
+                score, direcao, det = score_forex(velas)
+                with _lock:
+                    estado["forex_score"] = score
+
+                if not direcao or score < FOREX_SCORE_MIN:
+                    _log(f"  {par}: ❌ score {score} | {det if isinstance(det,str) else det.get('pts','')}", "FOREX")
                     continue
 
-                direction, score, det = analisar_fn(iq, par)
-
-                if direction is None:
-                    log(f'  [{canal}] {par}: ❌ {det}')
+                blq, mot = dxy_bloqueia(par, direcao)
+                if blq:
+                    _log(f"  {par}: 🚫 DXY {mot}", "FOREX")
                     continue
 
-                if score < SCORE_MIN[canal]:
-                    log(f'  [{canal}] {par}: score insuf ({score} < {SCORE_MIN[canal]})')
+                # ── Filtro M5 ─────────────────────────────────────
+                m5_ok, m5_info = confirmar_m5(par, direcao)
+                if not m5_ok:
+                    _log(f"  {par}: ❌ {m5_info}", "FOREX")
                     continue
 
-                log(f'  [{canal}] {par}: ✅ {direction} Score={score}')
-                candidatos.append({'par': par, 'dir': direction, 'score': score, 'det': det})
+                candidatos.append({"par": par, "direcao": direcao, "score": score, "det": det, "payout": payout, "m5": m5_info})
+                _log(f"  {par}: ✅ {direcao} Score:{score} | {det.get('pts','')} | {m5_info} | Payout:{payout*100:.0f}%", "FOREX")
 
             if not candidatos:
-                log(f'[{canal}] Sem candidatos aprovados')
-                time.sleep(ciclo_s)
+                _log("Sem sinal Forex aprovado.", "FOREX")
+                time.sleep(55)
                 continue
 
-            # ── Selecionar melhor candidato ───────────────────────────────────
-            candidatos.sort(key=lambda x: x['score'], reverse=True)
-            melhor = candidatos[0]
-            par    = melhor['par']
-            direc  = melhor['dir']
-            score  = melhor['score']
-            det    = melhor['det']
+            candidatos.sort(key=lambda x: x["score"], reverse=True)
+            m = candidatos[0]
+            par, direcao, score, det = m["par"], m["direcao"], m["score"], m["det"]
 
-            # ── Resolução de conflito M1×M5 ───────────────────────────────────
-            resultado_conflito = registrar_sinal_conflito(mercado, canal, direc)
+            with _lock:
+                estado["forex_par"]    = par
+                estado["forex_status"] = "operando"
+            _ultimo_trade[par] = agora_ts
 
-            if resultado_conflito == 'BLOQUEADO':
-                log(f'[{canal}] {par} BLOQUEADO por conflito M1×M5')
-                time.sleep(ciclo_s)
+            hora_entrada = (agora + timedelta(minutes=1)).strftime("%H:%M")
+            tg(
+                f"🎯 <b>ENTRADA</b>\n"
+                f"📊 {par} {direcao}\n"
+                f"🕐 {hora_entrada} | Score: {score} | M3"
+            )
+            _log(f"📨 SINAL {par} {direcao} Score:{score}", "FOREX")
+
+            # Trava global 65s
+            trava_set(par)
+
+            id_op = abrir_trade(par, direcao, stake, FOREX_EXPIRACAO)
+            if not id_op:
+                trava_release()
+                with _lock: estado["forex_status"] = "aguardando"
                 continue
 
-            if resultado_conflito == 'AGUARDAR':
-                log(f'[{canal}] {par} M1 aguardando janela de conflito...')
-                time.sleep(CONFLITO_JANELA)
-                # Após janela: verifica se M5 entrou ou não
-                resultado_conflito2 = registrar_sinal_conflito(mercado, canal, direc)
-                if resultado_conflito2 == 'BLOQUEADO':
-                    log(f'[{canal}] {par} BLOQUEADO após janela de conflito')
-                    time.sleep(ciclo_s)
-                    continue
-                # M5 não apareceu → M1 pode executar sozinho
-                log(f'[{canal}] {par} M5 não chegou → M1 executa sozinho')
+            # Após 65s libera trava — resultado chega em background
+            def resultado_forex_bg(id_op=id_op, par=par, direcao=direcao, stake=stake):
+                time.sleep(TRAVA_SEGUNDOS)
+                trava_release()
+                win, valor = checar_resultado_m3(id_op, stake)
+                computar_resultado(win, valor, par, direcao, stake, "FOREX")
+                with _lock:
+                    estado["forex_status"] = "aguardando"
 
-            # ── Trava global de portfólio ─────────────────────────────────────
-            livre, par_travado = portfolio_livre()
-            if not livre:
-                log(f'[{canal}] Portfolio travado por {par_travado}')
-                time.sleep(ciclo_s)
-                continue
-
-            # ── Enviar sinal ──────────────────────────────────────────────────
-            _registrar_cooldown(canal, par)
-            travar_portfolio(par, expiracao_min * 60 + 5)
-            enviar_sinal(iq, canal, par, direc, score, det, expiracao_min)
+            threading.Thread(target=resultado_forex_bg, daemon=True).start()
+            time.sleep(TRAVA_SEGUNDOS + 2)  # motor aguarda trava antes de novo scan
 
         except Exception as e:
-            log(f'[{canal}] Erro no loop: {e}')
+            _log(f"Erro engine Forex: {e}", "FOREX")
             time.sleep(10)
 
-        time.sleep(ciclo_s)
+    _log("⛔ Engine FOREX encerrada.", "FOREX")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DETECÇÃO DE MODO
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
+#  ENGINE OTC (thread separada)
+# ══════════════════════════════════════════════════════════════════
+def engine_otc():
+    _log("🟠 Engine OTC iniciada", "OTC")
+    while estado["ativo"]:
+        try:
+            if not estado["otc_ativo"]:
+                time.sleep(5)
+                continue
+            if check_stop_diario(): break
 
-def detectar_modo():
+            agora = datetime.now(BRT)
+
+            if not em_janela(agora, OTC_JANELAS):
+                _log(f"Fora da janela ({agora.strftime('%H:%M')})", "OTC")
+                time.sleep(30)
+                continue
+
+            if agora.minute in OTC_MINUTOS_BLOQ:
+                time.sleep(10)
+                continue
+
+            # Filtro ForexFactory — bloqueia OTC também em notícias de alto impacto
+            bloq_ff, mot_ff = ff_bloqueado(agora)
+            if bloq_ff:
+                _log(f"🚫 OTC bloqueado: {mot_ff}", "OTC")
+                time.sleep(30)
+                continue
+
+            if not garantir_conexao():
+                time.sleep(15)
+                continue
+
+            if not trava_livre():
+                time.sleep(5)
+                continue
+
+            saldo = get_saldo()
+            with _lock:
+                estado["saldo"] = saldo
+            stake = round(max(1.0, saldo * 0.02), 2)
+
+            candidatos = []
+            agora_ts   = time.time()
+
+            for par in OTC_PARES:
+                if agora_ts - _ultimo_trade.get(par, 0) < COOLDOWN:
+                    continue
+                velas = get_candles(par, n=60, tf=60)
+                if len(velas) < 30:
+                    continue
+                score, direcao, det = score_otc(velas)
+                with _lock:
+                    estado["otc_score"] = score
+
+                if not direcao or score < OTC_SCORE_MIN:
+                    _log(f"  {par}: ❌ score {score} | {det if isinstance(det,str) else det.get('pts','')}", "OTC")
+                    continue
+
+                # ── Filtro M5 ─────────────────────────────────────
+                m5_ok, m5_info = confirmar_m5(par, direcao)
+                if not m5_ok:
+                    _log(f"  {par}: ❌ {m5_info}", "OTC")
+                    continue
+
+                # ── Payout real ───────────────────────────────────
+                payout = get_payout(par)
+                if payout < OTC_PAYOUT_MIN:
+                    _log(f"  {par}: ❌ payout {payout*100:.0f}% abaixo do mínimo", "OTC")
+                    continue
+
+                candidatos.append({"par": par, "direcao": direcao, "score": score, "det": det, "payout": payout, "m5": m5_info})
+                _log(f"  {par}: ✅ {direcao} Score:{score} | {det.get('pts','')} | {m5_info} | Payout:{payout*100:.0f}%", "OTC")
+
+            if not candidatos:
+                _log("Sem sinal OTC aprovado.", "OTC")
+                time.sleep(55)
+                continue
+
+            candidatos.sort(key=lambda x: x["score"], reverse=True)
+            m = candidatos[0]
+            par, direcao, score, det = m["par"], m["direcao"], m["score"], m["det"]
+
+            with _lock:
+                estado["otc_par"]    = par
+                estado["otc_status"] = "operando"
+            _ultimo_trade[par] = agora_ts
+
+            hora_entrada = (agora + timedelta(minutes=1)).strftime("%H:%M")
+            tg(
+                f"🎯 <b>ENTRADA</b>\n"
+                f"📊 {par} {direcao}\n"
+                f"🕐 {hora_entrada} | Score: {score} | M1"
+            )
+            _log(f"📨 SINAL {par} {direcao} Score:{score}", "OTC")
+
+            trava_set(par)
+
+            id_op = abrir_trade(par, direcao, stake, OTC_EXPIRACAO)
+            if not id_op:
+                trava_release()
+                with _lock: estado["otc_status"] = "aguardando"
+                continue
+
+            # M1: checa resultado e libera trava
+            win, valor = checar_resultado_m1(id_op, stake)
+            trava_release()
+            computar_resultado(win, valor, par, direcao, stake, "OTC")
+            with _lock:
+                estado["otc_status"] = "aguardando"
+
+        except Exception as e:
+            _log(f"Erro engine OTC: {e}", "OTC")
+            time.sleep(10)
+
+    _log("⛔ Engine OTC encerrada.", "OTC")
+
+# ══════════════════════════════════════════════════════════════════
+#  CONFIRMAÇÃO DE VELA (IQ Option — protocolo cadastrado)
+#  Verifica últimas 5 velas M1 antes de executar sinal manual
+# ══════════════════════════════════════════════════════════════════
+def confirmar_vela_iq(par, direcao):
     """
-    HIBRIDO: semana (seg–sex antes das 18h) → 4 canais ativos
-    OTC_PURO: fim de semana ou sexta após 18h → só canais OTC
+    Retorna (True, motivo) se confirmado, (False, motivo) se bloqueado.
+    Regras:
+      1. Dominância: maioria das últimas 3 velas fechadas na direção do sinal
+      2. Body médio >= 0.00010 (volatilidade mínima)
+      3. Última vela fechada confirma a direção
     """
-    now     = datetime.datetime.now(BRT)
-    weekday = now.weekday()
-    hora    = now.hour
+    try:
+        velas = get_candles(par, n=6, tf=60)
+        if len(velas) < 4:
+            return False, "Velas insuficientes"
 
-    if weekday == 5:
-        return 'OTC_PURO'
-    if weekday == 6 and hora < 18:
-        return 'OTC_PURO'
-    if weekday == 4 and hora >= 18:
-        return 'OTC_PURO'
-    return 'HIBRIDO'
+        # Usa velas fechadas (exclui a aberta atual = última)
+        fechadas = velas[:-1][-4:]
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FLASK — INTERFACE DARK MODE
-# ══════════════════════════════════════════════════════════════════════════════
+        # Body médio
+        bodies = [abs(v["c"] - v["o"]) for v in fechadas]
+        body_med = sum(bodies) / len(bodies) if bodies else 0
 
+        pip_min = 0.00010
+        # Pares JPY têm pip diferente
+        if "JPY" in par:
+            pip_min = 0.010
+
+        if body_med < pip_min:
+            return False, f"Body médio {body_med:.5f} < {pip_min} (volatilidade baixa)"
+
+        # Última vela fechada
+        ultima = fechadas[-1]
+        ultima_alta = ultima["c"] > ultima["o"]
+        if direcao == "CALL" and not ultima_alta:
+            return False, f"Última vela BAIXA ≠ CALL"
+        if direcao == "PUT"  and ultima_alta:
+            return False, f"Última vela ALTA ≠ PUT"
+
+        # Dominância nas últimas 3 fechadas
+        ultimas3 = fechadas[-3:]
+        altas  = sum(1 for v in ultimas3 if v["c"] > v["o"])
+        baixas = sum(1 for v in ultimas3 if v["c"] < v["o"])
+        if direcao == "CALL" and altas < 2:
+            return False, f"Dominância insuf CALL: {altas}/3 altas"
+        if direcao == "PUT"  and baixas < 2:
+            return False, f"Dominância insuf PUT: {baixas}/3 baixas"
+
+        return True, f"✅ Body:{body_med:.5f} | Dom:{altas}A/{baixas}B | Última:{'🟢' if ultima_alta else '🔴'}"
+
+    except Exception as e:
+        return False, f"Erro confirmação: {e}"
+
+
+# ══════════════════════════════════════════════════════════════════
+#  ENGINE SINAIS MANUAIS
+# ══════════════════════════════════════════════════════════════════
+# Fila de sinais manuais: lista de dicts
+# {"id", "raw", "par", "expiracao", "hora", "direcao", "status", "motivo", "ts_add"}
+_sinais_manuais = []
+_sinais_lock    = threading.Lock()
+_sinais_counter = [0]
+
+def _novo_id():
+    _sinais_counter[0] += 1
+    return _sinais_counter[0]
+
+def _parse_sinal(linha):
+    """
+    Aceita: M1;PAR;HH:MM;CALL  ou  M3;PAR;HH:MM;PUT
+    Retorna dict ou None
+    """
+    linha = linha.strip().upper()
+    if not linha or linha.startswith("#"):
+        return None
+    partes = [p.strip() for p in linha.split(";")]
+    if len(partes) != 4:
+        return None
+    tf_str, par, hora_str, direcao = partes
+    if tf_str not in ("M1", "M3"):
+        return None
+    if direcao not in ("CALL", "PUT"):
+        return None
+    try:
+        h, m = hora_str.split(":")
+        int(h); int(m)
+    except:
+        return None
+    expiracao = 1 if tf_str == "M1" else 3
+    return {
+        "id":       _novo_id(),
+        "raw":      linha,
+        "par":      par,
+        "expiracao": expiracao,
+        "hora":     hora_str,   # HH:MM
+        "direcao":  direcao,
+        "status":   "aguardando",  # aguardando | confirmando | executando | win | loss | bloqueado | expirado
+        "motivo":   "",
+        "ts_add":   time.time(),
+    }
+
+def _atualizar_sinal(sid, status, motivo=""):
+    with _sinais_lock:
+        for s in _sinais_manuais:
+            if s["id"] == sid:
+                s["status"] = status
+                s["motivo"] = motivo
+                break
+
+def _executar_sinal(sinal):
+    sid      = sinal["id"]
+    par      = sinal["par"]
+    direcao  = sinal["direcao"]
+    hora_str = sinal["hora"]
+    expiracao = sinal["expiracao"]
+
+    _log(f"📋 Sinal manual recebido: {sinal['raw']}", "MANUAL")
+
+    # ── Aguardar o minuto da entrada ──────────────────────────────
+    while True:
+        agora = datetime.now(BRT)
+        agora_hm = agora.strftime("%H:%M")
+
+        # Expirado: passou do horário sem executar
+        try:
+            h, m = hora_str.split(":")
+            alvo_ts = agora.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+            if agora > alvo_ts + timedelta(minutes=2):
+                _atualizar_sinal(sid, "expirado", "Horário passou sem executar")
+                _log(f"⏰ Sinal {par} {direcao} {hora_str} EXPIRADO", "MANUAL")
+                return
+        except:
+            pass
+
+        if agora_hm == hora_str:
+            break
+        time.sleep(5)
+
+    _atualizar_sinal(sid, "confirmando")
+    _log(f"🔍 Confirmando vela: {par} {direcao}", "MANUAL")
+
+    # ── Confirmação de vela ───────────────────────────────────────
+    if not garantir_conexao():
+        _atualizar_sinal(sid, "bloqueado", "IQ Option desconectada")
+        _log(f"❌ {par} BLOQUEADO: IQ desconectada", "MANUAL")
+        return
+
+    ok, motivo_vela = confirmar_vela_iq(par, direcao)
+    if not ok:
+        _atualizar_sinal(sid, "bloqueado", f"Vela ❌ {motivo_vela}")
+        _log(f"❌ {par} BLOQUEADO por vela: {motivo_vela}", "MANUAL")
+        return
+
+    _log(f"✅ Vela confirmada: {motivo_vela}", "MANUAL")
+
+    # ── Stop diário ───────────────────────────────────────────────
+    if check_stop_diario():
+        _atualizar_sinal(sid, "bloqueado", "Stop diário ativo")
+        _log(f"🛑 {par} BLOQUEADO: stop diário", "MANUAL")
+        return
+
+    # ── Trava global ──────────────────────────────────────────────
+    espera = 0
+    while not trava_livre():
+        time.sleep(2)
+        espera += 2
+        if espera > 30:
+            _atualizar_sinal(sid, "bloqueado", "Trava global — timeout")
+            _log(f"🔒 {par} BLOQUEADO: trava não liberou em 30s", "MANUAL")
+            return
+
+    # ── Executor bloqueado manualmente ────────────────────────────
+    if not estado.get("executor_ativo", True):
+        _atualizar_sinal(sid, "bloqueado", "Executor desativado")
+        _log(f"🚫 {par} BLOQUEADO: executor desativado", "MANUAL")
+        return
+
+    # ── Execução ──────────────────────────────────────────────────
+    _atualizar_sinal(sid, "executando")
+    saldo = get_saldo()
+    with _lock:
+        estado["saldo"] = saldo
+    stake = round(max(1.0, saldo * 0.02), 2)
+
+    trava_set(par)
+    tg(
+        f"🎯 <b>ENTRADA</b>\n"
+        f"📊 {par} {direcao}\n"
+        f"🕐 {hora_str} | 💵 ${stake:.2f}"
+    )
+
+    id_op = abrir_trade(par, direcao, stake, expiracao)
+    if not id_op:
+        trava_release()
+        _atualizar_sinal(sid, "bloqueado", "Falha ao abrir ordem")
+        _log(f"❌ {par} falha ao abrir ordem", "MANUAL")
+        return
+
+    # ── Resultado ─────────────────────────────────────────────────
+    if expiracao == 1:
+        win, valor = checar_resultado_m1(id_op, stake)
+    else:
+        win, valor = checar_resultado_m3(id_op, stake)
+
+    trava_release()
+    computar_resultado(win, valor, par, direcao, stake, "MANUAL")
+    _atualizar_sinal(sid, "win" if win else "loss",
+                     f"+${valor:.2f}" if win else f"-${stake:.2f}")
+    _log(f"{'✅ WIN' if win else '❌ LOSS'} Manual {par} {direcao} {'+'if win else '-'}${valor if win else stake:.2f}", "MANUAL")
+
+
+def engine_manual():
+    """Monitora a fila e dispara thread por sinal."""
+    _log("📋 Engine MANUAL iniciada", "MANUAL")
+    processados = set()
+    while True:
+        try:
+            with _sinais_lock:
+                pendentes = [s for s in _sinais_manuais
+                             if s["status"] == "aguardando" and s["id"] not in processados]
+            for sinal in pendentes:
+                processados.add(sinal["id"])
+                threading.Thread(
+                    target=_executar_sinal,
+                    args=(sinal,),
+                    daemon=True
+                ).start()
+        except Exception as e:
+            _log(f"Erro engine manual: {e}", "MANUAL")
+        time.sleep(3)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  SNIPER FILTRO V9.1 — integrado
+# ══════════════════════════════════════════════════════════════════
+from collections import Counter, defaultdict
+
+FF_URL_FILTRO = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+BLOQUEADOS_FIXOS_FILTRO = ["BTCUSD", "BTCUSD-OTC"]
+
+MOEDA_PARES_FF = {
+    "USD": ["EURUSD","GBPUSD","AUDUSD","NZDUSD","USDCAD","USDJPY","USDCHF",
+            "EURUSD-OTC","GBPUSD-OTC","AUDUSD-OTC","USDCAD-OTC","USDJPY-OTC"],
+    "EUR": ["EURUSD","EURJPY","EURAUD","EURCAD","EURGBP","EURCHF",
+            "EURUSD-OTC","EURJPY-OTC","EURAUD-OTC","EURCAD-OTC","EURGBP-OTC"],
+    "GBP": ["GBPUSD","GBPJPY","GBPAUD","GBPCAD","EURGBP","GBPCHF",
+            "GBPUSD-OTC","GBPJPY-OTC","GBPAUD-OTC","EURGBP-OTC","GBPCHF-OTC"],
+    "JPY": ["USDJPY","EURJPY","GBPJPY","AUDJPY","CADJPY","NZDJPY",
+            "USDJPY-OTC","EURJPY-OTC","GBPJPY-OTC","AUDJPY-OTC","CADJPY-OTC","NZDJPY-OTC"],
+    "AUD": ["AUDUSD","AUDJPY","EURAUD","GBPAUD","AUDCAD","AUDCHF",
+            "AUDUSD-OTC","AUDJPY-OTC","EURAUD-OTC","GBPAUD-OTC","AUDCAD-OTC","AUDCHF-OTC"],
+    "CAD": ["USDCAD","CADJPY","AUDCAD","GBPCAD","EURCAD","NZDCAD",
+            "USDCAD-OTC","CADJPY-OTC","AUDCAD-OTC","EURCAD-OTC","NZDCAD-OTC"],
+    "NZD": ["NZDUSD","NZDJPY","NZDCAD","NZDCHF",
+            "NZDUSD-OTC","NZDJPY-OTC","NZDCAD-OTC"],
+    "CHF": ["USDCHF","EURCHF","GBPCHF","AUDCHF","NZDCHF","CADCHF",
+            "USDCHF-OTC","GBPCHF-OTC","AUDCHF-OTC"],
+}
+
+def _f_ema(vals, n):
+    if len(vals) < n: return vals[-1]
+    k = 2/(n+1); e = vals[0]
+    for v in vals[1:]: e = v*k + e*(1-k)
+    return e
+
+def _f_rsi(closes, n=14):
+    if len(closes) < n+1: return 50
+    g = [max(closes[i]-closes[i-1], 0) for i in range(1, len(closes))]
+    l = [max(closes[i-1]-closes[i], 0) for i in range(1, len(closes))]
+    ag = sum(g[-n:])/n; al = sum(l[-n:])/n
+    return round(100 - 100/(1+ag/al), 1) if al > 0 else 50
+
+def _f_bw(closes, n=20):
+    if len(closes) < n: return 0
+    sma = sum(closes[-n:])/n
+    std = (sum((c-sma)**2 for c in closes[-n:])/n)**0.5
+    return ((sma+2*std)-(sma-2*std))/sma
+
+def _f_markov(closes, opens):
+    cores = ["V" if closes[i] >= opens[i] else "M" for i in range(len(closes))]
+    cores = list(reversed(cores))
+    cor = cores[0]; seq = 1
+    for c in cores[1:]:
+        if c == cor: seq += 1
+        else: break
+    max_seq = 1; tmp = 1
+    for i in range(1, len(cores)):
+        if cores[i] == cores[i-1]: tmp += 1; max_seq = max(max_seq, tmp)
+        else: tmp = 1
+    rec = cores[:30]
+    tr = {"VV":0,"VM":0,"MV":0,"MM":0}
+    for i in range(len(rec)-1):
+        k = rec[i]+rec[i+1]
+        if k in tr: tr[k] += 1
+    exaustao = seq >= max_seq*0.6 and seq >= 3
+    if cor == "V":
+        tot = tr["VV"]+tr["VM"]
+        p_cont = tr["VV"]/tot if tot > 0 else 0.5
+        p_rev  = tr["VM"]/tot if tot > 0 else 0.5
+        s_cont, s_rev = "CALL","PUT"
+    else:
+        tot = tr["MM"]+tr["MV"]
+        p_cont = tr["MM"]/tot if tot > 0 else 0.5
+        p_rev  = tr["MV"]/tot if tot > 0 else 0.5
+        s_cont, s_rev = "PUT","CALL"
+    if exaustao and p_rev > 0.5:       return s_rev,  round(p_rev*100, 1)
+    elif p_cont > 0.55 and not exaustao: return s_cont, round(p_cont*100, 1)
+    elif p_rev >= 0.65:                 return s_rev,  round(p_rev*100, 1)
+    return None, 50
+
+def _f_pares_bloqueados_ff():
+    bloqueados = set()
+    try:
+        import datetime as _dt
+        now_utc = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+        r = requests.get(FF_URL_FILTRO, timeout=8).json()
+        for e in r:
+            try:
+                t = _dt.datetime.strptime(e["date"], "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=None)
+                diff = (t - now_utc).total_seconds()/60
+                if -30 <= diff <= 120 and e.get("impact") == "High":
+                    moeda = e.get("currency","").upper()
+                    for p in MOEDA_PARES_FF.get(moeda, []):
+                        bloqueados.add(p)
+            except: pass
+    except: pass
+    return bloqueados
+
+def _f_tecnico(velas, sinal):
+    closes = [v["c"] for v in velas]
+    opens  = [v["o"] for v in velas]
+    highs  = [v["h"] for v in velas]
+    lows   = [v["l"] for v in velas]
+    pip    = 0.01 if closes[-1] > 50 else 0.0001
+    atr    = sum(highs[i]-lows[i] for i in range(-5, 0))/5
+    atrm   = sum(highs[i]-lows[i] for i in range(-20,-5))/15
+    corpo_med = sum(abs(closes[i]-opens[i]) for i in range(-5,0))/5
+    bw_val = _f_bw(closes)
+    if atr < atrm*0.30:       return None, 0, "ATR baixo"
+    if corpo_med < pip*0.10:  return None, 0, "Corpo fraco"
+    if bw_val < 0.00008:      return None, 0, "BW baixo"
+    e9  = _f_ema(closes[-20:], 9)
+    e25 = _f_ema(closes[-35:], 25)
+    r   = _f_rsi(closes)
+    c   = closes[-1]
+    dir_tec = None; score = 0; setup = []
+    if e9>e25 and c>e25 and r<75:
+        dir_tec="CALL"; score=50; setup.append("TEND")
+        if r<55: score+=15
+        dist=abs(c-e9)/pip
+        if dist<=10: score+=15
+        elif dist>20: score-=10
+    elif e9<e25 and c<e25 and r>25:
+        dir_tec="PUT"; score=50; setup.append("TEND")
+        if r>45: score+=15
+        dist=abs(c-e9)/pip
+        if dist<=10: score+=15
+        elif dist>20: score-=10
+    if not dir_tec:
+        dist=abs(c-e9)/pip
+        if e9>e25 and dist<5 and c>e25 and r<72:
+            dir_tec="CALL"; score=80; setup.append("PULL")
+        elif e9<e25 and dist<5 and c<e25 and r>28:
+            dir_tec="PUT"; score=80; setup.append("PULL")
+    if not dir_tec:
+        body_v  = abs(closes[-1]-opens[-1])
+        h_range = highs[-1]-lows[-1] if highs[-1]>lows[-1] else 0.00001
+        wick_dn = min(closes[-1],opens[-1])-lows[-1]
+        wick_up = highs[-1]-max(closes[-1],opens[-1])
+        if r<32 and wick_dn>body_v*1.5 and wick_dn/h_range>0.35:
+            dir_tec="CALL"; score=85; setup.append("REV")
+        elif r>68 and wick_up>body_v*1.5 and wick_up/h_range>0.35:
+            dir_tec="PUT"; score=85; setup.append("REV")
+    if not dir_tec or score < 50:
+        return None, 0, "Sem setup"
+    if dir_tec != sinal:
+        return None, 0, f"Técnico aponta {dir_tec} ≠ {sinal}"
+    return dir_tec, score, {"setup":"+".join(setup),"rsi":r,"bw":round(bw_val*100,2),"score":score}
+
+def _f_check_vela(velas, sinal):
+    v = velas[-1]
+    body  = abs(v["c"]-v["o"])
+    total = v["h"]-v["l"]
+    body_pct = body/total*100 if total > 0 else 0
+    direcao  = "UP" if v["c"] >= v["o"] else "DN"
+    alinhada = (sinal=="CALL" and direcao=="UP") or (sinal=="PUT" and direcao=="DN")
+    return direcao, body_pct, alinhada
+
+# Estado do filtro (resultado da última rodada)
+_filtro_estado = {
+    "rodando":    False,
+    "resultado":  [],   # lista de dicts com par/hora/dir/score/setup/etc
+    "bloqueados": [],
+    "ts":         0,
+    "erro":       "",
+}
+_filtro_lock = threading.Lock()
+
+def rodar_filtro(texto_bruto):
+    """
+    Processa lista bruta e salva resultado em _filtro_estado.
+    Roda em thread separada — NÃO bloqueia o servidor HTTP.
+    Usa cache de velas: busca todos os pares em paralelo antes de processar.
+    """
+    with _filtro_lock:
+        _filtro_estado["rodando"]    = True
+        _filtro_estado["resultado"]  = []
+        _filtro_estado["bloqueados"] = []
+        _filtro_estado["erro"]       = ""
+
+    _log("🎯 SniperFiltro V9.1 iniciado", "FILTRO")
+
+    try:
+        # ── Parse ─────────────────────────────────────────────────
+        sinais_raw = []
+        for linha in texto_bruto.splitlines():
+            linha = linha.strip().upper()
+            if not linha or linha.startswith("#"): continue
+            partes = [p.strip() for p in linha.split(";")]
+            if len(partes) == 4:
+                _, par, hora, direcao = partes
+            elif len(partes) == 3:
+                par, hora, direcao = partes
+            else: continue
+            if direcao not in ("CALL","PUT"): continue
+            if par in BLOQUEADOS_FIXOS_FILTRO: continue
+            sinais_raw.append((par, hora, direcao))
+
+        if not sinais_raw:
+            with _filtro_lock:
+                _filtro_estado["erro"]    = "Nenhum sinal válido na lista."
+                _filtro_estado["rodando"] = False
+            return
+
+        _log(f"  {len(sinais_raw)} sinais recebidos", "FILTRO")
+
+        # ── Camada 0 — Consenso ≥60%, N≥3 ────────────────────────
+        md = defaultdict(list)
+        for p, h, d in sinais_raw: md[h].append(d)
+        cons = {}
+        for m, dirs in md.items():
+            ct = Counter(dirs); tot = len(dirs); mc = ct.most_common(1)[0]
+            cons[m] = (mc[0], mc[1]/tot*100, tot)
+
+        ultimo_min = sorted(set(h for _,h,_ in sinais_raw))[-1]
+        candidatos = []
+        vistos = set()
+        for p, h, d in sorted(sinais_raw, key=lambda x: x[1]):
+            if p+h in vistos: continue
+            vistos.add(p+h)
+            if h == ultimo_min: continue
+            dc, pc, n = cons.get(h, ("X", 0, 0))
+            if d != dc or pc < 60 or n < 3: continue
+            candidatos.append((p, h, d, pc, n))
+
+        _log(f"  {len(candidatos)} candidatos após consenso", "FILTRO")
+
+        if not candidatos:
+            with _filtro_lock:
+                _filtro_estado["rodando"] = False
+            return
+
+        # ── Pré-aquecimento de cache em paralelo ──────────────────
+        # Busca todas as velas necessárias simultaneamente
+        pares_unicos = list(set(p for p,h,d,pc,n in candidatos))
+        _log(f"  🔄 Buscando velas para {len(pares_unicos)} pares...", "FILTRO")
+
+        threads_cache = []
+        for par_u in pares_unicos:
+            t = threading.Thread(
+                target=_atualizar_cache_par,
+                args=(par_u, 60, 60),
+                daemon=True
+            )
+            t.start()
+            threads_cache.append(t)
+
+        # Aguarda até 20s para todos terminarem
+        for t in threads_cache:
+            t.join(timeout=20)
+
+        _log(f"  ✅ Cache de velas pronto", "FILTRO")
+
+        # ── Camada 3 — Notícias FF ────────────────────────────────
+        pares_bloq = _f_pares_bloqueados_ff()
+        _log(f"  Pares bloqueados por notícia: {len(pares_bloq)}", "FILTRO")
+
+        aprovados  = []
+        bloqueados = []
+        pares_ok   = set()
+
+        for p, h, d, pc, n in candidatos:
+            if p in pares_bloq:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":"📅 Notícia alto impacto"})
+                _log(f"  📅 BLOQ {p} {h} — notícia", "FILTRO")
+                continue
+            if p in pares_ok:
+                continue
+
+            # Usa cache — sem chamar IQ direto
+            velas = get_candles_cached(p, n=60, tf=60)
+            if len(velas) < 35:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":"Sem dados IQ"})
+                _log(f"  ⚠️ {p} sem dados no cache", "FILTRO")
+                continue
+
+            closes = [v["c"] for v in velas]
+            opens  = [v["o"] for v in velas]
+
+            # Camada 1 — Técnico
+            dir_tec, score, det = _f_tecnico(velas, d)
+            if dir_tec is None:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":f"Técnico: {det}"})
+                _log(f"  ❌ {p} {h} {d} — Técnico: {det}", "FILTRO")
+                continue
+
+            # Camada 2 — Markov
+            dir_mkv, prob_mkv = _f_markov(closes, opens)
+            if dir_mkv is None or dir_mkv != d:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":f"Markov aponta {dir_mkv}"})
+                _log(f"  ❌ {p} {h} {d} — Markov: {dir_mkv}", "FILTRO")
+                continue
+
+            # Camada 4 — Vela anterior
+            vela_dir, body_pct, alinhada = _f_check_vela(velas, d)
+            if body_pct < 25:
+                bloqueados.append({"par":p,"hora":h,"dir":d,"motivo":f"Doji body:{body_pct:.0f}%"})
+                _log(f"  ❌ {p} {h} {d} — Doji", "FILTRO")
+                continue
+
+            score_final = score
+            if prob_mkv >= 70: score_final += 10
+            if alinhada:       score_final += 10
+            else:              score_final -= 5
+
+            pares_ok.add(p)
+            ic        = "💎" if score_final >= 90 else "✅" if score_final >= 70 else "🟡"
+            setup_str = det.get("setup","?") if isinstance(det, dict) else "?"
+            rsi_v     = det.get("rsi", 0)    if isinstance(det, dict) else 0
+
+            aprovados.append({
+                "par":p, "hora":h, "dir":d,
+                "cons": round(pc,1), "n":n,
+                "score": score_final, "setup": setup_str,
+                "rsi": round(rsi_v,1), "markov": round(prob_mkv,1),
+                "vela": vela_dir, "body": round(body_pct,1),
+                "alinhada": alinhada, "ic": ic,
+                "raw": f"M1;{p};{h};{d}",
+            })
+            _log(f"  {ic} PASS {p} {h} {d} Score:{score_final} Setup:{setup_str} Mkv:{prob_mkv:.0f}%", "FILTRO")
+
+        _log(f"✅ Filtro concluído: {len(aprovados)} aprovados / {len(bloqueados)} bloqueados", "FILTRO")
+
+        with _filtro_lock:
+            _filtro_estado["resultado"]  = sorted(aprovados, key=lambda x: -x["score"])
+            _filtro_estado["bloqueados"] = bloqueados
+            _filtro_estado["ts"]         = time.time()
+
+    except Exception as e:
+        _log(f"Erro SniperFiltro: {e}", "FILTRO")
+        with _filtro_lock:
+            _filtro_estado["erro"] = str(e)
+    finally:
+        with _filtro_lock:
+            _filtro_estado["rodando"] = False
+
+
+# ══════════════════════════════════════════════════════════════════
+#  MOTOR UNIFICADO
+# ══════════════════════════════════════════════════════════════════
+def iniciar_motor():
+    with _lock:
+        estado["iniciado_em"] = datetime.now(BRT).strftime("%d/%m %H:%M")
+
+    tg("🟢 <b>Sniper V10 ON</b>")
+
+    threading.Thread(target=engine_forex,  daemon=True).start()
+    threading.Thread(target=engine_otc,    daemon=True).start()
+    threading.Thread(target=engine_manual, daemon=True).start()
+
+# ══════════════════════════════════════════════════════════════════
+#  FLASK — PAINEL DARK MODE
+# ══════════════════════════════════════════════════════════════════
 app = Flask(__name__)
 
 HTML = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<meta http-equiv="refresh" content="15">
-<title>Sniper V12 — Quad-Channel</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Sniper V10</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Sniper V10">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0a0a0f;color:#e0e0e0;font-family:'Segoe UI',monospace;padding:16px}
-h1{color:#00e5ff;font-size:1.5em;margin-bottom:2px}
-.sub{color:#555;font-size:0.75em;margin-bottom:18px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:18px}
-.card{background:#13131f;border-radius:12px;padding:14px;text-align:center;border:1px solid #1e1e2e}
-.card .val{font-size:1.6em;font-weight:700;color:#00e5ff}
-.card .lbl{font-size:0.7em;color:#666;margin-top:4px}
-.card.green .val{color:#00ff88}
-.card.red .val{color:#ff4466}
-.card.yellow .val{color:#ffd700}
-.channels{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:18px}
-.ch{background:#13131f;border-radius:10px;padding:12px;border:1px solid #1e1e2e}
-.ch h3{font-size:0.85em;color:#00e5ff;margin-bottom:6px}
-.ch .info{font-size:0.72em;color:#888}
-.ch .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:0.65em;margin-bottom:6px}
-.badge.on{background:#00332a;color:#00ff88}
-.badge.off{background:#330011;color:#ff4466}
-table{width:100%;border-collapse:collapse;font-size:0.78em;background:#13131f;border-radius:10px;overflow:hidden}
-th{background:#1e1e2e;color:#00e5ff;padding:8px 10px;text-align:left}
-td{padding:7px 10px;border-bottom:1px solid #1a1a2a;color:#ccc}
-tr:last-child td{border:none}
-.call{color:#00ff88;font-weight:700}
-.put{color:#ff4466;font-weight:700}
-.btn{display:inline-block;padding:8px 18px;border-radius:8px;border:none;
-     cursor:pointer;font-size:0.8em;margin:4px;font-weight:600}
-.btn-green{background:#00442a;color:#00ff88}
-.btn-red{background:#440011;color:#ff4466}
-.btn-blue{background:#002244;color:#00aaff}
-.logs{background:#0d0d18;border-radius:10px;padding:12px;
-      font-size:0.7em;color:#555;height:180px;overflow-y:auto;
-      border:1px solid #1a1a2a;font-family:monospace;margin-top:14px}
-.section-title{color:#555;font-size:0.7em;text-transform:uppercase;
-               letter-spacing:2px;margin:16px 0 8px}
+body{background:#0a0a0a;color:#e0e0e0;font-family:sans-serif;padding:12px}
+.wrap{max-width:520px;margin:0 auto}
+.card{background:#141414;border:1px solid #222;border-radius:12px;padding:14px;margin-bottom:10px}
+.titulo{font-size:.65rem;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px}
+.status-box{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.val{font-size:1.4rem;font-weight:700}
+.val-g{color:#00e676}
+.val-w{color:#fff}
+.label{font-size:.6rem;color:#555;text-transform:uppercase}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+/* BOTOES — usando form+button para garantir funcionamento */
+.btn-form{width:100%;margin:0;padding:0}
+.btn{width:100%;padding:16px 8px;font-size:1rem;font-weight:700;border:none;
+     border-radius:10px;cursor:pointer;-webkit-appearance:none;appearance:none}
+.btn-go  {background:#00e676;color:#000}
+.btn-stop{background:#ff1744;color:#fff}
+.btn-exec{background:#7c4dff;color:#fff}
+.btn-off {background:#333;color:#aaa}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:.7rem;font-weight:700}
+.badge-on  {background:#00e67622;color:#00e676}
+.badge-off {background:#33333388;color:#888}
+.badge-exec{background:#7c4dff22;color:#ce93d8}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
+.dot-g{background:#00e676}.dot-r{background:#ff1744}.dot-y{background:#ffd600}
+.log-box{background:#0d0d0d;border-radius:8px;height:120px;overflow-y:auto;
+         padding:8px;font-family:monospace;font-size:.65rem;margin-top:8px}
+.log-box p{margin:1px 0;color:#777}
+textarea{width:100%;background:#0d0d0d;color:#e0e0e0;border:1px solid #333;
+         border-radius:8px;padding:8px;font-family:monospace;font-size:.75rem;
+         resize:vertical;margin-bottom:6px;-webkit-appearance:none}
+.info{font-size:.72rem;color:#555;margin-top:4px}
+.saldo-big{font-size:2rem;font-weight:700;color:#00e676}
 </style>
 </head>
 <body>
-<h1>🎯 SNIPER V12</h1>
-<div class="sub">Quad-Channel Engine · Atualiza a cada 15s · <span id="ts"></span></div>
+<div class="wrap">
 
-<div class="grid" id="cards"></div>
+  <!-- STATUS GERAL -->
+  <div class="card" id="card-status">
+    <div class="titulo">Status do Bot</div>
+    <div class="status-box">
+      <div>
+        <div class="saldo-big" id="saldo">$0.00</div>
+        <div class="label">Saldo Real</div>
+      </div>
+      <div style="text-align:right">
+        <div class="val val-w" id="bot_status">—</div>
+        <div class="label">Bot</div>
+        <div class="info" id="iniciado_em"></div>
+      </div>
+    </div>
+    <div class="grid2" style="margin-top:10px">
+      <form class="btn-form" action="/iniciar" method="post">
+        <button class="btn btn-go" type="submit">▶ INICIAR</button>
+      </form>
+      <form class="btn-form" action="/parar" method="post">
+        <button class="btn btn-stop" type="submit">⏹ PARAR</button>
+      </form>
+    </div>
+    <div id="stop_bar" style="display:none;background:#ff1744;color:#fff;text-align:center;padding:8px;border-radius:8px;margin-top:8px;font-weight:700">
+      STOP DIARIO ATIVO
+    </div>
+  </div>
 
-<div class="section-title">Canais Operacionais</div>
-<div class="channels" id="channels"></div>
+  <!-- EXECUTOR -->
+  <div class="card">
+    <div class="titulo">Executor Automatico &nbsp;
+      <span class="badge badge-exec" id="exec_badge">ATIVO</span>
+    </div>
+    <div class="grid2">
+      <form class="btn-form" action="/executor/ligar" method="post">
+        <button class="btn btn-exec" type="submit">⚡ EXEC ON</button>
+      </form>
+      <form class="btn-form" action="/executor/desligar" method="post">
+        <button class="btn btn-off" type="submit">EXEC OFF</button>
+      </form>
+    </div>
+  </div>
 
-<div class="section-title">Controles</div>
-<button class="btn btn-green" onclick="toggleBot()">▶ Bot ON/OFF</button>
-<button class="btn btn-blue"  onclick="toggleExec()">⚡ Execução ON/OFF</button>
-<button class="btn btn-red"   onclick="stopDiario()">🛑 Stop Manual</button>
+  <!-- FOREX -->
+  <div class="card">
+    <div class="titulo">Engine Forex &nbsp;
+      <span class="badge" id="forex_badge">—</span>
+    </div>
+    <div class="grid3">
+      <form class="btn-form" action="/forex/ligar" method="post">
+        <button class="btn btn-go" type="submit">▶ ON</button>
+      </form>
+      <form class="btn-form" action="/forex/desligar" method="post">
+        <button class="btn btn-stop" type="submit">⏹ OFF</button>
+      </form>
+      <div>
+        <div class="val val-g" id="forex_wr" style="font-size:1rem;padding-top:8px">—</div>
+        <div class="label">W/L</div>
+      </div>
+    </div>
+    <div class="log-box" id="log_forex"></div>
+  </div>
 
-<div class="section-title">Últimos Sinais</div>
-<table id="signals">
-<thead><tr><th>Hora</th><th>Canal</th><th>Par</th><th>Dir</th><th>Score</th><th>Exp</th></tr></thead>
-<tbody></tbody>
-</table>
+  <!-- OTC -->
+  <div class="card">
+    <div class="titulo">Engine OTC &nbsp;
+      <span class="badge" id="otc_badge">—</span>
+    </div>
+    <div class="grid3">
+      <form class="btn-form" action="/otc/ligar" method="post">
+        <button class="btn btn-go" type="submit">▶ ON</button>
+      </form>
+      <form class="btn-form" action="/otc/desligar" method="post">
+        <button class="btn btn-stop" type="submit">⏹ OFF</button>
+      </form>
+      <div>
+        <div class="val val-g" id="otc_wr" style="font-size:1rem;padding-top:8px">—</div>
+        <div class="label">W/L</div>
+      </div>
+    </div>
+    <div class="log-box" id="log_otc"></div>
+  </div>
 
-<div class="section-title">Log</div>
-<div class="logs" id="logs"></div>
+  <!-- SINAIS MANUAIS -->
+  <div class="card">
+    <div class="titulo">Enviar Sinais Manualmente</div>
+    <form action="/sinais_form" method="post">
+      <textarea name="sinais" rows="4" placeholder="M1;EURUSD;14:30;CALL&#10;M1;GBPUSD;14:31;PUT"></textarea>
+      <button class="btn btn-exec" type="submit" style="margin-top:4px">ENVIAR AO EXECUTOR</button>
+    </form>
+    <div class="info" id="fila_info" style="margin-top:6px"></div>
+  </div>
+
+  <!-- RESET STOP -->
+  <div class="card">
+    <form class="btn-form" action="/reset_stop" method="post">
+      <button class="btn btn-off" type="submit">RESETAR STOP DIARIO</button>
+    </form>
+  </div>
+
+</div>
 
 <script>
-document.getElementById('ts').textContent = new Date().toLocaleTimeString('pt-BR');
+function upd(){
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', '/estado', true);
+  xhr.onreadystatechange = function(){
+    if(xhr.readyState === 4 && xhr.status === 200){
+      try{
+        var d = JSON.parse(xhr.responseText);
+        document.getElementById('saldo').textContent     = '$' + (d.saldo||0).toFixed(2);
+        document.getElementById('bot_status').textContent= d.ativo ? 'RODANDO' : 'PARADO';
+        document.getElementById('bot_status').style.color= d.ativo ? '#00e676' : '#ff1744';
+        document.getElementById('iniciado_em').textContent = d.iniciado_em ? 'Desde '+d.iniciado_em : '';
+        document.getElementById('stop_bar').style.display = d.stop_diario ? 'block' : 'none';
 
-fetch('/api/status').then(r=>r.json()).then(d=>{
-  const cards = [
-    {lbl:'Saldo',     val:'$'+d.saldo.toFixed(2), cls:''},
-    {lbl:'Wins',      val:d.wins,                  cls:'green'},
-    {lbl:'Losses',    val:d.losses,                cls:'red'},
-    {lbl:'Losses Dia',val:d.losses_dia,            cls: d.losses_dia>=3?'red':'yellow'},
-    {lbl:'Modo',      val:d.modo,                  cls:''},
-    {lbl:'IQ',        val:d.iq_conectado?'ON':'OFF', cls:d.iq_conectado?'green':'red'},
-  ];
-  document.getElementById('cards').innerHTML = cards.map(c=>
-    `<div class="card ${c.cls}"><div class="val">${c.val}</div><div class="lbl">${c.lbl}</div></div>`
-  ).join('');
+        var eb = document.getElementById('exec_badge');
+        var eOn = d.executor_ativo !== false;
+        eb.textContent  = eOn ? 'ATIVO' : 'OFF';
+        eb.className    = 'badge ' + (eOn ? 'badge-exec' : 'badge-off');
 
-  const chNames = {'OTC_M1':'🔵 OTC M1','OTC_M5':'🔵 OTC M5','REAL_M1':'📈 REAL M1','REAL_M5':'📈 REAL M5'};
-  document.getElementById('channels').innerHTML = Object.entries(d.canais).map(([k,v])=>
-    `<div class="ch">
-      <h3>${chNames[k]||k}</h3>
-      <span class="badge ${v.ativo?'on':'off'}">${v.ativo?'ATIVO':'PAUSADO'}</span>
-      <div class="info">Último: ${v.ultimo_sinal}</div>
-      <div class="info">Total sinais: ${v.total}</div>
-    </div>`
-  ).join('');
+        var fb = document.getElementById('forex_badge');
+        var fOn = d.forex_ativo !== false;
+        fb.textContent = fOn ? 'ON' : 'OFF';
+        fb.className   = 'badge ' + (fOn ? 'badge-on' : 'badge-off');
+        document.getElementById('forex_wr').textContent = (d.forex_wins||0) + 'W / ' + (d.forex_losses||0) + 'L';
 
-  const tbody = document.querySelector('#signals tbody');
-  tbody.innerHTML = (d.sinais||[]).slice(0,20).map(s=>
-    `<tr>
-      <td>${s.ts}</td>
-      <td>${chNames[s.canal]||s.canal}</td>
-      <td>${s.par}</td>
-      <td class="${s.dir=='CALL'?'call':'put'}">${s.dir}</td>
-      <td>${s.score}</td>
-      <td>${s.exp}min</td>
-    </tr>`
-  ).join('') || '<tr><td colspan="6" style="color:#333;text-align:center">Sem sinais ainda</td></tr>';
+        var ob = document.getElementById('otc_badge');
+        var oOn = d.otc_ativo !== false;
+        ob.textContent = oOn ? 'ON' : 'OFF';
+        ob.className   = 'badge ' + (oOn ? 'badge-on' : 'badge-off');
+        document.getElementById('otc_wr').textContent = (d.otc_wins||0) + 'W / ' + (d.otc_losses||0) + 'L';
 
-  document.getElementById('logs').innerHTML = (d.logs||[]).slice(0,50).map(l=>
-    `<div>${l}</div>`
-  ).join('');
-  const logsEl = document.getElementById('logs');
-  logsEl.scrollTop = logsEl.scrollHeight;
-});
+        var lf = document.getElementById('log_forex');
+        if(d.log_forex && d.log_forex.length){
+          lf.innerHTML = (d.log_forex||[]).slice(-20).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
+        }
+        var lo = document.getElementById('log_otc');
+        if(d.log_otc && d.log_otc.length){
+          lo.innerHTML = (d.log_otc||[]).slice(-20).reverse().map(function(l){ return '<p>'+l+'</p>'; }).join('');
+        }
 
-function toggleBot(){
-  fetch('/api/toggle_bot', {method:'POST'}).then(r=>r.json()).then(d=>location.reload());
+        var xhr2 = new XMLHttpRequest();
+        xhr2.open('GET', '/sinais', true);
+        xhr2.onreadystatechange = function(){
+          if(xhr2.readyState===4 && xhr2.status===200){
+            try{
+              var lista = JSON.parse(xhr2.responseText);
+              var fi = document.getElementById('fila_info');
+              fi.textContent = lista.length ? lista.length + ' sinal(is) na fila.' : '';
+            }catch(e){}
+          }
+        };
+        xhr2.send();
+      }catch(e){}
+    }
+  };
+  xhr.send();
 }
-function toggleExec(){
-  fetch('/api/toggle_exec', {method:'POST'}).then(r=>r.json()).then(d=>location.reload());
-}
-function stopDiario(){
-  if(confirm('Confirmar STOP manual?'))
-    fetch('/api/stop', {method:'POST'}).then(r=>r.json()).then(d=>location.reload());
-}
+upd();
+setInterval(upd, 3000);
 </script>
 </body>
-</html>"""
+</html>
+"""
 
-@app.route('/')
+@app.route("/")
 def index():
-    return render_template_string(HTML)
+    return Response(HTML, mimetype='text/html')
 
-@app.route('/api/status')
-def api_status():
-    with _painel_lock:
-        p = dict(_painel)
-    with _log_lock:
-        logs = list(_log_buffer[-50:])
-    p['logs'] = logs
-    p['modo'] = detectar_modo()
-    return jsonify(p)
-
-@app.route('/api/toggle_bot', methods=['POST'])
-def toggle_bot():
-    with _painel_lock:
-        _painel['bot_ativo'] = not _painel['bot_ativo']
-        estado = _painel['bot_ativo']
-    log(f'Bot {"LIGADO" if estado else "DESLIGADO"} pelo painel')
-    return jsonify({'bot_ativo': estado})
-
-@app.route('/api/toggle_exec', methods=['POST'])
-def toggle_exec():
-    with _painel_lock:
-        _painel['execucao_ativa'] = not _painel['execucao_ativa']
-        estado = _painel['execucao_ativa']
-    log(f'Execução automática {"ON" if estado else "OFF"}')
-    telegram(f'⚡ Execução automática: {"✅ ON" if estado else "❌ OFF"}')
-    return jsonify({'execucao_ativa': estado})
-
-@app.route('/api/toggle_canal/<canal>', methods=['POST'])
-def toggle_canal(canal):
-    if canal not in _painel['canais']:
-        return jsonify({'erro': 'canal inválido'}), 400
-    with _painel_lock:
-        _painel['canais'][canal]['ativo'] = not _painel['canais'][canal]['ativo']
-        estado = _painel['canais'][canal]['ativo']
-    log(f'Canal {canal} {"ATIVO" if estado else "PAUSADO"}')
-    return jsonify({'canal': canal, 'ativo': estado})
-
-@app.route('/api/stop', methods=['POST'])
-def stop_manual():
-    with _painel_lock:
-        _painel['bot_ativo'] = False
-    telegram('🛑 <b>STOP MANUAL</b> acionado pelo painel.')
-    log('STOP MANUAL acionado')
-    return jsonify({'ok': True})
-
-@app.route('/health')
-def health():
-    return jsonify({'status': 'ok', 'ts': datetime.datetime.now(BRT).isoformat()})
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CONEXÃO IQ OPTION
-# ══════════════════════════════════════════════════════════════════════════════
-
-def conectar_iq():
-    """
-    Conexão segura via SSID cookie injection.
-    Injeta o cookie ANTES do connect() para bypass de bloqueio de IP no Railway.
-    """
-    log('Conectando à IQ Option...')
-    iq = IQ_Option(IQ_EMAIL, IQ_PASS)
-
-    if IQ_SSID:
+@app.route("/estado")
+def get_estado_route():
+    # Busca saldo real da IQ sempre que possivel
+    if estado.get("ativo") or estado.get("saldo", 0) == 0:
         try:
-            iq.api.session.cookies.set('ssid', IQ_SSID)
-            log(f'SSID injetado: {IQ_SSID[:10]}...')
-        except Exception as e:
-            log(f'Aviso SSID: {e}')
+            s = get_saldo()
+            if s and s > 0:
+                estado["saldo"] = s
+        except Exception:
+            pass
+    with _lock:
+        return jsonify(dict(estado))
 
-    check, reason = iq.connect()
-    if not check:
-        raise ConnectionError(f'IQ Option falhou: {reason}')
+@app.route("/iniciar", methods=["POST"])
+def iniciar():
+    is_form = freq.content_type and 'urlencoded' in freq.content_type
+    if not estado.get("stop_diario") and not estado["ativo"]:
+        estado["ativo"] = True
+        threading.Thread(target=iniciar_motor, daemon=True).start()
+    if is_form:
+        return redirect("/")
+    return jsonify({"ok": True})
 
-    iq.change_balance(IQ_BALANCE_TYPE)
-    saldo = iq.get_balance()
-    log(f'Conectado! Conta: {IQ_BALANCE_TYPE} | Saldo: ${saldo:.2f}')
+@app.route("/parar", methods=["POST"])
+def parar():
+    estado["ativo"] = False
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
+    return jsonify({"ok": True})
 
-    with _painel_lock:
-        _painel['saldo']        = saldo
-        _painel['iq_conectado'] = True
+# ── CONTROLE REMOTO (Zapia / API) ─────────────────────────────────
+CMD_SECRET = os.environ.get("CMD_SECRET", "sniper2026")
 
-    return iq
+@app.route("/cmd", methods=["POST"])
+def cmd_remoto():
+    """Controle remoto via POST JSON — usado pela assistente Zapia."""
+    data = freq.get_json(silent=True) or {}
+    if data.get("secret") != CMD_SECRET:
+        return jsonify({"ok": False, "erro": "não autorizado"}), 403
+    acao = data.get("acao", "")
+    if acao == "ligar":
+        if not estado.get("stop_diario"):
+            if not estado["ativo"]:
+                estado["ativo"] = True
+                threading.Thread(target=iniciar_motor, daemon=True).start()
+            return jsonify({"ok": True, "msg": "Bot ligado"})
+        return jsonify({"ok": False, "msg": "Stop diário ativo — reset antes"})
+    elif acao == "desligar":
+        estado["ativo"] = False
+        return jsonify({"ok": True, "msg": "Bot desligado"})
+    elif acao == "status":
+        with _lock:
+            return jsonify({
+                "ok": True,
+                "ativo": estado["ativo"],
+                "iq_ok": estado["iq_ok"],
+                "saldo": estado.get("saldo", 0),
+                "stop_diario": estado["stop_diario"],
+                "losses_dia": estado["losses_dia"],
+                "forex_status": estado["forex_status"],
+                "otc_status": estado["otc_status"],
+                "log_recente": estado.get("log_geral", [])[-5:]
+            })
+    elif acao == "reset_stop":
+        estado["stop_diario"] = False
+        estado["losses_dia"]  = 0
+        return jsonify({"ok": True, "msg": "Stop diário resetado"})
+    return jsonify({"ok": False, "erro": f"ação desconhecida: {acao}"})
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════════════════════
+@app.route("/forex/ligar", methods=["POST"])
+def forex_ligar():
+    estado["forex_ativo"] = True
+    _log("Engine FOREX ligada", "FOREX")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
+    return jsonify({"ok": True})
 
-def main():
-    log('=' * 60)
-    log('SNIPER V12 — QUAD-CHANNEL ENGINE')
-    log(f'Conta: {IQ_BALANCE_TYPE} | Exec: {EXECUCAO_ATIVA}')
-    log('=' * 60)
+@app.route("/forex/desligar", methods=["POST"])
+def forex_desligar():
+    estado["forex_ativo"] = False
+    _log("Engine FOREX desligada", "FOREX")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
+    return jsonify({"ok": True})
 
-    # Conectar IQ Option
-    iq = None
-    for tentativa in range(1, 4):
-        try:
-            iq = conectar_iq()
-            break
-        except Exception as e:
-            log(f'Tentativa {tentativa}/3 falhou: {e}')
-            time.sleep(10)
+@app.route("/otc/ligar", methods=["POST"])
+def otc_ligar():
+    estado["otc_ativo"] = True
+    _log("Engine OTC ligada", "OTC")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
+    return jsonify({"ok": True})
 
-    if iq is None:
-        log('FATAL: não foi possível conectar à IQ Option')
-        sys.exit(1)
+@app.route("/otc/desligar", methods=["POST"])
+def otc_desligar():
+    estado["otc_ativo"] = False
+    _log("Engine OTC desligada", "OTC")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
+    return jsonify({"ok": True})
 
-    modo_inicial = detectar_modo()
-    telegram(
-        f'🟢 <b>Sniper V12 Quad-Channel online!</b>\n'
-        f'💵 Saldo: <b>${_painel["saldo"]:.2f}</b> ({IQ_BALANCE_TYPE})\n'
-        f'📊 Modo: {modo_inicial}\n'
-        f'🔵 OTC M1  | Score≥{SCORE_MIN["OTC_M1"]}  | Exp=1min\n'
-        f'🔵 OTC M5  | Score≥{SCORE_MIN["OTC_M5"]}  | Exp=5min\n'
-        f'📈 REAL M1 | Score≥{SCORE_MIN["REAL_M1"]} | Exp=3min\n'
-        f'📈 REAL M5 | Score≥{SCORE_MIN["REAL_M5"]} | Exp=5min\n'
-        f'👁 Execução: {"✅ ON" if EXECUCAO_ATIVA else "❌ OFF"}'
-    )
+@app.route("/executor/ligar", methods=["POST"])
+def executor_ligar():
+    estado["executor_ativo"] = True
+    _log("Executor ATIVADO", "MANUAL")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
+    return jsonify({"ok": True})
 
-    # ── Definir configuração de cada canal ───────────────────────────────────
-    canais_config = [
-        {
-            'canal':       'OTC_M1',
-            'pares':       PARES_OTC,
-            'analisar_fn': analisar_otc_m1,
-            'expiracao':   1,
-            'ciclo_s':     57,
-            'trap_fn':     trap_zone_otc_m1,
-            'mercado':     'OTC',
-        },
-        {
-            'canal':       'OTC_M5',
-            'pares':       PARES_OTC,
-            'analisar_fn': analisar_otc_m5,
-            'expiracao':   5,
-            'ciclo_s':     290,
-            'trap_fn':     trap_zone_otc_m5,
-            'mercado':     'OTC',
-        },
-        {
-            'canal':       'REAL_M1',
-            'pares':       PARES_REAL,
-            'analisar_fn': analisar_real_m1,
-            'expiracao':   3,    # M3 para mitigar spread
-            'ciclo_s':     57,
-            'trap_fn':     trap_zone_real,
-            'mercado':     'REAL',
-        },
-        {
-            'canal':       'REAL_M5',
-            'pares':       PARES_REAL,
-            'analisar_fn': analisar_real_m5,
-            'expiracao':   5,
-            'ciclo_s':     290,
-            'trap_fn':     trap_zone_real,
-            'mercado':     'REAL',
-        },
-    ]
+@app.route("/executor/desligar", methods=["POST"])
+def executor_desligar():
+    estado["executor_ativo"] = False
+    _log("Executor DESATIVADO", "MANUAL")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
+    return jsonify({"ok": True})
 
-    # ── Lançar threads dos canais ─────────────────────────────────────────────
-    threads = []
-    for cfg in canais_config:
-        t = threading.Thread(
-            target=loop_canal,
-            args=(
-                iq,
-                cfg['canal'],
-                cfg['pares'],
-                cfg['analisar_fn'],
-                cfg['expiracao'],
-                cfg['ciclo_s'],
-                cfg['trap_fn'],
-                cfg['mercado'],
-            ),
-            daemon=True,
-            name=f"canal_{cfg['canal']}"
-        )
-        t.start()
-        threads.append(t)
-        log(f'Thread [{cfg["canal"]}] iniciada')
-        time.sleep(1)   # escalonar inicialização
+@app.route("/reset_stop", methods=["POST"])
+def reset_stop():
+    with _lock:
+        estado["stop_diario"]      = False
+        estado["losses_dia"]       = 0
+        estado["data_losses_dia"]  = ""
+    _log("Stop diario resetado manualmente.")
+    if freq.content_type and 'urlencoded' in freq.content_type:
+        return redirect("/")
+    return jsonify({"ok": True})
 
-    # ── Thread de monitoramento de conexão ───────────────────────────────────
-    def monitor_conexao():
-        while True:
-            try:
-                if not iq.check_connect():
-                    log('Reconectando IQ Option...')
-                    iq.connect()
-                    iq.change_balance(IQ_BALANCE_TYPE)
-                    with _painel_lock:
-                        _painel['iq_conectado'] = True
-                    log('Reconectado!')
-                saldo = iq.get_balance()
-                if saldo:
-                    with _painel_lock:
-                        _painel['saldo'] = saldo
-            except Exception as e:
-                log(f'Monitor conexão: {e}')
-                with _painel_lock:
-                    _painel['iq_conectado'] = False
-            time.sleep(30)
+@app.route("/filtro", methods=["GET"])
+def get_filtro():
+    with _filtro_lock:
+        return jsonify(dict(_filtro_estado))
 
-    t_monitor = threading.Thread(target=monitor_conexao, daemon=True, name='monitor')
-    t_monitor.start()
+@app.route("/filtro", methods=["POST"])
+def post_filtro():
+    data  = freq.get_json(silent=True) or {}
+    lista = data.get("lista", "").strip()
+    if not lista:
+        return jsonify({"ok": False, "msg": "Lista vazia."})
+    if _filtro_estado["rodando"]:
+        return jsonify({"ok": False, "msg": "Filtro já está rodando, aguarde."})
+    threading.Thread(target=rodar_filtro, args=(lista,), daemon=True).start()
+    return jsonify({"ok": True})
 
-    # ── Flask (bloqueia a thread principal) ──────────────────────────────────
-    log(f'Painel web iniciando na porta {PORT}...')
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+@app.route("/sinais", methods=["GET"])
+def get_sinais():
+    with _sinais_lock:
+        return jsonify(list(_sinais_manuais[-20:]))  # últimos 20
+
+@app.route("/sinais", methods=["POST"])
+def post_sinais():
+    data = freq.get_json(silent=True) or {}
+    texto = data.get("sinais", "").strip()
+    if not texto:
+        return jsonify({"ok": False, "msg": "Nenhum sinal enviado."})
+
+    linhas = texto.splitlines()
+    adicionados = 0
+    erros = []
+    with _sinais_lock:
+        for linha in linhas:
+            s = _parse_sinal(linha)
+            if s:
+                _sinais_manuais.append(s)
+                adicionados += 1
+                _log(f"📋 Sinal manual adicionado: {s['raw']}", "MANUAL")
+            elif linha.strip() and not linha.strip().startswith("#"):
+                erros.append(linha.strip())
+
+    if adicionados == 0:
+        return jsonify({"ok": False, "msg": f"Formato inválido: {', '.join(erros[:3])}"})
+    return jsonify({"ok": True, "adicionados": adicionados, "erros": erros})
 
 
-if __name__ == '__main__':
-    main()
+# ══════════════════════════════════════════════════════════════════
+#  PWA — Manifesto, Service Worker e Icone
+# ══════════════════════════════════════════════════════════════════
+import base64 as _b64
+
+_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="24" fill="#0a0a0a"/>
+  <text x="96" y="130" font-size="110" text-anchor="middle" fill="#00e676">S</text>
+</svg>"""
+
+_MANIFEST = """{
+  "name": "Sniper V10",
+  "short_name": "Sniper",
+  "description": "Sniper Hibrido V10 — Forex e OTC",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}"""
+
+_SW_JS = """
+const CACHE = 'sniper-v10-pwa-v1';
+self.addEventListener('install',  function(e){ self.skipWaiting(); });
+self.addEventListener('activate', function(e){ e.waitUntil(self.clients.claim()); });
+self.addEventListener('fetch', function(e){
+  if(e.request.method !== 'GET'){ return; }
+  e.respondWith(
+    fetch(e.request).catch(function(){
+      return caches.match(e.request);
+    })
+  );
+});
+"""
+
+def _svg_to_png(size):
+    try:
+        import cairosvg
+        return cairosvg.svg2png(bytestring=_ICON_SVG.encode(), output_width=size, output_height=size)
+    except Exception:
+        # fallback: PNG minimo 1x1 transparente com cabecalho correto
+        import struct, zlib
+        def png_chunk(name, data):
+            c = struct.pack('>I', len(data)) + name + data
+            return c + struct.pack('>I', zlib.crc32(name+data) & 0xffffffff)
+        w = h = size
+        raw = b'\x00' + b'\xff\x00\x00\xff' * w
+        idat = zlib.compress(raw * h)
+        return (b'\x89PNG\r\n\x1a\n'
+                + png_chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+                + png_chunk(b'IDAT', idat)
+                + png_chunk(b'IEND', b''))
+
+@app.route("/manifest.json")
+def pwa_manifest():
+    return Response(_MANIFEST, mimetype='application/manifest+json')
+
+@app.route("/sw.js")
+def pwa_sw():
+    return Response(_SW_JS, mimetype='application/javascript')
+
+@app.route("/icon-192.png")
+def pwa_icon192():
+    return Response(_svg_to_png(192), mimetype='image/png')
+
+@app.route("/icon-512.png")
+def pwa_icon512():
+    return Response(_svg_to_png(512), mimetype='image/png')
+
+@app.route("/teste")
+def pagina_teste():
+    H = """<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Teste Botao</title>
+<style>
+body{background:#111;color:#fff;font-family:sans-serif;padding:20px;text-align:center}
+button{display:block;width:100%;padding:20px;font-size:1.2rem;font-weight:bold;
+       background:#00e676;color:#000;border:none;border-radius:12px;margin:10px 0;cursor:pointer}
+#log{margin-top:20px;background:#222;padding:10px;border-radius:8px;text-align:left;
+     font-family:monospace;font-size:.8rem;min-height:100px}
+</style>
+</head><body>
+<h2>Diagnostico de Botoes</h2>
+<button id="btn1">TESTE CLICK (SEM FETCH)</button>
+<button id="btn2">TESTE FETCH /estado</button>
+<button id="btn3">TESTE POST /iniciar</button>
+<div id="log">Aguardando clique...</div>
+<script>
+var log = document.getElementById('log');
+function addLog(msg){ log.innerHTML += '<br>' + new Date().toLocaleTimeString() + ' — ' + msg; }
+
+document.getElementById('btn1').addEventListener('click', function(){
+  addLog('CLICK FUNCIONOU! JavaScript OK.');
+});
+
+document.getElementById('btn2').addEventListener('click', function(){
+  addLog('Fazendo fetch GET /estado...');
+  fetch(window.location.origin + '/estado')
+    .then(function(r){ return r.json(); })
+    .then(function(d){ addLog('GET OK! ativo=' + d.ativo + ' saldo=' + d.saldo); })
+    .catch(function(e){ addLog('GET ERRO: ' + e.toString()); });
+});
+
+document.getElementById('btn3').addEventListener('click', function(){
+  addLog('Fazendo fetch POST /iniciar...');
+  fetch(window.location.origin + '/iniciar', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ addLog('POST OK! ok=' + d.ok); })
+    .catch(function(e){ addLog('POST ERRO: ' + e.toString()); });
+});
+
+addLog('JS carregado. Navegador: ' + navigator.userAgent.substring(0,80));
+</script>
+</body></html>"""
+    return Response(H, mimetype='text/html')
+
+
+@app.route("/sinais_form", methods=["POST"])
+def post_sinais_form():
+    texto = freq.form.get("sinais", "").strip()
+    if texto:
+        with _sinais_lock:
+            for linha in texto.splitlines():
+                s = _parse_sinal(linha)
+                if s:
+                    _sinais_manuais.append(s)
+                    _log("Sinal manual: " + s["raw"], "MANUAL")
+    return redirect("/")
+
+# ══════════════════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    threading.Thread(target=_conectar_iq,    daemon=True).start()
+    threading.Thread(target=engine_manual,   daemon=True).start()  # sempre ativa
+    # Auto-inicia os motores (ativo=True por padrão)
+    threading.Thread(target=iniciar_motor,   daemon=True).start()
+    port = int(os.environ.get("PORT", 8080))
+    _log(f"🌐 Sniper Híbrido V10 — porta {port}")
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
