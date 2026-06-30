@@ -60,7 +60,7 @@ FOREX_JANELAS = [             # (h_ini, m_ini, h_fim, m_fim) BRT
 FOREX_MINUTOS_BLOQ = [58, 59, 0, 1, 2]  # só virada de hora — Forex real descentralizado
 
 # ── ENGINE OTC ────────────────────────────────────────────────────
-OTC_SCORE_MIN = 80
+OTC_SCORE_MIN = 85
 OTC_EXPIRACAO = 1             # minutos (M1)
 OTC_PARES = [
     "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC",
@@ -699,57 +699,91 @@ def score_forex(velas):
 # ══════════════════════════════════════════════════════════════════
 def score_otc(velas):
     """
-    Retorna (score, direcao, det) ou (0, None, motivo)
-    MACD(5,13,4) → 30 pts
-    ADX(14)      → <18 BLOQUEIO | 18-22 = 0 | ≥22 = 30 pts
-    BB(20,2)     → extremidade 25 pts | meio 8 pts
-    RSI(14)      → zona força 15 pts | >85/<15 BLOQUEIO
-    Shadow       → >35% BLOQUEIO
+    Score OTC V10 REFORÇADO — máx 100 pts
+    ─────────────────────────────────────────────────────────────────
+    FILTROS OBRIGATÓRIOS (qualquer um bloqueia tudo):
+      • Shadow > 35% do candle total
+      • RSI > 82 ou < 18  (exaustão)
+      • ADX < 22          (mercado lateral — sem tendência)
+      • Corpo < 1.0 pip   (vela micro — sem força)
+      • EMA9 vs EMA21 diverge do MACD (conflito de direção)
+
+    PONTUAÇÃO:
+      MACD(5,13,4) alinhado com EMA   → 30 pts
+      ADX ≥ 25                        → 25 pts  (22–24 = 10 pts)
+      RSI zona de força               → 20 pts
+      BB extremidade (<15% ou >85%)   → 25 pts  (meio = 0)
     """
-    if len(velas) < 30:
+    if len(velas) < 35:
         return 0, None, "velas insuf"
 
     closes = [v["c"] for v in velas]
-    vela   = velas[-2]
+    vela   = velas[-2]   # última vela fechada
+    preco  = closes[-1]
 
+    # ── Filtro 1: Shadow ────────────────────────────────────────────
     if shadow_bloqueio(vela):
         return 0, None, "Shadow BLOQUEIO"
 
-    # MACD
+    # ── Filtro 2: Corpo mínimo ──────────────────────────────────────
+    pip   = 0.01 if preco > 50 else 0.0001
+    corpo = abs(vela["c"] - vela["o"]) / pip
+    if corpo < 1.0:
+        return 0, None, f"Corpo {corpo:.2f}p BLOQUEIO"
+
+    # ── Filtro 3: ADX mínimo 22 ─────────────────────────────────────
+    adx = calcular_adx(velas)
+    if adx < 22:
+        return 0, None, f"ADX {adx:.1f} lateral BLOQUEIO"
+
+    # ── MACD → define direção ───────────────────────────────────────
     macd_val, sig_val = calcular_macd(closes)
     if macd_val == 0 and sig_val == 0:
         return 0, None, "MACD indispon"
-    if   macd_val > sig_val: direcao = "CALL"
-    elif macd_val < sig_val: direcao = "PUT"
+    if   macd_val > sig_val: direcao_macd = "CALL"
+    elif macd_val < sig_val: direcao_macd = "PUT"
     else: return 0, None, "MACD neutro"
+
+    # ── Filtro 4: EMA9 vs EMA21 deve confirmar MACD ─────────────────
+    e9  = ema_series(closes, 9)
+    e21 = ema_series(closes, 21)
+    if not e9 or not e21:
+        return 0, None, "EMA indispon"
+    direcao_ema = "CALL" if e9[-1] > e21[-1] else "PUT"
+    if direcao_ema != direcao_macd:
+        return 0, None, f"MACD↕EMA conflito BLOQUEIO"
+
+    direcao = direcao_macd
+
+    # ── Filtro 5: RSI exaustão ──────────────────────────────────────
+    rsi = calcular_rsi(closes)
+    if rsi > 82 or rsi < 18:
+        return 0, None, f"RSI {rsi:.1f} exaustão BLOQUEIO"
+
+    # ── Pontuação ───────────────────────────────────────────────────
+    # MACD + EMA alinhados = 30 pts
     pts_macd = 30
 
     # ADX
-    adx = calcular_adx(velas)
-    if adx < 18:
-        return 0, None, f"ADX {adx:.1f} lateral BLOQUEIO"
-    pts_adx = 30 if adx >= 22 else 0
+    pts_adx = 25 if adx >= 25 else 10   # 22-24 = 10 pts parcial
 
-    # RSI
-    rsi = calcular_rsi(closes)
-    if rsi > 85 or rsi < 15:
-        return 0, None, f"RSI {rsi:.1f} exaustão BLOQUEIO"
+    # RSI zona de força
     pts_rsi = 0
-    if direcao == "CALL" and 55 <= rsi <= 75: pts_rsi = 15
-    if direcao == "PUT"  and 25 <= rsi <= 45: pts_rsi = 15
+    if direcao == "CALL" and 52 <= rsi <= 72: pts_rsi = 20
+    if direcao == "PUT"  and 28 <= rsi <= 48: pts_rsi = 20
 
-    # BB
+    # BB extremidade
     upper, mid, lower = calcular_bb(closes)
-    preco  = closes[-1]
     pts_bb = 0
     if upper and lower and (upper - lower) > 0:
         pos = (preco - lower) / (upper - lower)
-        if   (direcao == "CALL" and pos <= 0.20) or (direcao == "PUT"  and pos >= 0.80): pts_bb = 25
-        elif 0.35 <= pos <= 0.65: pts_bb = 8
+        if (direcao == "CALL" and pos <= 0.15) or (direcao == "PUT" and pos >= 0.85):
+            pts_bb = 25
+        # meio da BB não pontua mais — não é zona de reversão
 
     score = pts_macd + pts_adx + pts_rsi + pts_bb
     det   = {
-        "adx": f"{adx:.1f}", "rsi": f"{rsi:.1f}",
+        "adx": f"{adx:.1f}", "rsi": f"{rsi:.1f}", "corpo": f"{corpo:.1f}p",
         "pts": f"MACD:{pts_macd} ADX:{pts_adx} RSI:{pts_rsi} BB:{pts_bb}",
     }
     return score, direcao, det
