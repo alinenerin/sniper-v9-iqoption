@@ -6,11 +6,8 @@
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 import sys, os, subprocess
-
-# ── Instala dependências ANTES de qualquer outro import ───────────────────────
 subprocess.call(
-    [sys.executable, "-m", "pip", "install", "-q",
-     "requests", "pytz", "flask", "websocket-client"],
+    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "flask"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
@@ -252,6 +249,19 @@ def _conectar_iq():
             return
 
         api = _IQLib(IQ_EMAIL, IQ_PASS)
+
+        # Injeta SSID antes do connect() para bypassar bloqueio de IP
+        if IQ_SSID:
+            for _attr in ("api.session", "session"):
+                try:
+                    obj = api
+                    for part in _attr.split("."):
+                        obj = getattr(obj, part)
+                    obj.cookies.set("ssid", IQ_SSID)
+                    _log(f"SSID injetado via {_attr}: {IQ_SSID[:10]}...")
+                    break
+                except Exception:
+                    pass
 
         try:
             check, reason = api.connect()
@@ -2225,11 +2235,6 @@ def cmd_remoto():
             import iqoptionapi.global_value as _gv
             _gv.SSID = ssid
             _log(f"SSID injetado externamente: {ssid[:12]}...")
-            # Força reconexão imediata
-            global _iq_ok, _iq_tentando
-            _iq_ok      = False
-            _iq_tentando = False
-            # Força reconexão imediata com o SSID injetado
             global _iq_ok, _iq_tentando
             _iq_ok       = False
             _iq_tentando = False
