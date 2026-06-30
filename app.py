@@ -353,7 +353,6 @@ def get_candles(ativo, n=60, tf=60):
                         return sorted(velas, key=lambda x: x["t"])
                 elif r.status_code in (401, 403) or "text/html" in ct:
                     # Sessão expirou — reconecta em background
-                    global _iq_ok
                     _iq_ok = False
                     with _lock:
                         estado["iq_ok"] = False
