@@ -326,6 +326,7 @@ def garantir_conexao():
 
 def get_candles(ativo, n=60, tf=60):
     """Busca velas M1 — 1º IQ REST | 2º Polygon | 3º Twelve Data"""
+    global _iq_ok
     par_base = ativo.replace("-OTC", "").replace("/", "").upper()
 
     # ── 1. IQ Option REST (tempo real, mesmo plataforma) ──────────────
@@ -336,7 +337,6 @@ def get_candles(ativo, n=60, tf=60):
                 r = _iq_sess.post("https://iqoption.com/api/v6/getcandles",
                     json={"active_id": active_id, "size": tf, "count": n, "to": int(time.time())},
                     timeout=8)
-                # Verifica se é JSON antes de parsear
                 ct = r.headers.get("Content-Type", "")
                 if r.status_code == 200 and "json" in ct:
                     candles = r.json().get("data", {}).get("candles", [])
@@ -352,7 +352,6 @@ def get_candles(ativo, n=60, tf=60):
                             })
                         return sorted(velas, key=lambda x: x["t"])
                 elif r.status_code in (401, 403) or "text/html" in ct:
-                    # Sessão expirou — reconecta em background
                     _iq_ok = False
                     with _lock:
                         estado["iq_ok"] = False
