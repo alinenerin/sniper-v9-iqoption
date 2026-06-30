@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║              SNIPER V12 — QUAD-CHANNEL ENGINE                               ║
-║              OTC M1 · Forex Real M1 · Filtros M5 · Order Blocks            ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+SNIPER HÍBRIDO V10 — app.py
+Forex Real (V9) + OTC (V10) rodando em paralelo
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENGINE FOREX : M1 análise | M3 expiração | Score 170 | FF + DXY nativo
+ENGINE OTC   : M1 análise | M1 expiração | Score 100 | sem filtro notícias
+TRAVA GLOBAL : 65s — impede entradas simultâneas
+STOP DIÁRIO  : 4 losses (Forex + OTC somados) = desliga tudo
+PAINEL       : Flask dark mode | logs separados por engine
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import sys, os, subprocess
 subprocess.call(
@@ -16,23 +21,15 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
 # ── IQ Option via lib WebSocket ────────────────────────────────────
-# Tenta "api_faria/" (dev local) depois a raiz do repo (Railway)
-_IQ_LIB_OK = False
-_IQLib = None
-for _iq_path in [
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_faria"),
-    os.path.dirname(os.path.abspath(__file__)),
-]:
-    if _iq_path not in sys.path:
-        sys.path.insert(0, _iq_path)
-    try:
-        from iqoptionapi.stable_api import IQ_Option as _IQLib
-        _IQ_LIB_OK = True
-        break
-    except Exception as _e:
-        continue
-if not _IQ_LIB_OK:
-    print("[WARN] IQ lib não carregou em nenhum path")
+_IQ_LIB_PATH = os.path.join(os.path.dirname(__file__), "api_faria")
+if _IQ_LIB_PATH not in sys.path:
+    sys.path.insert(0, _IQ_LIB_PATH)
+try:
+    from iqoptionapi.stable_api import IQ_Option as _IQLib
+    _IQ_LIB_OK = True
+except Exception as _e:
+    _IQ_LIB_OK = False
+    print(f"[WARN] IQ lib não carregou: {_e}")
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
@@ -234,96 +231,99 @@ _IQ_ACTIVE_ID = {
 }
 
 def _conectar_iq():
-    """
-    Tenta conectar à IQ Option via WebSocket.
-    NUNCA usa exit() ou sys.exit() — Flask deve continuar vivo.
-    Em caso de falha: loga, aguarda 30s e retorna (garantir_conexao reativa).
-    """
+    global _iq_ok, _iq_tentando, _iq_api
+    # Se tiver SSID configurado, usa direto (evita bloqueio de IP no login)
+    if IQ_SSID:
+        _conectar_iq_com_ssid(IQ_SSID)
+        return
+    _iq_tentando = True
+    try:
+        _log("Conectando IQ Option (websocket)...")
+        if not _IQ_LIB_OK:
+            _log("IQ lib nao disponivel.")
+            return
+        api = _IQLib(IQ_EMAIL, IQ_PASS)
+        check, reason = api.connect()
+        if check:
+            import time as _t; _t.sleep(2)
+            saldo = api.get_balance()
+            _iq_api = api
+            _iq_ok  = True
+            with _lock:
+                estado["iq_ok"]  = True
+                estado["saldo"]  = round(float(saldo), 2)
+            _log(f"IQ conectada! Saldo: ${saldo:.2f}")
+            tg(f"IQ conectada! Saldo: ${saldo:.2f}")
+        else:
+            motivo = str(reason)[:120] if reason else "sem resposta"
+            _log(f"IQ login falhou: {motivo}")
+    except Exception as e:
+        _log(f"IQ erro: {type(e).__name__}: {str(e)[:100]}")
+    finally:
+        _iq_tentando = False
+
+def _conectar_iq_com_ssid(ssid):
+    """Conecta o WebSocket injetando SSID diretamente — sem HTTP login."""
     global _iq_ok, _iq_tentando, _iq_api
     _iq_tentando = True
     try:
-        _log("Conectando IQ Option (WebSocket)...")
+        _log("Reconectando com SSID injetado...")
         if not _IQ_LIB_OK:
-            _log("[ERRO DE CONEXÃO] IQ lib não disponível. Aguardando 30 segundos para redefinir...")
-            time.sleep(30)
+            _log("IQ lib não disponível")
             return
+
+        import iqoptionapi.global_value as _gv
+        _gv.SSID = ssid
 
         api = _IQLib(IQ_EMAIL, IQ_PASS)
+        api.SESSION_COOKIE = {"ssid": ssid}
 
-        # ── Injeta SSID ANTES do connect() ─────────────────────────
-        ssid = IQ_SSID or os.environ.get("IQ_SSID", "")
-        if ssid:
-            injetado = False
-            for metodo in [
-                lambda: api.api.session.cookies.set("ssid", ssid),
-                lambda: api.session.cookies.set("ssid", ssid),
-                lambda: setattr(api, "_ssid", ssid),
-            ]:
-                try:
-                    metodo()
-                    injetado = True
-                    _log(f"SSID injetado: {ssid[:10]}...")
-                    break
-                except Exception:
-                    continue
-            if not injetado:
-                _log("SSID: não injetado (lib não expõe session) — usando login normal")
-        else:
-            _log("SSID não configurado — usando usuário/senha")
+        resultado = [None, None]
+        def _t():
+            try:
+                resultado[0], resultado[1] = api.connect()
+            except Exception as ex:
+                resultado[0], resultado[1] = False, str(ex)
 
-        try:
-            check, reason = api.connect()
-        except Exception as ex:
-            _log(f"[ERRO DE CONEXÃO] {type(ex).__name__}: {str(ex)[:120]} — Aguardando 30 segundos para redefinir...")
-            time.sleep(30)
+        th = threading.Thread(target=_t, daemon=True)
+        th.start()
+        th.join(timeout=45)
+
+        if resultado[0] is None:
+            _log("SSID connect timeout (45s)")
+            return
+        if not resultado[0]:
+            _log(f"SSID connect falhou: {resultado[1]}")
             return
 
-        if not check:
-            motivo = str(reason)[:120] if reason else "sem resposta"
-            _log(f"[ERRO DE CONEXÃO] login falhou: {motivo} — Aguardando 30 segundos para redefinir...")
-            time.sleep(30)
-            return
-
-        # ── Conectado com sucesso ──────────────────────────────────
-        try:
-            api.change_balance("PRACTICE")
-            time.sleep(2)
-            saldo_prac = api.get_balance() or 0.0
-        except Exception as ex:
-            _log(f"IQ get_balance erro: {ex} — usando saldo 0")
-            saldo_prac = 0.0
+        api.change_balance("PRACTICE")
+        time.sleep(1.5)
+        saldo_prac = api.get_balance() or 0.0
 
         _iq_api = api
         _iq_ok  = True
         with _lock:
-            estado["iq_ok"]  = True
-            estado["saldo"]  = round(float(saldo_prac), 2)
-        _log(f"✅ IQ conectada! Practice: ${saldo_prac:.2f}")
+            estado["iq_ok"]          = True
+            estado["saldo"]          = float(saldo_prac)
+            estado["saldo_practice"] = float(saldo_prac)
+        _log(f"✅ IQ reconectada via SSID! Practice: ${saldo_prac:.2f}")
 
     except Exception as e:
-        _log(f"[ERRO DE CONEXÃO] {type(e).__name__}: {str(e)[:100]} — Aguardando 30 segundos para redefinir...")
-        time.sleep(30)
+        _log(f"SSID connect erro: {e}")
     finally:
         _iq_tentando = False
 
-_iq_ultima_tentativa = 0   # timestamp da última tentativa (evita spam de threads)
-
 def garantir_conexao():
-    global _iq_ok, _iq_tentando, _iq_ultima_tentativa
-    agora = time.time()
-    # Só dispara nova thread se não está tentando E passou 35s da última tentativa
-    if not _iq_ok and not _iq_tentando and (agora - _iq_ultima_tentativa) > 35:
-        _iq_ultima_tentativa = agora
+    global _iq_ok, _iq_tentando
+    if not _iq_ok and not _iq_tentando:
         threading.Thread(target=_conectar_iq, daemon=True).start()
-    # Detecta queda de WS quando estava conectado
-    if _iq_ok and _iq_api:
-        try:
-            if not _iq_api.check_connect():
-                _iq_ok = False
-                with _lock:
-                    estado["iq_ok"] = False
-        except:
-            pass
+    # Se IQ caiu, tenta reconectar a cada 60s
+    if _iq_ok and _iq_api and not _iq_api.check_connect():
+        _iq_ok = False
+        with _lock:
+            estado["iq_ok"] = False
+        if not _iq_tentando:
+            threading.Thread(target=_conectar_iq, daemon=True).start()
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
@@ -2239,12 +2239,14 @@ def cmd_remoto():
         if not ssid:
             return jsonify({"ok": False, "erro": "ssid vazio"})
         try:
-            os.environ["IQ_SSID"] = ssid
+            import iqoptionapi.global_value as _gv
+            _gv.SSID = ssid
             _log(f"SSID injetado externamente: {ssid[:12]}...")
+            # Força reconexão imediata
             global _iq_ok, _iq_tentando
-            _iq_ok       = False
+            _iq_ok      = False
             _iq_tentando = False
-            threading.Thread(target=_conectar_iq, daemon=True).start()
+            threading.Thread(target=_conectar_iq_com_ssid, args=(ssid,), daemon=True).start()
             return jsonify({"ok": True, "msg": "SSID injetado, reconectando..."})
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)})
@@ -2493,16 +2495,10 @@ def post_sinais_form():
 #  MAIN
 # ══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    print("=" * 60)
-    print("  SNIPER V12 — QUAD-CHANNEL ENGINE")
-    print("  OTC M1 · Forex Real M1 · M5 Filter · Order Blocks")
-    print("=" * 60)
-
-    # Conexão IQ em background — Flask sobe independente
-    threading.Thread(target=_conectar_iq,  daemon=True).start()
-    threading.Thread(target=engine_manual, daemon=True).start()
-    threading.Thread(target=iniciar_motor, daemon=True).start()
-
+    threading.Thread(target=_conectar_iq,    daemon=True).start()
+    threading.Thread(target=engine_manual,   daemon=True).start()  # sempre ativa
+    # Auto-inicia os motores (ativo=True por padrão)
+    threading.Thread(target=iniciar_motor,   daemon=True).start()
     port = int(os.environ.get("PORT", 8080))
-    _log(f"🌐 Sniper V12 — porta {port}")
+    _log(f"🌐 Sniper Híbrido V10 — porta {port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
