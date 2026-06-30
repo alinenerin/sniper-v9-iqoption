@@ -1606,97 +1606,63 @@ def main():
     log(f'Conta: {IQ_BALANCE_TYPE} | Exec: {EXECUCAO_ATIVA}')
     log('=' * 60)
 
-    # Conectar IQ Option
-    iq = None
-    for tentativa in range(1, 4):
-        try:
-            iq = conectar_iq()
-            break
-        except Exception as e:
-            log(f'Tentativa {tentativa}/3 falhou: {e}')
-            time.sleep(10)
+    # Flask sobe PRIMEIRO — Railway precisa do health check antes do login IQ
+    def run_flask():
+        log(f'Painel web na porta {PORT}...')
+        app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
-    if iq is None:
-        log('FATAL: não foi possível conectar à IQ Option')
-        sys.exit(1)
+    t_flask = threading.Thread(target=run_flask, daemon=True, name='flask')
+    t_flask.start()
+    time.sleep(2)
 
-    modo_inicial = detectar_modo()
-    telegram(
-        f'🟢 <b>Sniper V12 Quad-Channel online!</b>\n'
-        f'💵 Saldo: <b>${_painel["saldo"]:.2f}</b> ({IQ_BALANCE_TYPE})\n'
-        f'📊 Modo: {modo_inicial}\n'
-        f'🔵 OTC M1  | Score≥{SCORE_MIN["OTC_M1"]}  | Exp=1min\n'
-        f'🔵 OTC M5  | Score≥{SCORE_MIN["OTC_M5"]}  | Exp=5min\n'
-        f'📈 REAL M1 | Score≥{SCORE_MIN["REAL_M1"]} | Exp=3min\n'
-        f'📈 REAL M5 | Score≥{SCORE_MIN["REAL_M5"]} | Exp=5min\n'
-        f'👁 Execução: {"✅ ON" if EXECUCAO_ATIVA else "❌ OFF"}'
-    )
+    def iniciar_engine():
+        iq = None
+        for tentativa in range(1, 6):
+            try:
+                iq = conectar_iq()
+                break
+            except Exception as e:
+                log(f'Tentativa {tentativa}/5 falhou: {e}')
+                time.sleep(15)
 
-    # ── Definir configuração de cada canal ───────────────────────────────────
-    canais_config = [
-        {
-            'canal':       'OTC_M1',
-            'pares':       PARES_OTC,
-            'analisar_fn': analisar_otc_m1,
-            'expiracao':   1,
-            'ciclo_s':     57,
-            'trap_fn':     trap_zone_otc_m1,
-            'mercado':     'OTC',
-        },
-        {
-            'canal':       'OTC_M5',
-            'pares':       PARES_OTC,
-            'analisar_fn': analisar_otc_m5,
-            'expiracao':   5,
-            'ciclo_s':     290,
-            'trap_fn':     trap_zone_otc_m5,
-            'mercado':     'OTC',
-        },
-        {
-            'canal':       'REAL_M1',
-            'pares':       PARES_REAL,
-            'analisar_fn': analisar_real_m1,
-            'expiracao':   3,    # M3 para mitigar spread
-            'ciclo_s':     57,
-            'trap_fn':     trap_zone_real,
-            'mercado':     'REAL',
-        },
-        {
-            'canal':       'REAL_M5',
-            'pares':       PARES_REAL,
-            'analisar_fn': analisar_real_m5,
-            'expiracao':   5,
-            'ciclo_s':     290,
-            'trap_fn':     trap_zone_real,
-            'mercado':     'REAL',
-        },
-    ]
+        if iq is None:
+            log('FATAL: nao foi possivel conectar a IQ Option')
+            telegram('\U0001f534 <b>Sniper V12</b>: falha na conexao IQ Option.')
+            return
 
-    # ── Lançar threads dos canais ─────────────────────────────────────────────
-    threads = []
-    for cfg in canais_config:
-        t = threading.Thread(
-            target=loop_canal,
-            args=(
-                iq,
-                cfg['canal'],
-                cfg['pares'],
-                cfg['analisar_fn'],
-                cfg['expiracao'],
-                cfg['ciclo_s'],
-                cfg['trap_fn'],
-                cfg['mercado'],
-            ),
-            daemon=True,
-            name=f"canal_{cfg['canal']}"
+        modo_inicial = detectar_modo()
+        telegram(
+            f'\U0001f7e2 <b>Sniper V12 Quad-Channel online!</b>\n'
+            f'\U0001f4b5 Saldo: <b>${_painel["saldo"]:.2f}</b> ({IQ_BALANCE_TYPE})\n'
+            f'\U0001f4ca Modo: {modo_inicial}\n'
+            f'\U0001f535 OTC M1  Score\u2265{SCORE_MIN["OTC_M1"]} Exp=1min\n'
+            f'\U0001f535 OTC M5  Score\u2265{SCORE_MIN["OTC_M5"]} Exp=5min\n'
+            f'\U0001f4c8 REAL M1 Score\u2265{SCORE_MIN["REAL_M1"]} Exp=3min\n'
+            f'\U0001f4c8 REAL M5 Score\u2265{SCORE_MIN["REAL_M5"]} Exp=5min'
         )
-        t.start()
-        threads.append(t)
-        log(f'Thread [{cfg["canal"]}] iniciada')
-        time.sleep(1)   # escalonar inicialização
 
-    # ── Thread de monitoramento de conexão ───────────────────────────────────
-    def monitor_conexao():
+        canais_config = [
+            {'canal':'OTC_M1',  'pares':PARES_OTC,  'analisar_fn':analisar_otc_m1,
+             'expiracao':1, 'ciclo_s':57,  'trap_fn':trap_zone_otc_m1, 'mercado':'OTC'},
+            {'canal':'OTC_M5',  'pares':PARES_OTC,  'analisar_fn':analisar_otc_m5,
+             'expiracao':5, 'ciclo_s':290, 'trap_fn':trap_zone_otc_m5, 'mercado':'OTC'},
+            {'canal':'REAL_M1', 'pares':PARES_REAL, 'analisar_fn':analisar_real_m1,
+             'expiracao':3, 'ciclo_s':57,  'trap_fn':trap_zone_real,   'mercado':'REAL'},
+            {'canal':'REAL_M5', 'pares':PARES_REAL, 'analisar_fn':analisar_real_m5,
+             'expiracao':5, 'ciclo_s':290, 'trap_fn':trap_zone_real,   'mercado':'REAL'},
+        ]
+
+        for cfg in canais_config:
+            t = threading.Thread(
+                target=loop_canal,
+                args=(iq, cfg['canal'], cfg['pares'], cfg['analisar_fn'],
+                      cfg['expiracao'], cfg['ciclo_s'], cfg['trap_fn'], cfg['mercado']),
+                daemon=True, name=f"canal_{cfg['canal']}"
+            )
+            t.start()
+            log(f'Thread [{cfg["canal"]}] iniciada')
+            time.sleep(1)
+
         while True:
             try:
                 if not iq.check_connect():
@@ -1705,23 +1671,19 @@ def main():
                     iq.change_balance(IQ_BALANCE_TYPE)
                     with _painel_lock:
                         _painel['iq_conectado'] = True
-                    log('Reconectado!')
                 saldo = iq.get_balance()
                 if saldo:
                     with _painel_lock:
                         _painel['saldo'] = saldo
             except Exception as e:
-                log(f'Monitor conexão: {e}')
+                log(f'Monitor conexao: {e}')
                 with _painel_lock:
                     _painel['iq_conectado'] = False
             time.sleep(30)
 
-    t_monitor = threading.Thread(target=monitor_conexao, daemon=True, name='monitor')
-    t_monitor.start()
-
-    # ── Flask (bloqueia a thread principal) ──────────────────────────────────
-    log(f'Painel web iniciando na porta {PORT}...')
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    t_engine = threading.Thread(target=iniciar_engine, daemon=True, name='engine')
+    t_engine.start()
+    t_flask.join()
 
 
 if __name__ == '__main__':
