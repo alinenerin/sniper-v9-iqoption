@@ -787,7 +787,9 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.websocket_thread = threading.Thread(target=self.websocket.run_forever, kwargs={'sslopt': _sslopt})
         self.websocket_thread.daemon = True
         self.websocket_thread.start()
-        while True:
+        import time as _t
+        _deadline = _t.time() + 30
+        while _t.time() < _deadline:
             try:
                 if global_value.check_websocket_if_error:
                     return False, global_value.websocket_error_reason
@@ -797,8 +799,8 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                     return True, None
             except:
                 pass
-
-            pass
+            _t.sleep(0.1)
+        return False, "Websocket connect timeout (30s)"
 
     # @tokensms.setter
     def setTokenSMS(self, response):
