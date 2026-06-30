@@ -6,8 +6,11 @@
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 import sys, os, subprocess
+
+# ── Instala dependências ANTES de qualquer outro import ───────────────────────
 subprocess.call(
-    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "flask"],
+    [sys.executable, "-m", "pip", "install", "-q",
+     "requests", "pytz", "flask", "websocket-client"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
