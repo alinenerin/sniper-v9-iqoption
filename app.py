@@ -46,7 +46,7 @@ FOREX_JANELAS = [             # (h_ini, m_ini, h_fim, m_fim) BRT
     (14,  0, 16,  0),         # NY overlap
     (21,  0,  1,  0),         # Tokyo
 ]
-FOREX_MINUTOS_BLOQ = [59, 0, 1]
+FOREX_MINUTOS_BLOQ = [58, 59, 0, 1, 2, 17, 32, 47]  # protocolo SFI completo
 
 # ── ENGINE OTC ────────────────────────────────────────────────────
 OTC_SCORE_MIN = 80
@@ -342,8 +342,30 @@ def get_saldo():
     return estado["saldo"]
 
 def get_payout(par):
-    """Retorna payout do par via REST (estimativa fixa se API não disponível)."""
-    return 0.85  # padrão conservador
+    """Retorna payout real do par via REST da IQ Option. Fallback 0.85 se indisponível."""
+    try:
+        if not _iq_ok:
+            return 0.85
+        par_base = par.replace("-OTC", "")
+        active_id = _IQ_ACTIVE_ID.get(par_base)
+        if not active_id:
+            return 0.85
+        r = _iq_sess.get(
+            "https://iqoption.com/api/v1.0/binary-options/instruments",
+            timeout=5
+        )
+        if r.status_code == 200:
+            instruments = r.json().get("data", [])
+            for inst in instruments:
+                inst_id = inst.get("active_id") or inst.get("id")
+                if inst_id == active_id:
+                    is_otc = "-OTC" in par
+                    key = "profit_percent_otc" if is_otc else "profit_percent"
+                    payout_raw = inst.get(key) or inst.get("profit_percent", 85)
+                    return float(payout_raw) / 100.0
+        return 0.85
+    except:
+        return 0.85
 
 # ══════════════════════════════════════════════════════════════════
 #  TRAVA GLOBAL DE PORTFÓLIO
@@ -550,19 +572,33 @@ def get_eventos_ff():
     return _ff_cache["eventos"]
 
 def ff_bloqueado(agora_brt):
+    """
+    Bloqueia entrada se houver notícia de alto impacto nos próximos 30min ou último 1min.
+    ForexFactory retorna datas em ET (UTC-4 verão). Conversão: ET +1h = BRT.
+    Formato real da API: %Y-%m-%dT%H:%M:%S
+    """
     try:
         agora_ts = agora_brt.timestamp()
         for ev in get_eventos_ff():
-            if ev.get("impact", "").lower() != "high": continue
+            if ev.get("impact", "").lower() != "high":
+                continue
             try:
-                dt_et  = datetime.strptime(ev["date"], "%m-%d-%YT%H:%M:%S")
+                raw_date = ev.get("date", "")
+                if not raw_date:
+                    continue
+                # Formato correto: "2026-06-30T08:30:00"
+                dt_et  = datetime.strptime(raw_date, "%Y-%m-%dT%H:%M:%S")
+                # ET (UTC-4) → BRT (UTC-3) = +1h
                 dt_brt = dt_et + timedelta(hours=1)
                 dt_ts  = dt_brt.replace(tzinfo=BRT).timestamp()
+                # Janela: 1min antes até 30min depois
                 if -60 <= (dt_ts - agora_ts) <= 1800:
-                    return True, f"FF🔴 {ev.get('title','')} {dt_brt.strftime('%H:%M')}"
-            except:
+                    moeda = ev.get("currency", "")
+                    titulo = ev.get("title", "")
+                    return True, f"FF🔴 {moeda} {titulo} {dt_brt.strftime('%H:%M')}"
+            except Exception:
                 continue
-    except:
+    except Exception:
         pass
     return False, ""
 
@@ -977,6 +1013,13 @@ def engine_otc():
 
             if agora.minute in OTC_MINUTOS_BLOQ:
                 time.sleep(10)
+                continue
+
+            # Filtro ForexFactory — bloqueia OTC também em notícias de alto impacto
+            bloq_ff, mot_ff = ff_bloqueado(agora)
+            if bloq_ff:
+                _log(f"🚫 OTC bloqueado: {mot_ff}", "OTC")
+                time.sleep(30)
                 continue
 
             if not garantir_conexao():
