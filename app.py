@@ -234,73 +234,26 @@ def _conectar_iq():
     global _iq_ok, _iq_tentando, _iq_api
     _iq_tentando = True
     try:
-        _log("Conectando IQ Option...")
+        _log("Conectando IQ Option (websocket)...")
         if not _IQ_LIB_OK:
-            _log("IQ lib não disponível — usando fallbacks.")
+            _log("IQ lib nao disponivel.")
             return
-
-        # ── Passo 1: busca SSID via HTTP (rápido, sem timeout longo) ──
-        import iqoptionapi.global_value as gv
-        ssid = None
-        try:
-            import requests as _req
-            r = _req.post(
-                "https://auth.iqoption.com/api/v2/login",
-                json={"identifier": IQ_EMAIL, "password": IQ_PASS},
-                timeout=15
-            )
-            if r.status_code in (200, 201):
-                ssid = r.json().get("ssid", "")
-                if ssid:
-                    gv.SSID = ssid
-                    _log(f"SSID obtido via HTTP: {ssid[:12]}...")
-        except Exception as ex:
-            _log(f"HTTP login erro: {ex} — tentando WS direto")
-
-        # ── Passo 2: conecta WebSocket com SSID injetado ──────────────
         api = _IQLib(IQ_EMAIL, IQ_PASS)
-        if ssid:
-            # Injeta em todos os pontos possíveis da lib
-            api.SESSION_COOKIE = {"ssid": ssid}
-            try:
-                import iqoptionapi.global_value as _gv2
-                _gv2.SSID = ssid
-            except:
-                pass
-
-        resultado = [None, None]
-        def _tentar():
-            try:
-                resultado[0], resultado[1] = api.connect()
-            except Exception as ex:
-                resultado[0], resultado[1] = False, str(ex)
-
-        t = threading.Thread(target=_tentar, daemon=True)
-        t.start()
-        t.join(timeout=40)
-
-        if resultado[0] is None:
-            _log("IQ connect timeout (40s) — tentará em 60s")
-            return
-        if not resultado[0]:
-            _log(f"IQ connect falhou: {resultado[1]}")
-            return
-
-        # ── Passo 3: muda para Practice e lê saldo ───────────────────
-        api.change_balance("PRACTICE")
-        time.sleep(1.5)
-        saldo_prac = api.get_balance() or 0.0
-
-        _iq_api = api
-        _iq_ok  = True
-        with _lock:
-            estado["iq_ok"]          = True
-            estado["saldo"]          = float(saldo_prac)
-            estado["saldo_practice"] = float(saldo_prac)
-        _log(f"IQ conectada! Practice: ${saldo_prac:.2f}")
-
+        check, reason = api.connect()
+        if check:
+            import time as _t; _t.sleep(2)
+            saldo = api.get_balance()
+            _iq_api = api
+            _iq_ok  = True
+            with _lock:
+                estado["iq_ok"]  = True
+                estado["saldo"]  = round(float(saldo), 2)
+            _log(f"IQ conectada! Saldo: ${saldo:.2f}")
+            tg(f"IQ conectada! Saldo: ${saldo:.2f}")
+        else:
+            _log(f"IQ login falhou: {reason}")
     except Exception as e:
-        _log(f"IQ erro conexão: {e}")
+        _log(f"IQ erro: {e}")
     finally:
         _iq_tentando = False
 
