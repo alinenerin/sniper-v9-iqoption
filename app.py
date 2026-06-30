@@ -260,7 +260,13 @@ def _conectar_iq():
         # ── Passo 2: conecta WebSocket com SSID injetado ──────────────
         api = _IQLib(IQ_EMAIL, IQ_PASS)
         if ssid:
+            # Injeta em todos os pontos possíveis da lib
             api.SESSION_COOKIE = {"ssid": ssid}
+            try:
+                import iqoptionapi.global_value as _gv2
+                _gv2.SSID = ssid
+            except:
+                pass
 
         resultado = [None, None]
         def _tentar():
