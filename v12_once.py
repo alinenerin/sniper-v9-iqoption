@@ -24,7 +24,15 @@ FOREX_PARES = []
 OTC_PARES   = []
 
 # ── APIs de fallback ──────────────────────────────────────────────
-POLYGON_KEY = "gXySF0ojKao907z3vKOtpxr8opt0cbLx"
+POLYGON_KEY   = "gXySF0ojKao907z3vKOtpxr8opt0cbLx"
+TWELVEDATA_KEY = "1be0b948fb1c48bb997e350c542edafd"
+
+# Mapeamento par IQ → símbolo Twelve Data
+PAR_PARA_TD = {
+    "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY",
+    "AUDUSD": "AUD/USD", "EURJPY": "EUR/JPY", "EURGBP": "EUR/GBP",
+    "GBPJPY": "GBP/JPY", "AUDJPY": "AUD/JPY",
+}
 
 # ── Parâmetros ────────────────────────────────────────────────────
 FOREX_SCORE_MIN  = 150
@@ -120,6 +128,54 @@ def is_mercado_real():
 # ── Busca velas + payouts via IQ Option ──────────────────────────
 _cache_velas   = {}
 _cache_payouts = {}
+
+def buscar_velas_twelvedata(pares_forex):
+    """Fallback principal: busca velas M1 via Twelve Data (batch)."""
+    import urllib.request, urllib.parse
+    result = {}
+    # Monta símbolos TD
+    simbolos = []
+    par_map  = {}  # "EUR/USD" → ["EURUSD", "EURUSD-OTC"]
+    all_pares = list(set(pares_forex + [p.replace("-OTC","") for p in OTC_PARES_FALLBACK]))
+    for par in all_pares:
+        base = par.replace("-OTC","")
+        td   = PAR_PARA_TD.get(base)
+        if td and td not in simbolos:
+            simbolos.append(td)
+            par_map[td] = []
+        if td:
+            par_map[td].append(base)
+            par_map[td].append(base + "-OTC")
+
+    if not simbolos:
+        return {}
+
+    sym_str = ",".join(simbolos)
+    url = (f"https://api.twelvedata.com/time_series"
+           f"?symbol={urllib.parse.quote(sym_str)}"
+           f"&interval=1min&outputsize=70"
+           f"&apikey={TWELVEDATA_KEY}")
+    try:
+        resp = urllib.request.urlopen(url, timeout=15)
+        raw  = json.loads(resp.read())
+        # Se só 1 símbolo, TD retorna dict direto (não aninhado)
+        if "values" in raw:
+            raw = {simbolos[0]: raw}
+        for td_sym, data in raw.items():
+            vals = data.get("values", []) if isinstance(data, dict) else []
+            if not vals or len(vals) < 20:
+                continue
+            # TD retorna mais recente primeiro — inverte
+            vals = list(reversed(vals))
+            velas = [{"o": float(v["open"]), "c": float(v["close"]),
+                      "h": float(v["high"]),  "l": float(v["low"]),  "t": 0}
+                     for v in vals]
+            for par in par_map.get(td_sym, []):
+                result[par] = velas
+        log(f"📡 Twelve Data fallback: {len(simbolos)} símbolos → {len(result)} pares com velas")
+    except Exception as e:
+        log(f"❌ Twelve Data erro: {e}")
+    return result
 
 def buscar_velas_polygon(pares_forex):
     """Fallback: busca velas M1 via Polygon.io para pares Forex."""
@@ -222,22 +278,14 @@ def buscar_todos_pares():
         log(f"⚠️ IQ Option timeout/erro: {e} — ativando Polygon fallback")
 
     if not iq_ok:
-        # Fallback: usa listas fixas + Polygon para velas Forex
+        # Fallback: Twelve Data (batch, rápido)
         OTC_PARES   = list(OTC_PARES_FALLBACK)
         FOREX_PARES = list(FOREX_PARES_FALLBACK)
         _cache_payouts  = {}
         _cache_velas_m5 = {}
         globals()["_cache_velas_m5"] = {}
-        # Polygon só tem Forex real (sem OTC)
-        velas_polygon = buscar_velas_polygon(FOREX_PARES)
-        # OTC usa mesmos dados do Forex como proxy
-        velas_otc = {}
-        for par in OTC_PARES:
-            base = par.replace("-OTC", "")
-            if base in velas_polygon:
-                velas_otc[par] = velas_polygon[base]
-        _cache_velas = {**velas_polygon, **velas_otc}
-        log(f"📡 Polygon ativo — {len(_cache_velas)} pares com dados")
+        _cache_velas = buscar_velas_twelvedata(FOREX_PARES)
+        log(f"📡 Twelve Data ativo — {len(_cache_velas)} pares com dados")
 
 def get_velas(par):    return _cache_velas.get(par, [])
 def get_velas_m5(par): return globals().get("_cache_velas_m5", {}).get(par, [])
