@@ -1,1 +1,5 @@
 api-iqoption-faria
+websocket-client==0.59.0
+requests>=2.31.0
+pytz>=2024.1
+flask>=3.0.0
