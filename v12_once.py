@@ -201,92 +201,89 @@ def buscar_velas_polygon(pares_forex):
     log(f"📡 Polygon fallback: {len(result)}/{len(pares_forex)} pares com velas")
     return result
 
-def buscar_todos_pares():
-    global _cache_velas, _cache_payouts, OTC_PARES, FOREX_PARES
-    mercado_real = is_mercado_real()
-    _base = os.path.dirname(os.path.abspath(__file__))
-    # A lib iqoptionapi está na raiz do repo (mesma pasta do script)
-    _lib  = _base
-
+def buscar_velas_iq_par(par, _base):
+    """Busca velas M1 + M5 de UM par via IQ Option — igual ao método do M5."""
     script = (
         "import sys, time, json\n"
-        f"sys.path.insert(0, r'{_lib}')\n"
+        f"sys.path.insert(0, r'{_base}')\n"
         "from iqoptionapi.stable_api import IQ_Option\n"
         f"iq = IQ_Option('{IQ_EMAIL}', '{IQ_PASS}')\n"
         "ok, _ = iq.connect()\n"
-        "if not ok: print(json.dumps({'pares_otc':[],'pares_forex':[],'velas':{},'payouts':{}})); exit()\n"
+        "if not ok: print(json.dumps({'m1':[],'m5':[]})); exit()\n"
         "time.sleep(1)\n"
-        "otc_abertos=[]; forex_abertos=[]\n"
-        "payouts={}\n"
+        f"par = '{par}'\n"
+        "m1 = []; m5 = []\n"
         "try:\n"
-        "  abertos = iq.get_all_open_time()\n"
-        "  turbo   = abertos.get('turbo',{})\n"
-        "  for nome, info in turbo.items():\n"
-        "    if not info.get('open',False): continue\n"
-        "    if 'OTC' in nome: otc_abertos.append(nome)\n"
-        "    else: forex_abertos.append(nome)\n"
-        "  for nome, info in turbo.items():\n"
-        "    if info.get('open',False):\n"
-        "      payouts[nome] = info.get('profit',{}).get('percent', 80)\n"
+        "  v = iq.get_candles(par, 60, 70, time.time())\n"
+        "  if v and len(v)>=20:\n"
+        "    m1 = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min']} for x in v]\n"
         "except: pass\n"
-        f"if not otc_abertos:   otc_abertos   = {OTC_PARES_FALLBACK!r}\n"
-        f"if not forex_abertos: forex_abertos = {FOREX_PARES_FALLBACK!r}\n"
-        "result = {}\n"
-        "all_pares = list(set(otc_abertos + forex_abertos))\n"
-        "for par in all_pares:\n"
-        "  try:\n"
-        "    v = iq.get_candles(par, 60, 70, time.time())\n"
-        "    if v and len(v) >= 20:\n"
-        "      result[par] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min'],'t':x['from']} for x in v]\n"
-        "      continue\n"
-        "  except: pass\n"
-        "  try:\n"
-        "    alt = par+'-OTC' if 'OTC' not in par else par.replace('-OTC','')\n"
-        "    v   = iq.get_candles(alt, 60, 70, time.time())\n"
-        "    if v and len(v) >= 20:\n"
-        "      result[par] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min'],'t':x['from']} for x in v]\n"
-        "  except: pass\n"
-        "result_m5 = {}\n"
-        "for par in all_pares:\n"
-        "  try:\n"
-        "    v = iq.get_candles(par, 300, 35, time.time())\n"
-        "    if v and len(v) >= 10:\n"
-        "      result_m5[par] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min'],'t':x['from']} for x in v]\n"
-        "  except: pass\n"
-        "print(json.dumps({'pares_otc':otc_abertos,'pares_forex':forex_abertos,'velas':result,'velas_m5':result_m5,'payouts':payouts}))\n"
+        "try:\n"
+        "  v = iq.get_candles(par, 300, 35, time.time())\n"
+        "  if v and len(v)>=10:\n"
+        "    m5 = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min']} for x in v]\n"
+        "except: pass\n"
+        "print(json.dumps({'m1':m1,'m5':m5}))\n"
     )
-
-    iq_ok = False
     try:
-        log("🔌 Conectando IQ Option (timeout 55s)...")
         res = subprocess.run(
             ["python3", "-W", "ignore", "-c", script],
-            capture_output=True, text=True, timeout=55, cwd=_base
+            capture_output=True, text=True, timeout=25, cwd=_base
         )
         raw = json.loads(res.stdout.strip() or "{}")
-        if raw.get("velas"):
-            OTC_PARES   = raw.get("pares_otc",   []) or list(OTC_PARES_FALLBACK)
-            FOREX_PARES = raw.get("pares_forex", []) or list(FOREX_PARES_FALLBACK)
-            _cache_velas    = raw.get("velas",    {})
-            _cache_velas_m5 = raw.get("velas_m5", {})
-            _cache_payouts  = raw.get("payouts",  {})
-            globals()["_cache_velas_m5"] = _cache_velas_m5
-            log(f"✅ IQ OK — Forex:{len(FOREX_PARES)} | OTC:{len(OTC_PARES)} | M1:{len(_cache_velas)} | M5:{len(_cache_velas_m5)}")
-            iq_ok = True
-        else:
-            log("⚠️ IQ conectou mas sem velas — ativando Polygon fallback")
-    except Exception as e:
-        log(f"⚠️ IQ Option timeout/erro: {e} — ativando Polygon fallback")
+        return raw.get("m1", []), raw.get("m5", [])
+    except:
+        return [], []
 
-    if not iq_ok:
-        # Fallback: Twelve Data (batch, rápido)
-        OTC_PARES   = list(OTC_PARES_FALLBACK)
-        FOREX_PARES = list(FOREX_PARES_FALLBACK)
-        _cache_payouts  = {}
-        _cache_velas_m5 = {}
-        globals()["_cache_velas_m5"] = {}
-        _cache_velas = buscar_velas_twelvedata(FOREX_PARES)
-        log(f"📡 Twelve Data ativo — {len(_cache_velas)} pares com dados")
+def buscar_todos_pares():
+    global _cache_velas, _cache_payouts, OTC_PARES, FOREX_PARES
+    _base = os.path.dirname(os.path.abspath(__file__))
+
+    OTC_PARES   = list(OTC_PARES_FALLBACK)
+    FOREX_PARES = list(FOREX_PARES_FALLBACK)
+    _cache_payouts  = {}
+    _cache_velas_m5 = {}
+    _cache_velas    = {}
+
+    todos = list(set(OTC_PARES + FOREX_PARES))
+    log(f"🔌 Buscando {len(todos)} pares via IQ Option (par a par, timeout 25s)...")
+
+    iq_ok_count = 0
+    for par in todos:
+        m1, m5 = buscar_velas_iq_par(par, _base)
+        if m1:
+            _cache_velas[par] = m1
+            iq_ok_count += 1
+            log(f"  ✅ {par}: {len(m1)} velas M1 (IQ)")
+        else:
+            # OTC: sem fallback externo — sem dados = sem sinal
+            # Forex: usa Twelve Data como fallback
+            if "OTC" not in par:
+                td_sym = PAR_PARA_TD.get(par)
+                if td_sym:
+                    import urllib.request, urllib.parse
+                    try:
+                        url = (f"https://api.twelvedata.com/time_series"
+                               f"?symbol={urllib.parse.quote(td_sym)}"
+                               f"&interval=1min&outputsize=70"
+                               f"&apikey={TWELVEDATA_KEY}")
+                        resp = urllib.request.urlopen(url, timeout=8)
+                        data = json.loads(resp.read())
+                        vals = list(reversed(data.get("values", [])))
+                        if len(vals) >= 20:
+                            _cache_velas[par] = [{"o":float(v["open"]),"c":float(v["close"]),"h":float(v["high"]),"l":float(v["low"])} for v in vals]
+                            log(f"  📡 {par}: {len(vals)} velas M1 (Twelve Data)")
+                    except:
+                        log(f"  ❌ {par}: sem dados")
+                else:
+                    log(f"  ❌ {par}: sem dados")
+            else:
+                log(f"  ❌ {par}: IQ timeout — OTC sem fallback")
+        if m5:
+            _cache_velas_m5[par] = m5
+
+    globals()["_cache_velas_m5"] = _cache_velas_m5
+    log(f"✅ Total: {len(_cache_velas)} pares com dados ({iq_ok_count} via IQ, {len(_cache_velas)-iq_ok_count} via TD)")
 
 def get_velas(par):    return _cache_velas.get(par, [])
 def get_velas_m5(par): return globals().get("_cache_velas_m5", {}).get(par, [])
