@@ -205,7 +205,8 @@ def buscar_todos_pares():
     global _cache_velas, _cache_payouts, OTC_PARES, FOREX_PARES
     mercado_real = is_mercado_real()
     _base = os.path.dirname(os.path.abspath(__file__))
-    _lib  = os.path.join(_base, 'libs', 'api_faria')
+    # A lib iqoptionapi está na raiz do repo (mesma pasta do script)
+    _lib  = _base
 
     script = (
         "import sys, time, json\n"
