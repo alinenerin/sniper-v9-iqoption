@@ -7,7 +7,7 @@ Busca dados na IQ Option e retorna os aprovados
 import sys, os, time, json
 from collections import Counter, defaultdict
 
-sys.path.insert(0, '.')  # usa iqoptionapi/ da raiz do repo
+sys.path.insert(0, 'libs/api_faria')
 from iqoptionapi.stable_api import IQ_Option
 
 # ── Helpers técnicos ──────────────────────────────────────────────────────────
@@ -154,9 +154,24 @@ IQ_PASS = os.environ.get('IQ_PASS', '')
 
 print("🔌 Conectando na IQ Option...")
 iq = IQ_Option(IQ_USER, IQ_PASS)
-ok, reason = iq.connect()
-if not ok:
-    print(f"❌ Falha na conexão: {reason}")
+
+import threading
+result = [False, "timeout"]
+def do_connect():
+    try:
+        ok, reason = iq.connect()
+        result[0] = ok
+        result[1] = reason
+    except Exception as e:
+        result[1] = str(e)
+
+t = threading.Thread(target=do_connect)
+t.daemon = True
+t.start()
+t.join(timeout=20)
+
+if not result[0]:
+    print(f"❌ Falha na conexão: {result[1]}")
     sys.exit(1)
 print(f"✅ Conectado!")
 time.sleep(1)
