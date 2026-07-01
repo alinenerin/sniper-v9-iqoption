@@ -26,7 +26,7 @@ Criado: 29/06/2026
 import sys, os, requests, datetime, time, subprocess, json, csv
 import concurrent.futures
 
-sys.path.insert(0, 'libs/api_faria')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ── Configurações ────────────────────────────────────────────────────────────
 FF_URL        = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
@@ -295,8 +295,8 @@ def get_velas_m5_iq(par, n=60):
         ativo1, ativo2 = par + '-OTC', par + '-OTC'
 
     script = (
-        "import sys,time,json\n"
-        "sys.path.insert(0,'libs/api_faria')\n"
+        "import sys,os,time,json\n"
+        "sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else '.')\n"
         "from iqoptionapi.stable_api import IQ_Option\n"
         f"iq=IQ_Option('{IQ_EMAIL}','{IQ_PASS}')\n"
         "ok,_=iq.connect()\n"
