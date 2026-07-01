@@ -235,9 +235,9 @@ _IQ_ACTIVE_ID = {
 
 def _realizar_conexao_iq():
     """
-    Tenta UMA conexão à IQ Option.
-    Retorna o objeto api conectado, ou None em caso de falha.
-    Mesma lógica do script Railway testado e aprovado.
+    Tenta UMA conexão à IQ Option com timeout via thread (45s).
+    connect() NUNCA roda na thread principal — evita travar o container.
+    Retorna o objeto api conectado, ou None em caso de falha/timeout.
     """
     if not _IQ_LIB_OK:
         _log("[ERRO DE CONEXÃO] IQ lib não disponível.")
@@ -245,7 +245,26 @@ def _realizar_conexao_iq():
 
     _log(f"🔌 Tentando conectar à IQ Option ({IQ_EMAIL})...")
     api = _IQLib(IQ_EMAIL, IQ_PASS)
-    status, reason = api.connect()
+
+    resultado = [None, None]  # [status, reason]
+
+    def _do_connect():
+        try:
+            resultado[0], resultado[1] = api.connect()
+        except Exception as ex:
+            resultado[0] = False
+            resultado[1] = str(ex)
+
+    t = threading.Thread(target=_do_connect, daemon=True)
+    t.start()
+    t.join(timeout=45)
+
+    if t.is_alive():
+        # connect() travou — timeout de 45s atingido
+        _log("❌ Falha na conexão: Websocket connect timeout (45s)")
+        return None
+
+    status, reason = resultado
 
     if status and api.check_connect():
         _log("✅ Conexão estabelecida com sucesso!")
@@ -257,10 +276,8 @@ def _realizar_conexao_iq():
             _log(f"📋 Modo: {modo} | 💰 Saldo: ${saldo:,.2f}")
         except Exception as ex:
             _log(f"get_balance erro: {ex}")
-            saldo = 0.0
         return api
     else:
-        # Decodifica o motivo exatamente como o script Railway
         if reason == "2FA":
             _log("🔐 2FA exigida — não suportada no modo automático.")
         elif reason:
@@ -279,8 +296,8 @@ def _realizar_conexao_iq():
 
 def _conectar_iq():
     """
-    Loop de conexão com retry infinito.
-    NUNCA usa sys.exit() — Flask continua vivo em paralelo.
+    Dispara uma tentativa de conexão e atualiza o estado global.
+    Sem sys.exit() — Flask continua vivo. garantir_conexao() faz retry.
     """
     global _iq_ok, _iq_tentando, _iq_api
     _iq_tentando = True
@@ -289,7 +306,7 @@ def _conectar_iq():
         if api is None:
             _log("⚠️ Conexão falhou. Nova tentativa em 30s...")
             time.sleep(30)
-            return  # garantir_conexao() vai disparar nova thread
+            return
 
         _iq_api = api
         _iq_ok  = True
