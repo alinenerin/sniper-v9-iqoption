@@ -17,8 +17,6 @@ IQ_PASS  = os.environ.get("IQ_PASS",   "alineEgui95@")
 
 # Diretórios onde a lib IQ Option pode estar (mesma lista do motor M5)
 IQ_LIB_DIRS = [
-    '/app/state/530c6a68-a1ac-4f86-84fa-592cad57d114/work',
-    '/app/state/5eb03c55-04d2-4fdd-a083-a09d64eb9be3/work',
     os.path.dirname(os.path.abspath(__file__)),
 ]
 
@@ -65,8 +63,8 @@ def get_velas_iq(par, n=65, tf=60):
         ativo2 = par + "-OTC"
 
     script = (
-        "import sys, time, json\n"
-        "sys.path.insert(0, 'libs/api_faria')\n"
+        "import sys, os, time, json\n"
+        f"sys.path.insert(0, r'{os.path.dirname(os.path.abspath(__file__))}')\n"
         "from iqoptionapi.stable_api import IQ_Option\n"
         f"iq = IQ_Option('{IQ_EMAIL}', '{IQ_PASS}')\n"
         "ok, _ = iq.connect()\n"
