@@ -1,1 +1,1 @@
-web: bash start.sh
+worker: python3 railway_worker.py
