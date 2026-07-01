@@ -316,10 +316,15 @@ def _conectar_iq():
 
         _iq_api = api
         _iq_ok  = True
+        try:
+            modo_atual = api.get_balance_mode() or "PRACTICE"
+        except Exception:
+            modo_atual = "PRACTICE"
         with _lock:
             estado["iq_ok"]          = True
             estado["saldo"]          = round(float(saldo_prac), 2)
             estado["saldo_practice"] = round(float(saldo_prac), 2)
+            estado["modo"]           = modo_atual
         _log(f"✅ IQ conectada via {'SSID' if ssid_usar else 'login'}! Practice: ${saldo_prac:.2f}")
 
     except Exception as e:
@@ -2000,12 +2005,8 @@ textarea{width:100%;background:#0d0d0d;color:#e0e0e0;border:1px solid #333;
     </div>
 
     <div class="grid2" style="margin-top:10px">
-      <form class="btn-form" action="/iniciar" method="post">
-        <button class="btn btn-go" type="submit">▶ INICIAR</button>
-      </form>
-      <form class="btn-form" action="/parar" method="post">
-        <button class="btn btn-stop" type="submit">⏹ PARAR</button>
-      </form>
+      <button class="btn btn-go" onclick="cmd('/iniciar')">▶ INICIAR</button>
+      <button class="btn btn-stop" onclick="cmd('/parar')">⏹ PARAR</button>
     </div>
     <div id="stop_bar" style="display:none;background:#ff1744;color:#fff;text-align:center;padding:8px;border-radius:8px;margin-top:8px;font-weight:700">
       STOP DIARIO ATIVO
@@ -2018,12 +2019,8 @@ textarea{width:100%;background:#0d0d0d;color:#e0e0e0;border:1px solid #333;
       <span class="badge badge-exec" id="exec_badge">ATIVO</span>
     </div>
     <div class="grid2">
-      <form class="btn-form" action="/executor/ligar" method="post">
-        <button class="btn btn-exec" type="submit">⚡ EXEC ON</button>
-      </form>
-      <form class="btn-form" action="/executor/desligar" method="post">
-        <button class="btn btn-off" type="submit">EXEC OFF</button>
-      </form>
+      <button class="btn btn-exec" onclick="cmd('/executor/ligar')">⚡ EXEC ON</button>
+      <button class="btn btn-off" onclick="cmd('/executor/desligar')">EXEC OFF</button>
     </div>
   </div>
 
@@ -2033,12 +2030,8 @@ textarea{width:100%;background:#0d0d0d;color:#e0e0e0;border:1px solid #333;
       <span class="badge" id="forex_badge">—</span>
     </div>
     <div class="grid3">
-      <form class="btn-form" action="/forex/ligar" method="post">
-        <button class="btn btn-go" type="submit">▶ ON</button>
-      </form>
-      <form class="btn-form" action="/forex/desligar" method="post">
-        <button class="btn btn-stop" type="submit">⏹ OFF</button>
-      </form>
+      <button class="btn btn-go" onclick="cmd('/forex/ligar')">▶ ON</button>
+      <button class="btn btn-stop" onclick="cmd('/forex/desligar')">⏹ OFF</button>
       <div>
         <div class="val val-g" id="forex_wr" style="font-size:1rem;padding-top:8px">—</div>
         <div class="label">W/L</div>
@@ -2053,12 +2046,8 @@ textarea{width:100%;background:#0d0d0d;color:#e0e0e0;border:1px solid #333;
       <span class="badge" id="otc_badge">—</span>
     </div>
     <div class="grid3">
-      <form class="btn-form" action="/otc/ligar" method="post">
-        <button class="btn btn-go" type="submit">▶ ON</button>
-      </form>
-      <form class="btn-form" action="/otc/desligar" method="post">
-        <button class="btn btn-stop" type="submit">⏹ OFF</button>
-      </form>
+      <button class="btn btn-go" onclick="cmd('/otc/ligar')">▶ ON</button>
+      <button class="btn btn-stop" onclick="cmd('/otc/desligar')">⏹ OFF</button>
       <div>
         <div class="val val-g" id="otc_wr" style="font-size:1rem;padding-top:8px">—</div>
         <div class="label">W/L</div>
@@ -2079,9 +2068,7 @@ textarea{width:100%;background:#0d0d0d;color:#e0e0e0;border:1px solid #333;
 
   <!-- RESET STOP -->
   <div class="card">
-    <form class="btn-form" action="/reset_stop" method="post">
-      <button class="btn btn-off" type="submit">RESETAR STOP DIARIO</button>
-    </form>
+    <button class="btn btn-off" onclick="cmd('/reset_stop')">RESETAR STOP DIARIO</button>
   </div>
 
 </div>
@@ -2144,7 +2131,14 @@ function upd(){
   xhr.send();
 }
 upd();
-setInterval(upd, 3000);
+setInterval(upd, 5000);
+
+function cmd(url){
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', url, true);
+  xhr.onreadystatechange = function(){ if(xhr.readyState===4){ upd(); } };
+  xhr.send();
+}
 </script>
 </body>
 </html>
