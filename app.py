@@ -1,44 +1,46 @@
 #!/usr/bin/env python3
 """
-SNIPER HÍBRIDO V10 — app.py
-Forex Real (V9) + OTC (V10) rodando em paralelo
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ENGINE FOREX : M1 análise | M3 expiração | Score 170 | FF + DXY nativo
-ENGINE OTC   : M1 análise | M1 expiração | Score 100 | sem filtro notícias
-TRAVA GLOBAL : 65s — impede entradas simultâneas
-STOP DIÁRIO  : 4 losses (Forex + OTC somados) = desliga tudo
-PAINEL       : Flask dark mode | logs separados por engine
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+╔══════════════════════════════════════════════════════════════════════════════╗
+║              SNIPER V12 — QUAD-CHANNEL ENGINE                               ║
+║              OTC M1 · Forex Real M1 · Filtros M5 · Order Blocks            ║
+╚══════════════════════════════════════════════════════════════════════════════╝
 """
 import sys, os, subprocess
 subprocess.call(
-    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "flask",
-     "git+https://github.com/iqoptionapi/iqoptionapi.git"],
+    [sys.executable, "-m", "pip", "install", "-q", "requests", "pytz", "flask"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
-import time, math, threading, requests, pytz, json
+import time, math, threading, requests, pytz
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
 # ── IQ Option via lib WebSocket ────────────────────────────────────
-_IQ_LIB_PATH = os.path.join(os.path.dirname(__file__), "iqoptionapi")
-if _IQ_LIB_PATH not in sys.path:
-    sys.path.insert(0, _IQ_LIB_PATH)
-try:
-    from iqoptionapi.stable_api import IQ_Option as _IQLib
-    _IQ_LIB_OK = True
-except Exception as _e:
-    _IQ_LIB_OK = False
-    print(f"[WARN] IQ lib não carregou: {_e}")
+# Tenta "api_faria/" (dev local) depois a raiz do repo (Railway)
+_IQ_LIB_OK = False
+_IQLib = None
+for _iq_path in [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_faria"),
+    os.path.dirname(os.path.abspath(__file__)),
+]:
+    if _iq_path not in sys.path:
+        sys.path.insert(0, _iq_path)
+    try:
+        from iqoptionapi.stable_api import IQ_Option as _IQLib
+        _IQ_LIB_OK = True
+        break
+    except Exception as _e:
+        continue
+if not _IQ_LIB_OK:
+    print("[WARN] IQ lib não carregou em nenhum path")
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
 # ══════════════════════════════════════════════════════════════════
 TG_TOKEN  = os.environ.get("TG_TOKEN", "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg")
 TG_CHAT   = os.environ.get("TG_CHAT",  "5911742397")
-IQ_EMAIL  = os.environ.get("IQ_EMAIL", "laiane.aline@gmail.com")
-IQ_PASS   = os.environ.get("IQ_PASS",  "alineegui95")
+IQ_EMAIL  = os.environ.get("IQ_EMAIL",    "laiane.aline@gmail.com")
+IQ_PASS   = os.environ.get("IQ_PASSWORD", os.environ.get("IQ_PASS", "alineegui95"))
 IQ_SSID   = os.environ.get("IQ_SSID",  "")
 POLYGON_KEY = os.environ.get("POLYGON_KEY", "gXySF0ojKao907z3vKOtpxr8opt0cbLx")
 
@@ -231,100 +233,95 @@ _IQ_ACTIVE_ID = {
     "NZDUSD": 6, "USDCAD": 8,
 }
 
-def _conectar_iq():
-    global _iq_ok, _iq_tentando, _iq_api
-    # Se tiver SSID configurado, usa direto (evita bloqueio de IP no login)
-    if IQ_SSID:
-        _conectar_iq_com_ssid(IQ_SSID)
-        return
-    _iq_tentando = True
-    try:
-        _log("Conectando IQ Option (websocket)...")
-        if not _IQ_LIB_OK:
-            _log("IQ lib nao disponivel.")
-            return
-        api = _IQLib(IQ_EMAIL, IQ_PASS)
-        check, reason = api.connect()
-        if check:
-            import time as _t; _t.sleep(2)
-            saldo = api.get_balance()
-            _iq_api = api
-            _iq_ok  = True
-            with _lock:
-                estado["iq_ok"]  = True
-                estado["saldo"]  = round(float(saldo), 2)
-            _log(f"IQ conectada! Saldo: ${saldo:.2f}")
-            tg(f"IQ conectada! Saldo: ${saldo:.2f}")
-        else:
-            motivo = str(reason)[:120] if reason else "sem resposta"
-            _log(f"IQ login falhou: {motivo}")
-    except Exception as e:
-        _log(f"IQ erro: {type(e).__name__}: {str(e)[:100]}")
-    finally:
-        _iq_tentando = False
+def _realizar_conexao_iq():
+    """
+    Tenta UMA conexão à IQ Option.
+    Retorna o objeto api conectado, ou None em caso de falha.
+    Mesma lógica do script Railway testado e aprovado.
+    """
+    if not _IQ_LIB_OK:
+        _log("[ERRO DE CONEXÃO] IQ lib não disponível.")
+        return None
 
-def _conectar_iq_com_ssid(ssid):
-    """Conecta o WebSocket injetando SSID diretamente — sem HTTP login."""
-    global _iq_ok, _iq_tentando, _iq_api
-    _iq_tentando = True
-    try:
-        _log("Reconectando com SSID injetado...")
-        if not _IQ_LIB_OK:
-            _log("IQ lib não disponível")
-            return
+    _log(f"🔌 Tentando conectar à IQ Option ({IQ_EMAIL})...")
+    api = _IQLib(IQ_EMAIL, IQ_PASS)
+    status, reason = api.connect()
 
-        import iqoptionapi.global_value as _gv
-        _gv.SSID = ssid
-
-        api = _IQLib(IQ_EMAIL, IQ_PASS)
-        api.SESSION_COOKIE = {"ssid": ssid}
-
-        resultado = [None, None]
-        def _t():
+    if status and api.check_connect():
+        _log("✅ Conexão estabelecida com sucesso!")
+        try:
+            api.change_balance("PRACTICE")
+            time.sleep(1)
+            modo  = api.get_balance_mode()
+            saldo = api.get_balance() or 0.0
+            _log(f"📋 Modo: {modo} | 💰 Saldo: ${saldo:,.2f}")
+        except Exception as ex:
+            _log(f"get_balance erro: {ex}")
+            saldo = 0.0
+        return api
+    else:
+        # Decodifica o motivo exatamente como o script Railway
+        if reason == "2FA":
+            _log("🔐 2FA exigida — não suportada no modo automático.")
+        elif reason:
             try:
-                resultado[0], resultado[1] = api.connect()
-            except Exception as ex:
-                resultado[0], resultado[1] = False, str(ex)
+                import json as _json
+                erro     = _json.loads(reason)
+                codigo   = erro.get("code", "desconhecido")
+                mensagem = erro.get("message", str(reason))
+                _log(f"❌ Falha | Código: {codigo} | {mensagem}")
+            except Exception:
+                _log(f"❌ Falha na conexão: {reason}")
+        else:
+            _log("❌ Falha na conexão. Verifique credenciais e rede.")
+        return None
 
-        th = threading.Thread(target=_t, daemon=True)
-        th.start()
-        th.join(timeout=45)
 
-        if resultado[0] is None:
-            _log("SSID connect timeout (45s)")
-            return
-        if not resultado[0]:
-            _log(f"SSID connect falhou: {resultado[1]}")
-            return
-
-        api.change_balance("PRACTICE")
-        time.sleep(1.5)
-        saldo_prac = api.get_balance() or 0.0
+def _conectar_iq():
+    """
+    Loop de conexão com retry infinito.
+    NUNCA usa sys.exit() — Flask continua vivo em paralelo.
+    """
+    global _iq_ok, _iq_tentando, _iq_api
+    _iq_tentando = True
+    try:
+        api = _realizar_conexao_iq()
+        if api is None:
+            _log("⚠️ Conexão falhou. Nova tentativa em 30s...")
+            time.sleep(30)
+            return  # garantir_conexao() vai disparar nova thread
 
         _iq_api = api
         _iq_ok  = True
+        saldo = api.get_balance() or 0.0
         with _lock:
-            estado["iq_ok"]          = True
-            estado["saldo"]          = float(saldo_prac)
-            estado["saldo_practice"] = float(saldo_prac)
-        _log(f"✅ IQ reconectada via SSID! Practice: ${saldo_prac:.2f}")
+            estado["iq_ok"] = True
+            estado["saldo"] = round(float(saldo), 2)
 
     except Exception as e:
-        _log(f"SSID connect erro: {e}")
+        _log(f"[ERRO DE CONEXÃO] {type(e).__name__}: {str(e)[:100]} — Aguardando 30 segundos para redefinir...")
+        time.sleep(30)
     finally:
         _iq_tentando = False
 
+_iq_ultima_tentativa = 0   # timestamp da última tentativa (evita spam de threads)
+
 def garantir_conexao():
-    global _iq_ok, _iq_tentando
-    if not _iq_ok and not _iq_tentando:
+    global _iq_ok, _iq_tentando, _iq_ultima_tentativa
+    agora = time.time()
+    # Só dispara nova thread se não está tentando E passou 35s da última tentativa
+    if not _iq_ok and not _iq_tentando and (agora - _iq_ultima_tentativa) > 35:
+        _iq_ultima_tentativa = agora
         threading.Thread(target=_conectar_iq, daemon=True).start()
-    # Se IQ caiu, tenta reconectar a cada 60s
-    if _iq_ok and _iq_api and not _iq_api.check_connect():
-        _iq_ok = False
-        with _lock:
-            estado["iq_ok"] = False
-        if not _iq_tentando:
-            threading.Thread(target=_conectar_iq, daemon=True).start()
+    # Detecta queda de WS quando estava conectado
+    if _iq_ok and _iq_api:
+        try:
+            if not _iq_api.check_connect():
+                _iq_ok = False
+                with _lock:
+                    estado["iq_ok"] = False
+        except:
+            pass
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
@@ -2164,63 +2161,6 @@ setInterval(upd, 3000);
 </html>
 """
 
-@app.route("/diagnostico")
-def diagnostico():
-    import socket, ssl, time
-    resultado = {}
-
-    # TESTE 1 — DNS
-    try:
-        t0 = time.time()
-        ip = socket.gethostbyname("iqoption.com")
-        resultado["dns"] = {"ok": True, "ip": ip, "ms": round((time.time()-t0)*1000)}
-    except Exception as e:
-        resultado["dns"] = {"ok": False, "erro": str(e)}
-
-    # TESTE 2 — HTTP GET
-    try:
-        import requests as _req
-        t0 = time.time()
-        r = _req.get("https://iqoption.com", timeout=10, allow_redirects=True,
-                     headers={"User-Agent": "Mozilla/5.0"})
-        resultado["http"] = {"ok": True, "status": r.status_code, "ms": round((time.time()-t0)*1000)}
-    except Exception as e:
-        resultado["http"] = {"ok": False, "erro": str(e)}
-
-    # TESTE 3 — WebSocket RAW (sem lib, sem headers extras)
-    try:
-        import websocket as _ws
-        t0 = time.time()
-        ws = _ws.create_connection(
-            "wss://iqoption.com/echo/websocket",
-            timeout=15,
-            sslopt={"cert_reqs": ssl.CERT_NONE}
-        )
-        ws.close()
-        resultado["ws_raw"] = {"ok": True, "ms": round((time.time()-t0)*1000)}
-    except Exception as e:
-        resultado["ws_raw"] = {"ok": False, "erro": str(e)}
-
-    # TESTE 4 — WebSocket RAW com headers Cloudflare
-    try:
-        import websocket as _ws
-        t0 = time.time()
-        ws = _ws.create_connection(
-            "wss://iqoption.com/echo/websocket",
-            timeout=15,
-            sslopt={"cert_reqs": ssl.CERT_NONE},
-            header={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Origin": "https://iqoption.com"
-            }
-        )
-        ws.close()
-        resultado["ws_com_headers"] = {"ok": True, "ms": round((time.time()-t0)*1000)}
-    except Exception as e:
-        resultado["ws_com_headers"] = {"ok": False, "erro": str(e)}
-
-    return jsonify(resultado)
-
 @app.route("/")
 def index():
     return Response(HTML, mimetype='text/html')
@@ -2297,14 +2237,12 @@ def cmd_remoto():
         if not ssid:
             return jsonify({"ok": False, "erro": "ssid vazio"})
         try:
-            import iqoptionapi.global_value as _gv
-            _gv.SSID = ssid
+            os.environ["IQ_SSID"] = ssid
             _log(f"SSID injetado externamente: {ssid[:12]}...")
-            # Força reconexão imediata
             global _iq_ok, _iq_tentando
-            _iq_ok      = False
+            _iq_ok       = False
             _iq_tentando = False
-            threading.Thread(target=_conectar_iq_com_ssid, args=(ssid,), daemon=True).start()
+            threading.Thread(target=_conectar_iq, daemon=True).start()
             return jsonify({"ok": True, "msg": "SSID injetado, reconectando..."})
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)})
@@ -2553,10 +2491,16 @@ def post_sinais_form():
 #  MAIN
 # ══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    threading.Thread(target=_conectar_iq,    daemon=True).start()
-    threading.Thread(target=engine_manual,   daemon=True).start()  # sempre ativa
-    # Auto-inicia os motores (ativo=True por padrão)
-    threading.Thread(target=iniciar_motor,   daemon=True).start()
+    print("=" * 60)
+    print("  SNIPER V12 — QUAD-CHANNEL ENGINE")
+    print("  OTC M1 · Forex Real M1 · M5 Filter · Order Blocks")
+    print("=" * 60)
+
+    # Conexão IQ em background — Flask sobe independente
+    threading.Thread(target=_conectar_iq,  daemon=True).start()
+    threading.Thread(target=engine_manual, daemon=True).start()
+    threading.Thread(target=iniciar_motor, daemon=True).start()
+
     port = int(os.environ.get("PORT", 8080))
-    _log(f"🌐 Sniper Híbrido V10 — porta {port}")
+    _log(f"🌐 Sniper V12 — porta {port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
