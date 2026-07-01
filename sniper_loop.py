@@ -374,19 +374,13 @@ def get_candles(ativo, n=60, tf=60):
     global _iq_ok
     par_base = ativo.replace("-OTC", "").replace("/", "").upper()
 
-    # ── 1. IQ Option via lib (WebSocket — tempo real) ─────────────────
+    # ── 1. IQ Option via lib — apenas se tiver cache interno (não bloqueia) ──
+    # get_candles da lib IQ pode bloquear a GIL indefinidamente.
+    # Usamos só se já tiver dados em cache local da lib (retorno imediato).
     if _iq_ok and _iq_api:
         try:
-            import concurrent.futures as _cf
-            _ex = _cf.ThreadPoolExecutor(max_workers=1)
-            fut = _ex.submit(_iq_api.get_candles, par_base, tf, n, time.time())
-            try:
-                candles = fut.result(timeout=8)
-            except Exception:
-                candles = None
-            finally:
-                _ex.shutdown(wait=False)
-            if candles and len(candles) > 0:
+            candles = _iq_api.get_candles(par_base, tf, n, time.time())
+            if candles and len(candles) >= n // 2:
                 velas = []
                 for v in candles:
                     velas.append({
@@ -396,11 +390,31 @@ def get_candles(ativo, n=60, tf=60):
                         "l": float(v.get("min",   v.get("l", 0))),
                         "t": int(v.get("from",    v.get("t", 0))),
                     })
-                return sorted(velas, key=lambda x: x["t"])
+                if len(velas) >= n // 2:
+                    return sorted(velas, key=lambda x: x["t"])
         except Exception as e:
-            _log(f"IQ candles lib erro ({par_base}): {e}")
+            pass  # silencioso — fallback abaixo
 
-    # ── 2. Polygon.io (delay ~10min no plano free) ─────────────────────
+    # ── 2. Twelve Data (tempo real, sem delay) ────────────────────────
+    try:
+        ATIVOS_TD = {"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY",
+                     "AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP","XAUUSD":"XAU/USD"}
+        sym = ATIVOS_TD.get(par_base, "")
+        if sym:
+            r = requests.get(f"https://api.twelvedata.com/time_series?symbol={sym}"
+                             f"&interval=1min&outputsize={n}&apikey=1be0b948fb1c48bb997e350c542edafd",
+                             timeout=8)
+            vals = r.json().get("values", [])
+            if vals and len(vals) >= n // 2:
+                velas = []
+                for v in reversed(vals):
+                    velas.append({"o": float(v["open"]), "c": float(v["close"]),
+                                  "h": float(v["high"]), "l": float(v["low"]), "t": 0})
+                return velas
+    except Exception as e:
+        _log(f"TwelveData candles erro ({par_base}): {e}")
+
+    # ── 3. Polygon.io (delay ~10min no plano free — último recurso) ────
     try:
         import datetime as dt
         fim    = int(time.time()) * 1000
@@ -420,25 +434,6 @@ def get_candles(ativo, n=60, tf=60):
             return velas
     except Exception as e:
         _log(f"Polygon candles erro ({par_base}): {e}")
-
-    # ── 3. Twelve Data (backup) ────────────────────────────────────────
-    try:
-        ATIVOS_TD = {"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY",
-                     "AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP","XAUUSD":"XAU/USD"}
-        sym = ATIVOS_TD.get(par_base, "")
-        if sym:
-            r = requests.get(f"https://api.twelvedata.com/time_series?symbol={sym}"
-                             f"&interval=1min&outputsize={n}&apikey=1be0b948fb1c48bb997e350c542edafd",
-                             timeout=8)
-            vals = r.json().get("values", [])
-            if vals:
-                velas = []
-                for v in reversed(vals):
-                    velas.append({"o": float(v["open"]), "c": float(v["close"]),
-                                  "h": float(v["high"]), "l": float(v["low"]), "t": 0})
-                return velas
-    except Exception as e:
-        _log(f"TwelveData candles erro ({par_base}): {e}")
 
     return []
 
