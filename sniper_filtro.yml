@@ -1,0 +1,38 @@
+name: SniperFiltro 🎯
+
+on:
+  workflow_dispatch:
+    inputs:
+      sinais:
+        description: 'Lista de sinais (formato: M1;PAR;HH:MM;DIR por linha)'
+        required: true
+        type: string
+
+jobs:
+  filtrar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar dependências
+        run: |
+          pip install websocket-client requests
+
+      - name: Instalar IQ Option API
+        run: |
+          pip install -e libs/api_faria || pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git
+
+      - name: Rodar SniperFiltro
+        env:
+          IQ_USER: ${{ secrets.IQ_USER }}
+          IQ_PASS: ${{ secrets.IQ_PASS }}
+          SINAIS_INPUT: ${{ inputs.sinais }}
+        run: python sniper_filtro_gha.py
