@@ -23,9 +23,12 @@ IQ_LIB_DIRS = [
 ]
 
 # ── Pares ─────────────────────────────────────────────────────────
-# OTC_PARES é descoberto dinamicamente na IQ Option (todos abertos no momento)
-# FOREX_PARES mantido como fallback caso get_all_open_time falhe
-FOREX_PARES = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY", "EURGBP"]
+# Ambos descobertos dinamicamente via get_all_open_time() da IQ Option
+# Fallbacks usados apenas se a descoberta falhar
+FOREX_PARES_FALLBACK = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY", "EURGBP"]
+OTC_PARES_FALLBACK   = ["EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC",
+                        "EURJPY-OTC", "GBPJPY-OTC", "AUDJPY-OTC", "EURGBP-OTC"]
+FOREX_PARES = []  # preenchido dinamicamente
 OTC_PARES   = []  # preenchido dinamicamente
 
 FOREX_SCORE_MIN = 150
@@ -57,40 +60,42 @@ def is_mercado_real():
 _cache_velas = {}
 
 def buscar_todos_pares():
-    """Conecta uma vez, descobre todos OTC abertos e busca velas de todos os pares."""
-    global _cache_velas, OTC_PARES
+    """Conecta uma vez, descobre todos Forex e OTC abertos e busca velas de todos."""
+    global _cache_velas, OTC_PARES, FOREX_PARES
     mercado_real = is_mercado_real()
 
     _base = os.path.dirname(os.path.abspath(__file__))
     _lib  = os.path.join(_base, 'libs', 'api_faria')
 
-    # Script que: 1) descobre OTC abertos, 2) busca velas de todos
     script = (
         "import sys, time, json\n"
         f"sys.path.insert(0, r'{_lib}')\n"
         "from iqoptionapi.stable_api import IQ_Option\n"
         f"iq = IQ_Option('{IQ_EMAIL}', '{IQ_PASS}')\n"
         "ok, _ = iq.connect()\n"
-        "if not ok: print(json.dumps({'pares_otc':[], 'velas':{}})); exit()\n"
+        "if not ok: print(json.dumps({'pares_otc':[], 'pares_forex':[], 'velas':{}})); exit()\n"
         "time.sleep(1)\n"
-        "# Descobre todos OTC abertos\n"
         "otc_abertos = []\n"
+        "forex_abertos = []\n"
         "try:\n"
         "  abertos = iq.get_all_open_time()\n"
         "  turbo = abertos.get('turbo', {})\n"
         "  for nome, info in turbo.items():\n"
-        "    if 'OTC' in nome and info.get('open', False):\n"
+        "    if not info.get('open', False): continue\n"
+        "    if 'OTC' in nome:\n"
         "      otc_abertos.append(nome)\n"
+        "    else:\n"
+        "      forex_abertos.append(nome)\n"
         "except: pass\n"
-        "if not otc_abertos:\n"
-        "  otc_abertos = ['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','AUDJPY-OTC','EURGBP-OTC']\n"
-        f"forex_pares = {FOREX_PARES!r}\n"
         f"mercado_real = {mercado_real!r}\n"
+        # Fallbacks
+        f"if not otc_abertos: otc_abertos = {OTC_PARES_FALLBACK!r}\n"
+        f"if not forex_abertos: forex_abertos = {FOREX_PARES_FALLBACK!r}\n"
         "# Monta ativos_map\n"
         "ativos_map = {}\n"
         "for p in otc_abertos:\n"
         "  ativos_map[p] = [p]\n"
-        "for p in forex_pares:\n"
+        "for p in forex_abertos:\n"
         "  ativos_map[p] = [p+'-op', p] if mercado_real else [p+'-OTC']\n"
         "# Busca velas\n"
         "result = {}\n"
@@ -100,34 +105,40 @@ def buscar_todos_pares():
         "    if v and len(v) >= 20:\n"
         "      result[par] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min'],'t':x['from']} for x in v]\n"
         "      break\n"
-        "print(json.dumps({'pares_otc': otc_abertos, 'velas': result}))\n"
+        "print(json.dumps({'pares_otc': otc_abertos, 'pares_forex': forex_abertos, 'velas': result}))\n"
     )
     try:
-        log("🔌 Conectando IQ Option (descobrindo OTC abertos + velas)...")
+        log("🔌 Conectando IQ Option (descobrindo Forex + OTC abertos)...")
         res = subprocess.run(
             ["python3", "-W", "ignore", "-c", script],
             capture_output=True, text=True, timeout=90, cwd=_base
         )
         raw = json.loads(res.stdout.strip() or "{}")
-        otc_descobertos = raw.get("pares_otc", [])
+        otc_descobertos   = raw.get("pares_otc", [])
+        forex_descobertos = raw.get("pares_forex", [])
         data = raw.get("velas", {})
 
-        # Atualiza OTC_PARES globalmente com os abertos agora
         if otc_descobertos:
             OTC_PARES = otc_descobertos
-            log(f"📡 OTC abertos descobertos: {len(OTC_PARES)} pares → {', '.join(OTC_PARES)}")
+            log(f"🟠 OTC abertos: {len(OTC_PARES)} pares")
         else:
             log("⚠️ Nenhum OTC descoberto — usando lista padrão")
-            OTC_PARES = ["EURUSD-OTC","GBPUSD-OTC","USDJPY-OTC","AUDUSD-OTC",
-                         "EURJPY-OTC","GBPJPY-OTC","AUDJPY-OTC","EURGBP-OTC"]
+            OTC_PARES = list(OTC_PARES_FALLBACK)
 
-        log(f"✅ Dados recebidos: {len(data)} pares com velas")
+        if forex_descobertos:
+            FOREX_PARES = forex_descobertos
+            log(f"🔵 Forex abertos: {len(FOREX_PARES)} pares")
+        else:
+            log("⚠️ Nenhum Forex descoberto — usando lista padrão")
+            FOREX_PARES = list(FOREX_PARES_FALLBACK)
+
+        log(f"✅ Total: {len(FOREX_PARES)+len(OTC_PARES)} pares | Velas recebidas: {len(data)}")
         _cache_velas = data
     except Exception as e:
         log(f"❌ Erro ao buscar velas: {e}")
         _cache_velas = {}
-        OTC_PARES = ["EURUSD-OTC","GBPUSD-OTC","USDJPY-OTC","AUDUSD-OTC",
-                     "EURJPY-OTC","GBPJPY-OTC","AUDJPY-OTC","EURGBP-OTC"]
+        OTC_PARES   = list(OTC_PARES_FALLBACK)
+        FOREX_PARES = list(FOREX_PARES_FALLBACK)
 
 def get_velas_iq(par, n=65, tf=60):
     """Retorna velas do cache (pré-carregado em buscar_todos_pares)."""
@@ -374,7 +385,7 @@ def main():
     if not sinais:
         msg = (f"🤖 *Sniper V12 — {agora.strftime('%H:%M')} BRT*\n\n"
                f"📡 Fonte: IQ Option (dados reais)\n"
-               f"📊 OTC abertos: {len(OTC_PARES)} pares\n"
+               f"🔵 Forex abertos: {len(FOREX_PARES)} | 🟠 OTC abertos: {len(OTC_PARES)}\n"
                f"⚪ Nenhum sinal aprovado nos {total_pares} pares analisados.")
     else:
         sinais.sort(key=lambda x: x["score"], reverse=True)
