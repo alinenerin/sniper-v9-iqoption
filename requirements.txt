@@ -1,5 +1,1 @@
-# IQ Option API: usando lib local (pasta iqoptionapi/) com fix de compatibilidade
-websocket-client
-requests>=2.31.0
-pytz>=2024.1
-flask>=3.0.0
+api-iqoption-faria
