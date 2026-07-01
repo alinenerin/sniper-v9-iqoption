@@ -139,16 +139,15 @@ class IQ_Option:
             # self.get_balance_id()
             return True, None
         else:
-            try:
-                reason_data = json.loads(reason)
-                if reason_data.get('code') == 'verify':
-                    response = self.api.send_sms_code(reason_data['token'])
-                    if response.json()['code'] != 'success':
-                        return False, response.json()['message']
-                    self.resp_sms = response
-                    return False, "2FA"
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                pass
+            if json.loads(reason)['code'] == 'verify':
+                response = self.api.send_sms_code(json.loads(reason)['token'])
+
+                if response.json()['code'] != 'success':
+                    return False, response.json()['message']
+
+                # token_sms
+                self.resp_sms = response
+                return False, "2FA"
             return False, reason
 
     # self.update_ACTIVES_OPCODE()
