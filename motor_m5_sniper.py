@@ -755,18 +755,23 @@ def gerar_sinais_m5(modo_teste=False, salvar=True, relaxar_markov=False):
     pares_real_abertos = [p for p in pares_abertos_iq if not p.endswith('-OTC')]
     pares_otc_abertos  = [p for p in pares_abertos_iq if p.endswith('-OTC')]
 
-    # Montar candidatos: prioriza REAL se mercado ativo, senão OTC
-    # Mas sempre inclui ambos se disponíveis (motor decide por score)
-    if is_mercado_real_ativo() and pares_real_abertos:
-        pares_base = pares_real_abertos
-        modo = 'REAL'
-    elif pares_otc_abertos:
+    # OTC sempre incluído (24h)
+    # REAL incluído apenas quando janela ativa
+    if is_mercado_real_ativo():
+        pares_base = pares_real_abertos + pares_otc_abertos
+        modo = 'REAL + OTC'
+    else:
         pares_base = pares_otc_abertos
         modo = 'OTC'
-    else:
-        # Fallback para listas fixas se IQ Option não respondeu
-        pares_base = PARES_REAL if is_mercado_real_ativo() else PARES_OTC
-        modo = 'REAL (fallback)' if is_mercado_real_ativo() else 'OTC (fallback)'
+
+    # Fallback se IQ Option não respondeu
+    if not pares_base:
+        if is_mercado_real_ativo():
+            pares_base = PARES_REAL + PARES_OTC
+            modo = 'REAL + OTC (fallback)'
+        else:
+            pares_base = PARES_OTC
+            modo = 'OTC (fallback)'
 
     # Remover pares bloqueados por eventos
     pares_candidatos = [p for p in pares_base if p not in PARES_BLOQUEADOS]
