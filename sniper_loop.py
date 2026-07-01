@@ -2381,25 +2381,6 @@ function upd(){
   xhr.send();
 }
 upd();
-function injetarSSID(){
-  var ssid = document.getElementById('ssid_input').value.trim();
-  var msg  = document.getElementById('ssid_msg');
-  if(!ssid){ msg.textContent='Cole o SSID primeiro.'; return; }
-  msg.textContent = 'Enviando...';
-  var xhr = new XMLHttpRequest();
-  xhr.open('POST','/cmd',true);
-  xhr.setRequestHeader('Content-Type','application/json');
-  xhr.onreadystatechange=function(){
-    if(xhr.readyState===4){
-      try{
-        var r=JSON.parse(xhr.responseText);
-        msg.textContent = r.ok ? '✅ ' + r.msg : '❌ ' + (r.erro||'erro');
-        msg.style.color = r.ok ? '#00e676' : '#ff1744';
-      }catch(e){ msg.textContent='Erro ao processar resposta'; }
-    }
-  };
-  xhr.send(JSON.stringify({secret:'sniper2026', acao:'set_ssid', ssid:ssid}));
-}
 setInterval(upd, 3000);
 </script>
 </body>
