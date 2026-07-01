@@ -69,6 +69,12 @@ BRT            = pytz.timezone("America/Sao_Paulo")
 MAX_LOSSES_DIA = 4
 COOLDOWN       = 120   # segundos entre trades no mesmo par
 
+# ── GESTÃO DE BANCA ───────────────────────────────────────────────
+STOP_WIN_PCT       = 3.0    # Para operações quando lucro do dia >= 3% da banca inicial
+MAX_DRAWDOWN_PCT   = 2.0    # Para operações quando saldo cair >= 2% da banca inicial
+STOP_LOSS_CONSEC   = 3      # Pausa de 15min após N losses consecutivos
+MAX_PING_MS        = 1200   # Rejeita entrada se latência IQ > 1.2s
+
 # ── ENGINE FOREX ──────────────────────────────────────────────────
 FOREX_SCORE_MIN  = 145        # Score mínimo V12.1
 FOREX_PAYOUT_MIN = 0.85
@@ -117,6 +123,9 @@ estado = {
     "losses_dia":      0,
     "data_losses_dia": "",
     "saldo":           0.0,
+    "saldo_inicial_dia": 0.0,   # capturado na primeira trade do dia
+    "losses_consec":   0,        # losses consecutivos (reseta no WIN)
+    "pausa_consec_ate": 0,       # timestamp até quando pausar por consec
     "iq_ok":           False,
     "iniciado_em":     "",
 
@@ -148,6 +157,7 @@ estado = {
 _STATE_FILE = "/data/estado_dia.json"
 _CAMPOS_PERSIST = [
     "stop_diario", "losses_dia", "data_losses_dia", "saldo",
+    "saldo_inicial_dia", "losses_consec",
     "forex_wins", "forex_losses", "otc_wins", "otc_losses",
     "log_forex", "log_otc", "log_geral", "iniciado_em"
 ]
@@ -606,34 +616,126 @@ def trava_release():
 # ══════════════════════════════════════════════════════════════════
 #  STOP DIÁRIO UNIFICADO
 # ══════════════════════════════════════════════════════════════════
+def _capturar_saldo_inicial():
+    """Captura saldo inicial do dia na primeira trade (se ainda não capturado)."""
+    with _lock:
+        hoje = datetime.now(BRT).strftime("%Y-%m-%d")
+        if estado["data_losses_dia"] != hoje or estado["saldo_inicial_dia"] == 0.0:
+            saldo = get_saldo()
+            if saldo > 0:
+                estado["saldo_inicial_dia"] = saldo
+                _log(f"💰 Banca inicial do dia: ${saldo:.2f}")
+
+def check_stop_win():
+    """Retorna True se lucro do dia >= STOP_WIN_PCT% da banca inicial."""
+    with _lock:
+        ini = estado["saldo_inicial_dia"]
+        if ini <= 0:
+            return False
+        saldo_atual = estado["saldo"]
+        lucro_pct   = ((saldo_atual - ini) / ini) * 100
+        if lucro_pct >= STOP_WIN_PCT and not estado["stop_diario"]:
+            estado["stop_diario"] = True
+            estado["ativo"]       = False
+            _log(f"🏆 STOP WIN: +{lucro_pct:.1f}% atingido. Bot pausado.")
+            tg(
+                f"🏆 <b>STOP WIN</b>\n"
+                f"Meta de +{STOP_WIN_PCT}% atingida (+{lucro_pct:.1f}%).\n"
+                f"💰 Saldo: ${saldo_atual:.2f} | Banca ini: ${ini:.2f}\n"
+                f"✅ Bot pausado. Bom trabalho!"
+            )
+            return True
+        return False
+
+def check_drawdown():
+    """Retorna True se saldo caiu >= MAX_DRAWDOWN_PCT% da banca inicial."""
+    with _lock:
+        ini = estado["saldo_inicial_dia"]
+        if ini <= 0:
+            return False
+        saldo_atual = estado["saldo"]
+        queda_pct   = ((ini - saldo_atual) / ini) * 100
+        if queda_pct >= MAX_DRAWDOWN_PCT and not estado["stop_diario"]:
+            estado["stop_diario"] = True
+            estado["ativo"]       = False
+            _log(f"🛡️ MAX DRAWDOWN: -{queda_pct:.1f}% atingido. Bot pausado.")
+            tg(
+                f"🛡️ <b>MAX DRAWDOWN</b>\n"
+                f"Queda de {queda_pct:.1f}% na banca.\n"
+                f"💸 Saldo: ${saldo_atual:.2f} | Banca ini: ${ini:.2f}\n"
+                f"⛔ Bot pausado para proteger a banca."
+            )
+            return True
+        return False
+
+def check_pausa_consec():
+    """Retorna True se ainda está em pausa por losses consecutivos."""
+    with _lock:
+        if time.time() < estado["pausa_consec_ate"]:
+            restante = int(estado["pausa_consec_ate"] - time.time())
+            return True, restante
+        return False, 0
+
 def registrar_loss():
-    """Incrementa losses_dia e verifica stop. Retorna True se stop ativado."""
+    """Incrementa losses_dia e verifica todos os stops. Retorna True se stop total ativado."""
     with _lock:
         hoje = datetime.now(BRT).strftime("%Y-%m-%d")
         if estado["data_losses_dia"] != hoje:
             estado["data_losses_dia"] = hoje
             estado["losses_dia"]      = 0
-        estado["losses_dia"] += 1
+            estado["losses_consec"]   = 0
+        estado["losses_dia"]    += 1
+        estado["losses_consec"] += 1
+
+        # Pausa por losses consecutivos (não é stop total — apenas pausa 15min)
+        if estado["losses_consec"] >= STOP_LOSS_CONSEC and estado["pausa_consec_ate"] < time.time():
+            pausa_fim = time.time() + 900  # 15 minutos
+            estado["pausa_consec_ate"] = pausa_fim
+            _log(f"⏸️ PAUSA CONSEC: {STOP_LOSS_CONSEC} losses seguidos. Pausa 15min.")
+            tg(
+                f"⏸️ <b>PAUSA TEMPORÁRIA</b>\n"
+                f"{STOP_LOSS_CONSEC} losses consecutivos.\n"
+                f"⏰ Retomando em 15 minutos."
+            )
+
+        # Stop total por losses do dia
         if estado["losses_dia"] >= MAX_LOSSES_DIA and not estado["stop_diario"]:
             estado["stop_diario"] = True
             estado["ativo"]       = False
             _log("🛑 STOP DIÁRIO: 4 losses. Bot desligado.")
             tg(
                 "🛑 <b>STOP DIÁRIO</b>\n"
-                "4 losses atingidos. Bot desligado."
+                f"{MAX_LOSSES_DIA} losses atingidos. Bot desligado."
             )
             return True
         return False
+
+def registrar_win():
+    """Reseta contador de losses consecutivos."""
+    with _lock:
+        estado["losses_consec"] = 0
 
 def check_stop_diario():
     """Checa se stop já foi ativado e reseta contador se mudou o dia."""
     with _lock:
         hoje = datetime.now(BRT).strftime("%Y-%m-%d")
         if estado["data_losses_dia"] != hoje:
-            estado["data_losses_dia"] = hoje
-            estado["losses_dia"]      = 0
-            estado["stop_diario"]     = False
+            estado["data_losses_dia"]  = hoje
+            estado["losses_dia"]       = 0
+            estado["losses_consec"]    = 0
+            estado["pausa_consec_ate"] = 0
+            estado["saldo_inicial_dia"]= 0.0
+            estado["stop_diario"]      = False
         return estado["stop_diario"]
+
+def medir_ping_iq():
+    """Mede latência da conexão IQ Option em ms. Retorna -1 se falhar."""
+    try:
+        t0 = time.time()
+        _iq_api.get_balance()
+        return int((time.time() - t0) * 1000)
+    except:
+        return -1
 
 # ══════════════════════════════════════════════════════════════════
 #  INDICADORES COMPARTILHADOS
@@ -1193,7 +1295,7 @@ def checar_resultado_m3(id_op, stake):
     return _checar_resultado_por_saldo(saldo_antes, 0)
 
 def computar_resultado(win, valor, par, direcao, stake, engine):
-    """Atualiza placar e stop diário."""
+    """Atualiza placar, stop diário, stop_win, drawdown e losses consecutivos."""
     with _lock:
         saldo = get_saldo()
         estado["saldo"] = saldo
@@ -1209,6 +1311,7 @@ def computar_resultado(win, valor, par, direcao, stake, engine):
                 estado["otc_losses"] += 1
 
     if win:
+        registrar_win()   # reseta losses_consec
         _log(f"✅ WIN +${valor:.2f} | {par} {direcao}", engine)
         tg(
             f"✅ <b>WIN</b>\n"
@@ -1216,6 +1319,7 @@ def computar_resultado(win, valor, par, direcao, stake, engine):
             f"💰 +${valor:.2f} | Saldo: ${saldo:.2f}\n"
             f"📈 {estado['forex_wins']+estado['otc_wins']}W x {estado['forex_losses']+estado['otc_losses']}L"
         )
+        check_stop_win()    # testa meta de lucro
     else:
         _log(f"❌ LOSS -${stake:.2f} | {par} {direcao} | Dia: {estado['losses_dia']+1}/{MAX_LOSSES_DIA}", engine)
         stop = registrar_loss()
@@ -1225,6 +1329,7 @@ def computar_resultado(win, valor, par, direcao, stake, engine):
             f"💸 -${stake:.2f} | Saldo: ${saldo:.2f}\n"
             f"📉 {estado['forex_wins']+estado['otc_wins']}W x {estado['losses_dia']}/{MAX_LOSSES_DIA} losses hoje"
         )
+        check_drawdown()    # testa drawdown da banca
     _salvar_estado()
 
 # ══════════════════════════════════════════════════════════════════
@@ -1265,9 +1370,24 @@ def engine_forex():
                 time.sleep(5)
                 continue
 
+            # ── Pausa por losses consecutivos ────────────────────
+            pausado, restante = check_pausa_consec()
+            if pausado:
+                _log(f"⏸️ Pausa consec. ativa — {restante}s restantes", "FOREX")
+                time.sleep(30)
+                continue
+
+            # ── Ping IQ antes de entrar ───────────────────────────
+            ping = medir_ping_iq()
+            if ping > MAX_PING_MS:
+                _log(f"📡 Ping alto: {ping}ms > {MAX_PING_MS}ms — entrada bloqueada", "FOREX")
+                time.sleep(10)
+                continue
+
             saldo = get_saldo()
             with _lock:
                 estado["saldo"] = saldo
+            _capturar_saldo_inicial()   # captura banca do dia se ainda não feito
             stake = round(max(1.0, saldo * 0.02), 2)
 
             dxy = calcular_dxy_nativo()
@@ -1398,9 +1518,24 @@ def engine_otc():
                 time.sleep(5)
                 continue
 
+            # ── Pausa por losses consecutivos ────────────────────
+            pausado, restante = check_pausa_consec()
+            if pausado:
+                _log(f"⏸️ Pausa consec. ativa — {restante}s restantes", "OTC")
+                time.sleep(30)
+                continue
+
+            # ── Ping IQ antes de entrar ───────────────────────────
+            ping = medir_ping_iq()
+            if ping > MAX_PING_MS:
+                _log(f"📡 Ping alto: {ping}ms > {MAX_PING_MS}ms — entrada bloqueada", "OTC")
+                time.sleep(10)
+                continue
+
             saldo = get_saldo()
             with _lock:
                 estado["saldo"] = saldo
+            _capturar_saldo_inicial()   # captura banca do dia se ainda não feito
             stake = round(max(1.0, saldo * 0.02), 2)
 
             candidatos = []
