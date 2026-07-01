@@ -206,7 +206,7 @@ if sinais:
     print()
     for sc, par, h, d, det, ic in top:
         par_clean = par.replace('-OTC','')
-        tipo = 'OTC' if 'OTC' in par else 'M1'
+        tipo = 'M1'
         print(f'  {tipo};{par_clean};{h};{d}')
 else:
     print('  Nenhum sinal gerado no momento.')
