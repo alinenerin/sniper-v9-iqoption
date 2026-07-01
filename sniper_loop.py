@@ -2467,13 +2467,8 @@ def index():
 @app.route("/estado")
 def get_estado_route():
     # Busca saldo real da IQ sempre que possivel
-    if estado.get("ativo") or estado.get("saldo", 0) == 0:
-        try:
-            s = get_saldo()
-            if s and s > 0:
-                estado["saldo"] = s
-        except Exception:
-            pass
+    # Saldo já é atualizado pelas engines — não chama get_saldo() aqui
+    # para não bloquear o worker Flask com chamadas WS lentas
     with _lock:
         return jsonify(dict(estado))
 
