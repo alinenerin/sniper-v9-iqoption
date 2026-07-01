@@ -209,11 +209,31 @@ def bb_bw_calc(closes, n=20):
 
 
 def is_mercado_real_ativo():
-    now = datetime.datetime.utcnow()
-    weekday = now.weekday()
+    """
+    Mercado real ativo nas janelas principais (BRT):
+    - Manhã/Tarde: 04:00–17:00 BRT (Londres + NY)
+    - Noite Tokyo: 21:00–02:00 BRT
+    - Fora dessas janelas (17:00–21:00 e 02:00–04:00): OTC
+    - Fim de semana: OTC
+    """
+    now_brt = datetime.datetime.utcnow() - datetime.timedelta(hours=3)
+    weekday = now_brt.weekday()
+    hora = now_brt.hour
+
+    # Fim de semana — só OTC
+    if weekday == 5 and hora >= 18: return False
     if weekday == 6: return False
-    if weekday == 5 and now.hour >= 21: return False
-    return True
+
+    # Janela principal: 04:00–17:00 BRT
+    if 4 <= hora < 17:
+        return True
+
+    # Janela Tokyo: 21:00–02:00 BRT
+    if hora >= 21 or hora < 2:
+        return True
+
+    # Fora das janelas (17:00–21:00 e 02:00–04:00) → OTC
+    return False
 
 
 # ── Notícias e bloqueios ──────────────────────────────────────────────────────
@@ -278,7 +298,7 @@ IQ_LIB_DIRS = [
     os.path.dirname(os.path.abspath(__file__)),
 ]
 IQ_EMAIL = 'laiane.aline@gmail.com'
-IQ_PASS  = 'alineegui95'
+IQ_PASS  = 'alineEgui95@'
 
 
 def get_velas_m5_iq(par, n=60):
