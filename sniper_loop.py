@@ -362,19 +362,11 @@ _iq_ultima_tentativa = 0   # timestamp da última tentativa (evita spam de threa
 def garantir_conexao():
     global _iq_ok, _iq_tentando, _iq_ultima_tentativa
     agora = time.time()
-    # Só dispara nova thread se não está tentando E passou 35s da última tentativa
+    # Se desconectado, dispara reconexão em background
     if not _iq_ok and not _iq_tentando and (agora - _iq_ultima_tentativa) > 35:
         _iq_ultima_tentativa = agora
         threading.Thread(target=_conectar_iq, daemon=True).start()
-    # Detecta queda de WS quando estava conectado
-    if _iq_ok and _iq_api:
-        try:
-            if not _iq_api.check_connect():
-                _iq_ok = False
-                with _lock:
-                    estado["iq_ok"] = False
-        except:
-            pass
+    # Confia no _iq_ok — watchdog cuida de detectar quedas reais
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
