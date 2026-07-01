@@ -368,7 +368,7 @@ def get_candles(ativo, n=60, tf=60):
         if sym:
             r = requests.get(f"https://api.twelvedata.com/time_series?symbol={sym}"
                              f"&interval=1min&outputsize={n}&apikey=1be0b948fb1c48bb997e350c542edafd",
-                             timeout=8)
+                             timeout=(3, 8))
             vals = r.json().get("values", [])
             if vals and len(vals) >= n // 2:
                 velas = []
@@ -417,18 +417,32 @@ def get_saldo():
 def get_payout(par):
     """
     Retorna payout real via lib IQ Option.
-    Cache de 60s. Fallback 0.82.
+    Cache de 300s. Fallback 0.82.
+    NOTA: get_all_open_time pode bloquear — cache longo evita chamadas frequentes.
     """
     agora = time.time()
     cached = _payout_cache.get(par)
-    if cached and (agora - cached["ts"]) < 60:
+    if cached and (agora - cached["ts"]) < 300:
         return cached["val"]
     try:
         if not _iq_ok or not _iq_api:
             return 0.82
+        import concurrent.futures as _cf
         par_base = par.replace("-OTC", "").replace("/", "").upper()
         is_otc   = "-OTC" in par.upper()
-        all_assets = _iq_api.get_all_open_time()
+
+        def _fetch():
+            return _iq_api.get_all_open_time()
+
+        ex = _cf.ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(_fetch)
+        try:
+            all_assets = fut.result(timeout=5)
+        except Exception:
+            ex.shutdown(wait=False)
+            return 0.82
+        ex.shutdown(wait=False)
+
         assets = all_assets.get("turbo", {})
         # Busca exata
         for name, info in assets.items():
