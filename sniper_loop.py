@@ -2466,12 +2466,18 @@ def index():
 
 @app.route("/estado")
 def get_estado_route():
-    # Snapshot sem bloquear — evita deadlock com engines
-    snap = {k: v for k, v in estado.items() if not isinstance(v, list)}
-    snap["log_geral"] = list(estado.get("log_geral", []))[-30:]
-    snap["log_forex"]  = list(estado.get("log_forex", []))[-30:]
-    snap["log_otc"]    = list(estado.get("log_otc",   []))[-30:]
-    return jsonify(snap)
+    try:
+        snap = {}
+        for k, v in estado.items():
+            if isinstance(v, list):
+                snap[k] = list(v)[-30:]
+            elif isinstance(v, (str, int, float, bool, type(None))):
+                snap[k] = v
+            else:
+                snap[k] = str(v)
+        return jsonify(snap)
+    except Exception as e:
+        return jsonify({"erro": str(e), "iq_ok": estado.get("iq_ok"), "saldo": estado.get("saldo")})
 
 @app.route("/iniciar", methods=["POST"])
 def iniciar():
