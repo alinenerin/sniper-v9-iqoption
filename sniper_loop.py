@@ -453,10 +453,7 @@ def get_candles(ativo, n=60, tf=60):
 def get_saldo():
     try:
         if _iq_ok and _iq_api:
-            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeoutError
-            with ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(_iq_api.get_balance)
-                s = fut.result(timeout=3)
+            s = _iq_api.get_balance()
             if s:
                 return float(s)
     except:
@@ -734,12 +731,10 @@ def check_stop_diario():
 def medir_ping_iq():
     """Mede latência da conexão IQ Option em ms. Retorna -1 se falhar."""
     try:
-        from concurrent.futures import ThreadPoolExecutor
         t0 = time.time()
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(_iq_api.get_balance)
-            fut.result(timeout=3)
-        return int((time.time() - t0) * 1000)
+        _iq_api.get_balance()
+        ms = int((time.time() - t0) * 1000)
+        return ms if ms < 5000 else -1
     except:
         return -1
 
@@ -929,14 +924,13 @@ def ff_bloqueado(agora_brt):
                 raw_date = ev.get("date", "")
                 if not raw_date:
                     continue
-                # Formato correto: "2026-06-30T08:30:00"
-                dt_et  = datetime.strptime(raw_date, "%Y-%m-%dT%H:%M:%S")
-                # ET (UTC-4) → BRT (UTC-3) = +1h
-                dt_brt = dt_et + timedelta(hours=1)
-                dt_ts  = dt_brt.replace(tzinfo=BRT).timestamp()
+                # Suporta formato com offset: "2026-07-01T08:30:00-04:00"
+                dt = datetime.fromisoformat(raw_date)
+                dt_brt = dt.astimezone(BRT)
+                dt_ts  = dt_brt.timestamp()
                 # Janela: 1min antes até 30min depois
                 if -60 <= (dt_ts - agora_ts) <= 1800:
-                    moeda = ev.get("currency", "")
+                    moeda  = ev.get("currency", "")
                     titulo = ev.get("title", "")
                     return True, f"FF🔴 {moeda} {titulo} {dt_brt.strftime('%H:%M')}"
             except Exception:
