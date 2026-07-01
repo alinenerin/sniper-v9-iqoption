@@ -84,6 +84,7 @@ OTC_MINUTOS_BLOQ = [0, 1, 2, 17, 32, 47, 58, 59]
 #  ESTADO GLOBAL UNIFICADO
 # ══════════════════════════════════════════════════════════════════
 _lock = threading.Lock()
+_candle_cache = {}   # {par_tf: (timestamp, velas)} — cache 45s para evitar rate limit
 
 estado = {
     # Controle geral
@@ -352,6 +353,12 @@ def get_candles(ativo, n=60, tf=60):
     NOTA: IQ lib get_candles/check_connect bloqueiam a GIL indefinidamente em Railway.
     IQ lib é usada APENAS para executar trades."""
     par_base = ativo.replace("-OTC", "").replace("/", "").upper()
+    cache_key = f"{par_base}_{tf}"
+
+    # Cache de 45s — evita estouro de rate limit com múltiplos pares
+    cached = _candle_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < 45:
+        return cached[1]
 
     # ── 1. Twelve Data (tempo real, sem delay) ────────────────────────
     try:
@@ -368,6 +375,7 @@ def get_candles(ativo, n=60, tf=60):
                 for v in reversed(vals):
                     velas.append({"o": float(v["open"]), "c": float(v["close"]),
                                   "h": float(v["high"]), "l": float(v["low"]), "t": 0})
+                _candle_cache[cache_key] = (time.time(), velas)
                 return velas
     except Exception as e:
         _log(f"TwelveData candles erro ({par_base}): {e}")
@@ -389,6 +397,7 @@ def get_candles(ativo, n=60, tf=60):
                 velas.append({"o": float(v["o"]), "c": float(v["c"]),
                                "h": float(v["h"]), "l": float(v["l"]),
                                "t": int(v["t"] / 1000)})
+            _candle_cache[cache_key] = (time.time(), velas)
             return velas
     except Exception as e:
         _log(f"Polygon candles erro ({par_base}): {e}")
