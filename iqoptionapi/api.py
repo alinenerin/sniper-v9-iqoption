@@ -787,7 +787,9 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.websocket_thread = threading.Thread(target=self.websocket.run_forever, kwargs={'sslopt': _sslopt})
         self.websocket_thread.daemon = True
         self.websocket_thread.start()
-        while True:
+        import time as _time
+        _deadline = _time.time() + 20  # timeout 20s
+        while _time.time() < _deadline:
             try:
                 if global_value.check_websocket_if_error:
                     return False, global_value.websocket_error_reason
@@ -797,8 +799,8 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
                     return True, None
             except:
                 pass
-
-            pass
+            _time.sleep(0.05)
+        return False, "Websocket connection timeout (20s)"
 
     # @tokensms.setter
     def setTokenSMS(self, response):
@@ -885,12 +887,17 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
             self.session.cookies, {"ssid": global_value.SSID})
 
         self.timesync.server_timestamp = None
-        while True:
+        import time as _tsync
+        _deadline_ts = _tsync.time() + 15
+        while _tsync.time() < _deadline_ts:
             try:
                 if self.timesync.server_timestamp != None:
                     break
             except:
                 pass
+            _tsync.sleep(0.05)
+        if self.timesync.server_timestamp is None:
+            return False, "Timesync timeout (15s)"
         return True, None
 
     def connect2fa(self, sms_code):
