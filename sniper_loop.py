@@ -347,9 +347,14 @@ def _conectar_iq():
         _iq_api = api
         _iq_ok  = True
         saldo = api.get_balance() or 0.0
+        try:
+            modo_atual = api.get_balance_mode() or "PRACTICE"
+        except Exception:
+            modo_atual = "PRACTICE"
         with _lock:
             estado["iq_ok"] = True
             estado["saldo"] = round(float(saldo), 2)
+            estado["modo"]  = modo_atual
 
     except Exception as e:
         _log(f"[ERRO DE CONEXÃO] {type(e).__name__}: {str(e)[:100]} — Aguardando 30 segundos para redefinir...")
