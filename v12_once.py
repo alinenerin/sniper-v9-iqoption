@@ -23,6 +23,9 @@ OTC_PARES_FALLBACK   = ["EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC",
 FOREX_PARES = []
 OTC_PARES   = []
 
+# ── APIs de fallback ──────────────────────────────────────────────
+POLYGON_KEY = "gXySF0ojKao907z3vKOtpxr8opt0cbLx"
+
 # ── Parâmetros ────────────────────────────────────────────────────
 FOREX_SCORE_MIN  = 150
 OTC_SCORE_MIN    = 85
@@ -86,7 +89,7 @@ JANELAS_FOREX = [
 ]
 JANELAS_OTC = [
     (6,  0, 11, 44),
-    (13, 15, 17,  0),
+    (13, 15, 17, 59),
     (21,  0,  2,  0),
 ]
 
@@ -118,6 +121,30 @@ def is_mercado_real():
 _cache_velas   = {}
 _cache_payouts = {}
 
+def buscar_velas_polygon(pares_forex):
+    """Fallback: busca velas M1 via Polygon.io para pares Forex."""
+    import urllib.request
+    result = {}
+    agora = datetime.datetime.utcnow()
+    fim   = agora.strftime("%Y-%m-%d")
+    ini   = (agora - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    for par in pares_forex:
+        try:
+            ticker = f"C:{par}"
+            url = (f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute"
+                   f"/{ini}/{fim}?limit=70&sort=desc&apiKey={POLYGON_KEY}")
+            resp = urllib.request.urlopen(url, timeout=10)
+            d    = json.loads(resp.read())
+            bars = d.get("results", [])
+            if bars and len(bars) >= 20:
+                # Polygon retorna desc — inverte
+                bars = list(reversed(bars))
+                result[par] = [{"o": b["o"], "c": b["c"], "h": b["h"], "l": b["l"], "t": b["t"]} for b in bars]
+        except:
+            pass
+    log(f"📡 Polygon fallback: {len(result)}/{len(pares_forex)} pares com velas")
+    return result
+
 def buscar_todos_pares():
     global _cache_velas, _cache_payouts, OTC_PARES, FOREX_PARES
     mercado_real = is_mercado_real()
@@ -137,20 +164,16 @@ def buscar_todos_pares():
         "try:\n"
         "  abertos = iq.get_all_open_time()\n"
         "  turbo   = abertos.get('turbo',{})\n"
-        "  digital = abertos.get('digital',{})\n"
         "  for nome, info in turbo.items():\n"
         "    if not info.get('open',False): continue\n"
         "    if 'OTC' in nome: otc_abertos.append(nome)\n"
         "    else: forex_abertos.append(nome)\n"
-        "  # Payouts turbo (M1)\n"
         "  for nome, info in turbo.items():\n"
         "    if info.get('open',False):\n"
         "      payouts[nome] = info.get('profit',{}).get('percent', 80)\n"
         "except: pass\n"
-        f"mercado_real = {mercado_real!r}\n"
         f"if not otc_abertos:   otc_abertos   = {OTC_PARES_FALLBACK!r}\n"
         f"if not forex_abertos: forex_abertos = {FOREX_PARES_FALLBACK!r}\n"
-        # Velas M1 (65 velas)
         "result = {}\n"
         "all_pares = list(set(otc_abertos + forex_abertos))\n"
         "for par in all_pares:\n"
@@ -160,14 +183,12 @@ def buscar_todos_pares():
         "      result[par] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min'],'t':x['from']} for x in v]\n"
         "      continue\n"
         "  except: pass\n"
-        # Fallback: par-OTC ou sem OTC
         "  try:\n"
         "    alt = par+'-OTC' if 'OTC' not in par else par.replace('-OTC','')\n"
         "    v   = iq.get_candles(alt, 60, 70, time.time())\n"
         "    if v and len(v) >= 20:\n"
         "      result[par] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min'],'t':x['from']} for x in v]\n"
         "  except: pass\n"
-        # Velas M5 (30 velas) — para filtro M5
         "result_m5 = {}\n"
         "for par in all_pares:\n"
         "  try:\n"
@@ -177,27 +198,46 @@ def buscar_todos_pares():
         "  except: pass\n"
         "print(json.dumps({'pares_otc':otc_abertos,'pares_forex':forex_abertos,'velas':result,'velas_m5':result_m5,'payouts':payouts}))\n"
     )
+
+    iq_ok = False
     try:
-        log("🔌 Conectando IQ Option...")
+        log("🔌 Conectando IQ Option (timeout 55s)...")
         res = subprocess.run(
             ["python3", "-W", "ignore", "-c", script],
-            capture_output=True, text=True, timeout=120, cwd=_base
+            capture_output=True, text=True, timeout=55, cwd=_base
         )
         raw = json.loads(res.stdout.strip() or "{}")
-        OTC_PARES   = raw.get("pares_otc",   []) or list(OTC_PARES_FALLBACK)
-        FOREX_PARES = raw.get("pares_forex", []) or list(FOREX_PARES_FALLBACK)
-        _cache_velas   = raw.get("velas",    {})
-        _cache_velas_m5 = raw.get("velas_m5", {})
-        _cache_payouts = raw.get("payouts",  {})
-        globals()["_cache_velas_m5"] = _cache_velas_m5
-        log(f"✅ Forex:{len(FOREX_PARES)} | OTC:{len(OTC_PARES)} | Velas M1:{len(_cache_velas)} | M5:{len(_cache_velas_m5)}")
+        if raw.get("velas"):
+            OTC_PARES   = raw.get("pares_otc",   []) or list(OTC_PARES_FALLBACK)
+            FOREX_PARES = raw.get("pares_forex", []) or list(FOREX_PARES_FALLBACK)
+            _cache_velas    = raw.get("velas",    {})
+            _cache_velas_m5 = raw.get("velas_m5", {})
+            _cache_payouts  = raw.get("payouts",  {})
+            globals()["_cache_velas_m5"] = _cache_velas_m5
+            log(f"✅ IQ OK — Forex:{len(FOREX_PARES)} | OTC:{len(OTC_PARES)} | M1:{len(_cache_velas)} | M5:{len(_cache_velas_m5)}")
+            iq_ok = True
+        else:
+            log("⚠️ IQ conectou mas sem velas — ativando Polygon fallback")
     except Exception as e:
-        log(f"❌ Erro IQ Option: {e}")
-        _cache_velas = {}
-        globals()["_cache_velas_m5"] = {}
-        _cache_payouts = {}
+        log(f"⚠️ IQ Option timeout/erro: {e} — ativando Polygon fallback")
+
+    if not iq_ok:
+        # Fallback: usa listas fixas + Polygon para velas Forex
         OTC_PARES   = list(OTC_PARES_FALLBACK)
         FOREX_PARES = list(FOREX_PARES_FALLBACK)
+        _cache_payouts  = {}
+        _cache_velas_m5 = {}
+        globals()["_cache_velas_m5"] = {}
+        # Polygon só tem Forex real (sem OTC)
+        velas_polygon = buscar_velas_polygon(FOREX_PARES)
+        # OTC usa mesmos dados do Forex como proxy
+        velas_otc = {}
+        for par in OTC_PARES:
+            base = par.replace("-OTC", "")
+            if base in velas_polygon:
+                velas_otc[par] = velas_polygon[base]
+        _cache_velas = {**velas_polygon, **velas_otc}
+        log(f"📡 Polygon ativo — {len(_cache_velas)} pares com dados")
 
 def get_velas(par):    return _cache_velas.get(par, [])
 def get_velas_m5(par): return globals().get("_cache_velas_m5", {}).get(par, [])
