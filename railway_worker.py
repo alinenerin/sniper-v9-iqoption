@@ -30,14 +30,10 @@ while True:
     try:
         agora_brt = datetime.datetime.utcnow() - datetime.timedelta(hours=3)
         log(f'⏰ BRT: {agora_brt.strftime("%H:%M:%S")} — rodando ciclos M5...')
-        result = subprocess.run(
-            [sys.executable, 'm5_cron_runner.py'],
-            capture_output=True, text=True, timeout=300
+        subprocess.run(
+            [sys.executable, '-W', 'ignore', 'm5_cron_runner.py'],
+            timeout=300
         )
-        if result.stdout: log(result.stdout.strip())
-        if result.stderr:
-            erros = [l for l in result.stderr.split('\n') if l and 'DeprecationWarning' not in l and 'utcnow' not in l]
-            if erros: log('STDERR: ' + '\n'.join(erros[:5]))
     except subprocess.TimeoutExpired:
         log('⚠️ Timeout no runner — abortando ciclo')
     except Exception as e:
