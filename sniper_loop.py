@@ -453,7 +453,10 @@ def get_candles(ativo, n=60, tf=60):
 def get_saldo():
     try:
         if _iq_ok and _iq_api:
-            s = _iq_api.get_balance()
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeoutError
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_iq_api.get_balance)
+                s = fut.result(timeout=3)
             if s:
                 return float(s)
     except:
@@ -731,8 +734,11 @@ def check_stop_diario():
 def medir_ping_iq():
     """Mede latência da conexão IQ Option em ms. Retorna -1 se falhar."""
     try:
+        from concurrent.futures import ThreadPoolExecutor
         t0 = time.time()
-        _iq_api.get_balance()
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_iq_api.get_balance)
+            fut.result(timeout=3)
         return int((time.time() - t0) * 1000)
     except:
         return -1
