@@ -1,0 +1,48 @@
+name: Sniper V12 - Disparo Manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: 'Modo de varredura'
+        required: false
+        default: 'completo'
+        type: choice
+        options:
+          - completo
+          - forex
+          - otc
+
+jobs:
+  sniper_v12:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install requests pytz flask websocket-client
+
+      - name: Rodar Sniper V12 - Disparo Unico
+        env:
+          IQ_EMAIL: ${{ secrets.IQ_EMAIL }}
+          IQ_PASS: ${{ secrets.IQ_PASS }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT_ID }}
+        run: python3 v12_once.py
+
+      - name: Upload de logs em caso de falha
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-log-${{ github.run_id }}
+          path: estado_v121.json
+          retention-days: 3
