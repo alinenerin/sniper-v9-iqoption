@@ -1,0 +1,45 @@
+name: Sniper M5 - Bot Trading
+
+on:
+  schedule:
+    # ===== JANELA 1: 04:00 - 17:00 BRT (= 07:00 - 20:00 UTC) =====
+    - cron: '0,5,10,15,20,25,30,35,40,45,50,55 7-19 * * 1-5'
+    # ===== JANELA 2: 21:00 - 02:00 BRT (= 00:00 - 05:00 UTC) =====
+    - cron: '0,5,10,15,20,25,30,35,40,45,50,55 0-4 * * 1-5'
+  workflow_dispatch:  # Permite rodar manualmente pelo painel
+
+jobs:
+  sniper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Rodar Sniper M5
+        env:
+          IQ_EMAIL: ${{ secrets.IQ_EMAIL }}
+          IQ_PASS: ${{ secrets.IQ_PASS }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python3 sniper_loop_m5.py once
+
+      - name: Upload de logs em caso de falha
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sniper-log-${{ github.run_id }}
+          path: |
+            m5_loop.log
+            m5_signal_history.csv
+          retention-days: 3
