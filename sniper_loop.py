@@ -683,6 +683,25 @@ def calcular_bb(closes, period=20, desvio=2):
     std = math.sqrt(sum((x - mid)**2 for x in sub) / period)
     return mid + desvio * std, mid, mid - desvio * std
 
+def calcular_atr(velas, period=14):
+    """
+    ATR com Wilder Smoothing correto (adaptado de iq_market_reader.py).
+    Retorna o último valor ATR em preço (não em pips).
+    """
+    if len(velas) < period + 1:
+        return 0.0
+    trs = []
+    for i in range(1, len(velas)):
+        h  = velas[i]["h"]
+        l  = velas[i]["l"]
+        pc = velas[i-1]["c"]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    # Seed: média simples dos primeiros N
+    atr_val = sum(trs[:period]) / period
+    for i in range(period, len(trs)):
+        atr_val = (atr_val * (period - 1) + trs[i]) / period
+    return atr_val
+
 def calcular_adx(velas, period=14):
     if len(velas) < period + 1:
         return 0
@@ -893,8 +912,9 @@ def score_forex(velas, spread_pip=0.0):
     if 1.2 <= spread_pip <= 1.8:
         penalidade -= 10
 
-    atrs    = [abs(v["c"] - v["o"]) / pip for v in velas[-6:-1]]
-    atr_med = sum(atrs) / len(atrs) if atrs else 0
+    # ATR14 Wilder Smoothing (em pips)
+    atr_raw = calcular_atr(velas, period=14)
+    atr_med = round(atr_raw / pip, 2) if pip > 0 else 0.0
     if atr_med < 1.5:
         penalidade -= 15
 
@@ -1054,9 +1074,9 @@ def score_otc(velas):
     if 80 <= rsi <= 85 or 15 <= rsi <= 20:
         penalidade -= 15
 
-    # ATR baixo (0.8–1.2 pip)
-    atrs    = [abs(v["c"] - v["o"]) / pip for v in velas[-6:-1]]
-    atr_med = sum(atrs) / len(atrs) if atrs else 0
+    # ATR14 Wilder Smoothing (em pips)
+    atr_raw = calcular_atr(velas, period=14)
+    atr_med = round(atr_raw / pip, 2) if pip > 0 else 0.0
     if 0.8 <= atr_med <= 1.2:
         penalidade -= 10
 
