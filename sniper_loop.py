@@ -1341,7 +1341,8 @@ def engine_forex():
                 time.sleep(10)
                 continue
 
-            if not garantir_conexao():
+            if not estado.get("iq_ok"):
+                garantir_conexao()
                 time.sleep(15)
                 continue
 
@@ -1482,8 +1483,9 @@ def engine_otc():
                 time.sleep(10)
                 continue
 
-            if not garantir_conexao():
+            if not estado.get("iq_ok"):
                 _log("⏳ OTC aguardando conexão IQ...", "OTC")
+                garantir_conexao()
                 time.sleep(15)
                 continue
 
