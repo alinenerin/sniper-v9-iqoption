@@ -7,7 +7,7 @@ Busca dados na IQ Option e retorna os aprovados
 import sys, os, time, json
 from collections import Counter, defaultdict
 
-# IQ Option API está na raiz do repo como iqoptionapi/
+sys.path.insert(0, '.')  # usa iqoptionapi/ da raiz do repo
 from iqoptionapi.stable_api import IQ_Option
 
 # ── Helpers técnicos ──────────────────────────────────────────────────────────
