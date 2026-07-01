@@ -224,133 +224,97 @@ def tg(msg):
 # ══════════════════════════════════════════════════════════════════
 #  IQ OPTION — REST PURO (sem websocket, sem lib)
 # ══════════════════════════════════════════════════════════════════
+#  IQ OPTION — HTTP PURO (sem WebSocket, sem lib, sem SSID)
+# ══════════════════════════════════════════════════════════════════
 _iq_sess     = requests.Session()
-_iq_sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"})
-_iq_ok       = False
-_iq_tentando = False
-_iq_api      = None   # instância da IQ_Option lib
+_iq_sess.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+    "Origin": "https://eu.iqoption.com",
+    "Referer": "https://eu.iqoption.com/",
+    "Content-Type": "application/json",
+})
+_iq_ok          = False
+_iq_tentando    = False
+_iq_api         = None   # não usado — mantido por compatibilidade
+_iq_profile     = {}
 
 # Mapa ativo → active_id da IQ Option
 _IQ_ACTIVE_ID = {
     "EURUSD": 1, "EURJPY": 18, "EURGBP": 17, "GBPUSD": 2,
     "USDJPY": 4, "AUDUSD": 3,  "USDCHF": 5,  "XAUUSD": 68,
     "NZDUSD": 6, "USDCAD": 8,
+    "EURUSD-OTC": 76, "GBPUSD-OTC": 77, "USDJPY-OTC": 78,
+    "AUDUSD-OTC": 79, "EURGBP-OTC": 80,
 }
 
+def _iq_login():
+    """Login HTTP — retorna (ok, motivo)."""
+    try:
+        r = _iq_sess.post(
+            "https://auth.iqoption.com/api/v2/login",
+            json={"identifier": IQ_EMAIL, "password": IQ_PASS},
+            timeout=15
+        )
+        if r.status_code == 200:
+            data = r.json()
+            token = (data.get("data") or {}).get("token") or data.get("token", "")
+            if not token:
+                token = (data.get("data") or {}).get("ssid", "")
+            if token:
+                _iq_sess.headers.update({"Authorization": f"Bearer {token}"})
+                _log(f"🔑 Login HTTP OK — token: {token[:12]}...")
+                return True, token
+            return False, f"token vazio: {str(data)[:120]}"
+        return False, f"HTTP {r.status_code}: {r.text[:120]}"
+    except Exception as e:
+        return False, str(e)[:120]
+
+def _iq_get_profile():
+    """Busca perfil — retorna (saldo, balance_id, modo)."""
+    try:
+        r = _iq_sess.get("https://eu.iqoption.com/api/v2/profile", timeout=10)
+        if r.status_code != 200:
+            return 0.0, None, "PRACTICE"
+        data = r.json().get("result") or r.json()
+        balances = data.get("balances") or data.get("data", {}).get("balances", [])
+        prac = next((b for b in balances if b.get("type") == 4), None)
+        if not prac and balances:
+            prac = balances[0]
+        if prac:
+            return float(prac.get("amount", 0)), prac.get("id"), "PRACTICE"
+        return 0.0, None, "PRACTICE"
+    except Exception as e:
+        _log(f"get_profile erro: {e}")
+        return 0.0, None, "PRACTICE"
+
 def _conectar_iq():
-    """
-    Conecta à IQ Option priorizando SSID (pula HTTP/Cloudflare).
-    Cascata:
-      1. IQ_SSID (env var Railway)
-      2. .ssid_cache (arquivo salvo na última conexão bem-sucedida)
-      3. Login HTTP normal (fallback — pode falhar em datacenter)
-    NUNCA usa exit() — Flask continua vivo. Retry automático a cada 30s.
-    """
-    global _iq_ok, _iq_tentando, _iq_api
+    """Login HTTP puro — sem WebSocket, sem SSID, sem lib. Retry automático."""
+    global _iq_ok, _iq_tentando, _iq_profile
     _iq_tentando = True
     try:
-        if not _IQ_LIB_OK:
-            _log("[ERRO DE CONEXÃO] IQ lib não disponível. Aguardando 30 segundos para redefinir...")
-            time.sleep(30)
+        _log("🌐 Conectando IQ Option via HTTP...")
+        ok, motivo = _iq_login()
+        if not ok:
+            _log(f"[ERRO DE CONEXÃO] {motivo} — Aguardando 60s...")
+            time.sleep(60)
             return
-
-        # ── Carrega SSID salvo (env var ou cache de disco) ─────────────
-        import iqoptionapi.global_value as _gv
-        ssid_env   = os.environ.get("IQ_SSID", "").strip()
-        ssid_cache = ""
-        try:
-            with open(".ssid_cache") as _f:
-                ssid_cache = _f.read().strip()
-        except:
-            pass
-
-        ssid_usar = ssid_env or ssid_cache
-        if ssid_usar:
-            _gv.SSID = ssid_usar
-            _log(f"🔑 SSID carregado ({'env' if ssid_env else 'cache'}): {ssid_usar[:12]}...")
-        else:
-            _log("🔑 Sem SSID salvo — tentando login HTTP...")
-
-        api = _IQLib(IQ_EMAIL, IQ_PASS)
-
-        # connect() pode travar indefinidamente no websocket — usa timeout de 30s
-        check, reason = None, "timeout"
-        _conn_result = [None, None]
-        def _do_connect():
-            try:
-                _conn_result[0], _conn_result[1] = api.connect()
-            except Exception as ex:
-                _conn_result[1] = str(ex)[:120]
-        _t = threading.Thread(target=_do_connect, daemon=True)
-        _t.start()
-        _t.join(timeout=30)
-        if _t.is_alive():
-            _log(f"[ERRO DE CONEXÃO] connect() travou (timeout 30s) — Aguardando 30 segundos para redefinir...")
-            time.sleep(30)
-            return
-        check, reason = _conn_result[0], _conn_result[1]
-        if check is None:
-            _log(f"[ERRO DE CONEXÃO] {reason} — Aguardando 30 segundos para redefinir...")
-            time.sleep(30)
-            return
-
-        if not check:
-            motivo = str(reason)[:120] if reason else "sem resposta"
-            # Se falhou com SSID antigo, limpa cache e tenta na próxima rodada via HTTP
-            if ssid_usar:
-                _log(f"[ERRO DE CONEXÃO] SSID expirado ({motivo}) — limpando cache. Aguardando 30 segundos...")
-                _gv.SSID = None
-                try:
-                    os.remove(".ssid_cache")
-                except:
-                    pass
-            else:
-                _log(f"[ERRO DE CONEXÃO] {motivo} — Aguardando 30 segundos para redefinir...")
-            time.sleep(30)
-            return
-
-        # ── Conectado com sucesso ──────────────────────────────────────
-        # Persiste o SSID obtido para próximas reconexões (evita HTTP)
-        try:
-            ssid_novo = _gv.SSID or ""
-            if ssid_novo:
-                with open(".ssid_cache", "w") as _f:
-                    _f.write(ssid_novo)
-                _log(f"💾 SSID salvo em cache: {ssid_novo[:12]}...")
-        except:
-            pass
-
-        try:
-            api.change_balance("PRACTICE")
-            time.sleep(2)
-            saldo_prac = api.get_balance() or 0.0
-        except Exception as ex:
-            _log(f"IQ get_balance erro: {ex} — usando saldo 0")
-            saldo_prac = 0.0
-
-        _iq_api = api
-        _iq_ok  = True
-        try:
-            modo_atual = api.get_balance_mode() or "PRACTICE"
-        except Exception:
-            modo_atual = "PRACTICE"
+        saldo, balance_id, modo = _iq_get_profile()
+        _iq_profile = {"balance_id": balance_id, "modo": modo}
+        _iq_ok = True
         with _lock:
-            estado["iq_ok"]          = True
-            estado["saldo"]          = round(float(saldo_prac), 2)
-            estado["saldo_practice"] = round(float(saldo_prac), 2)
-            estado["modo"]           = modo_atual
-        _log(f"✅ IQ conectada via {'SSID' if ssid_usar else 'login'}! Practice: ${saldo_prac:.2f}")
-
+            estado["iq_ok"]  = True
+            estado["saldo"]  = round(saldo, 2)
+            estado["modo"]   = modo
+        _log(f"✅ IQ conectada via HTTP! {modo}: ${saldo:.2f}")
     except Exception as e:
-        _log(f"[ERRO DE CONEXÃO] {type(e).__name__}: {str(e)[:100]} — Aguardando 30 segundos para redefinir...")
-        time.sleep(30)
+        _log(f"[ERRO DE CONEXÃO] {type(e).__name__}: {str(e)[:100]} — Aguardando 60s...")
+        time.sleep(60)
     finally:
         _iq_tentando = False
 
-_iq_ultima_tentativa = 0   # timestamp da última tentativa (evita spam de threads)
+_iq_ultima_tentativa = 0
 
 def _marcar_iq_caiu():
-    """Marca conexão IQ como perdida para forçar reconexão automática."""
     global _iq_ok
     _iq_ok = False
     with _lock:
@@ -359,13 +323,9 @@ def _marcar_iq_caiu():
 def garantir_conexao():
     global _iq_ok, _iq_tentando, _iq_ultima_tentativa
     agora = time.time()
-    # Só dispara nova thread se não está tentando E passou 35s da última tentativa
-    if not _iq_ok and not _iq_tentando and (agora - _iq_ultima_tentativa) > 35:
+    if not _iq_ok and not _iq_tentando and (agora - _iq_ultima_tentativa) > 65:
         _iq_ultima_tentativa = agora
         threading.Thread(target=_conectar_iq, daemon=True).start()
-    # Detecta queda de WS — NÃO usa check_connect() (bloqueia GIL em Railway)
-    # A queda é detectada passivamente: se _iq_api.api.websocket perde conn,
-    # a próxima tentativa de trade vai falhar e _iq_ok é zerado pelo executor.
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
@@ -425,65 +385,36 @@ def get_candles(ativo, n=60, tf=60):
     return []
 
 def get_saldo():
+    """Busca saldo via HTTP — sem lib, sem WebSocket."""
     try:
-        if _iq_ok and _iq_api:
-            s = _iq_api.get_balance()
-            if s:
-                return float(s)
+        saldo, _, _ = _iq_get_profile()
+        if saldo:
+            with _lock:
+                estado["saldo"] = round(saldo, 2)
+            return saldo
     except:
         pass
     return estado.get("saldo", 0.0)
 
 def get_payout(par):
-    """
-    Retorna payout real via lib IQ Option.
-    Cache de 300s. Fallback 0.82.
-    NOTA: get_all_open_time pode bloquear — cache longo evita chamadas frequentes.
-    """
+    """Payout via HTTP — endpoint público IQ Option. Fallback 0.82."""
     agora = time.time()
     cached = _payout_cache.get(par)
     if cached and (agora - cached["ts"]) < 300:
         return cached["val"]
     try:
-        if not _iq_ok or not _iq_api:
-            return 0.82
-        import concurrent.futures as _cf
         par_base = par.replace("-OTC", "").replace("/", "").upper()
-        is_otc   = "-OTC" in par.upper()
-
-        def _fetch():
-            return _iq_api.get_all_open_time()
-
-        ex = _cf.ThreadPoolExecutor(max_workers=1)
-        fut = ex.submit(_fetch)
-        try:
-            all_assets = fut.result(timeout=5)
-        except Exception:
-            ex.shutdown(wait=False)
-            return 0.82
-        ex.shutdown(wait=False)
-
-        assets = all_assets.get("turbo", {})
-        # Busca exata
-        for name, info in assets.items():
-            name_up = name.upper().replace("-OTC","").replace("/","")
-            if name_up == par_base:
-                if is_otc and "OTC" not in name.upper(): continue
-                if not is_otc and "OTC" in name.upper(): continue
-                raw = info.get("profit", {})
-                if "commission" in raw:
-                    val = round((100 - float(raw["commission"])) / 100, 4)
-                elif "value" in raw:
-                    val = round(float(raw["value"]), 4)
-                else:
-                    val = 0.82
-                _payout_cache[par] = {"val": val, "ts": agora}
-                return val
-        # Busca parcial
-        for name, info in assets.items():
-            if par_base in name.upper().replace("-OTC","").replace("/",""):
-                raw = info.get("profit", {})
-                val = round((100 - float(raw.get("commission", 18))) / 100, 4)
+        active_id = _IQ_ACTIVE_ID.get(par_base) or _IQ_ACTIVE_ID.get(par.upper())
+        if active_id:
+            r = _iq_sess.get(
+                f"https://eu.iqoption.com/api/v1/assets/{active_id}/option-types/turbo",
+                timeout=8
+            )
+            if r.status_code == 200:
+                data = r.json()
+                profit = data.get("result", {}).get("profit", data.get("profit", {}))
+                commission = float(profit.get("commission", 18))
+                val = round((100 - commission) / 100, 4)
                 _payout_cache[par] = {"val": val, "ts": agora}
                 return val
     except Exception as e:
@@ -1022,24 +953,51 @@ def em_janela(agora, janelas):
 #  EXECUÇÃO DE TRADE
 # ══════════════════════════════════════════════════════════════════
 def abrir_trade(par, direcao, stake, expiracao_min):
-    """Abre ordem via lib IQ Option (WebSocket). Retorna id_op ou None."""
+    """Abre ordem via HTTP REST — sem WebSocket, sem lib. Retorna id_op ou None."""
     try:
-        if not _iq_ok or not _iq_api:
+        if not _iq_ok:
             _log(f"abrir_trade: IQ não conectada")
             return None
-        par_base = par.replace("-OTC", "").replace("/", "").upper()
-        is_otc   = "-OTC" in par.upper()
-        # turbo = M1 | binary = M3+
-        option_type = "turbo" if expiracao_min <= 1 else "binary"
-        direcao_iq  = direcao.lower()  # "call" ou "put"
+        par_key  = par.upper()
+        active_id = _IQ_ACTIVE_ID.get(par_key)
+        if not active_id:
+            par_base  = par.replace("-OTC", "").replace("/", "").upper()
+            active_id = _IQ_ACTIVE_ID.get(par_base)
+        if not active_id:
+            _log(f"abrir_trade: active_id não encontrado para {par}")
+            return None
 
-        status, id_op = _iq_api.buy(stake, par_base, direcao_iq, expiracao_min)
-        if status and id_op:
-            _log(f"Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
-            return id_op
-        _log(f"Falha buy {par}: status={status} id={id_op}")
-        # Se falhou, provavelmente WS caiu — forçar reconexão
-        _marcar_iq_caiu()
+        is_otc      = "-OTC" in par.upper()
+        option_type = "turbo" if expiracao_min <= 1 else "binary"
+        direction   = direcao.lower()  # "call" ou "put"
+        balance_id  = _iq_profile.get("balance_id")
+
+        payload = {
+            "active_id":   active_id,
+            "direction":   direction,
+            "expired":     expiracao_min,
+            "price":       float(stake),
+            "type":        option_type,
+        }
+        if balance_id:
+            payload["balance_id"] = balance_id
+
+        r = _iq_sess.post(
+            "https://eu.iqoption.com/api/v2/binary-options/top-assets/buy",
+            json=payload,
+            timeout=10
+        )
+        if r.status_code in (200, 201):
+            data = r.json()
+            id_op = (data.get("result") or data).get("id") or data.get("id")
+            if id_op:
+                _log(f"✅ Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
+                return id_op
+            _log(f"Buy OK mas sem id: {str(data)[:120]}")
+            return None
+        _log(f"Falha buy {par}: HTTP {r.status_code} — {r.text[:120]}")
+        if r.status_code in (401, 403):
+            _marcar_iq_caiu()  # token expirado — reconectar
         return None
     except Exception as e:
         _log(f"Erro buy {par}: {e}")
@@ -1054,17 +1012,21 @@ def _checar_resultado_por_saldo(saldo_antes, espera_s):
     return diff > 0, abs(diff)
 
 def _checar_resultado_lib(id_op, espera_s, stake):
-    """Verifica resultado via lib após espera."""
+    """Verifica resultado via HTTP após espera."""
     time.sleep(espera_s)
     try:
-        if _iq_api:
-            resultado = _iq_api.check_win_v3(id_op)
-            if resultado is not None:
-                win   = float(resultado) > 0
-                valor = abs(float(resultado)) if win else stake
-                return win, valor
+        r = _iq_sess.get(
+            f"https://eu.iqoption.com/api/v2/binary-options/top-assets/{id_op}",
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json().get("result") or r.json()
+            profit = float(data.get("profit", 0))
+            win    = profit > 0
+            valor  = abs(profit) if win else stake
+            return win, valor
     except Exception as e:
-        _log(f"check_win_v3 erro: {e}")
+        _log(f"check_resultado HTTP erro: {e}")
     return None, 0
 
 def checar_resultado_m1(id_op, stake):
@@ -2238,27 +2200,9 @@ def cmd_remoto():
         estado["losses_dia"]  = 0
         return jsonify({"ok": True, "msg": "Stop diário resetado"})
     elif acao == "set_ssid":
-        ssid = data.get("ssid", "")
-        if not ssid:
-            return jsonify({"ok": False, "erro": "ssid vazio"})
-        try:
-            import iqoptionapi.global_value as _gv
-            _gv.SSID = ssid
-            # Persiste em disco — próximos boots não precisam de HTTP
-            try:
-                with open(".ssid_cache", "w") as _f:
-                    _f.write(ssid)
-            except:
-                pass
-            _log(f"🔑 SSID injetado e salvo em cache: {ssid[:12]}...")
-            global _iq_ok, _iq_tentando, _iq_ultima_tentativa
-            _iq_ok              = False
-            _iq_tentando        = False
-            _iq_ultima_tentativa = 0
-            threading.Thread(target=_conectar_iq, daemon=True).start()
-            return jsonify({"ok": True, "msg": "SSID injetado — reconectando via WebSocket..."})
-        except Exception as e:
-            return jsonify({"ok": False, "erro": str(e)})
+        # set_ssid descontinuado — login agora é HTTP puro, sem SSID
+        _log("⚠️ set_ssid ignorado — usando login HTTP puro")
+        return jsonify({"ok": True, "msg": "Login é HTTP puro — SSID não necessário"})
     return jsonify({"ok": False, "erro": f"ação desconhecida: {acao}"})
 
 @app.route("/forex/ligar", methods=["POST"])
