@@ -1,4 +1,4 @@
-name: Sniper V12 - Disparo Manual
+name: Sniper V12 🎯
 
 on:
   workflow_dispatch:
@@ -12,6 +12,10 @@ on:
           - completo
           - forex
           - otc
+  schedule:
+    # Roda a cada 5 minutos — BRT 07:00-20:00 = UTC 10:00-23:00
+    - cron: '*/5 10-23 * * 1-5'   # Seg-Sex (mercado real + OTC)
+    - cron: '*/5 10-23 * * 0,6'   # Sáb-Dom (só OTC)
 
 jobs:
   sniper_v12:
