@@ -378,9 +378,14 @@ def get_candles(ativo, n=60, tf=60):
     if _iq_ok and _iq_api:
         try:
             import concurrent.futures as _cf
-            with _cf.ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(_iq_api.get_candles, par_base, tf, n, time.time())
+            _ex = _cf.ThreadPoolExecutor(max_workers=1)
+            fut = _ex.submit(_iq_api.get_candles, par_base, tf, n, time.time())
+            try:
                 candles = fut.result(timeout=8)
+            except Exception:
+                candles = None
+            finally:
+                _ex.shutdown(wait=False)
             if candles and len(candles) > 0:
                 velas = []
                 for v in candles:
@@ -1522,6 +1527,7 @@ def engine_otc():
                 if agora_ts - _ultimo_trade.get(par, 0) < COOLDOWN:
                     continue
                 velas = get_candles(par, n=60, tf=60)
+                _log(f"  {par}: {len(velas)} velas obtidas", "OTC")
                 if len(velas) < 30:
                     continue
                 score, direcao, det = score_otc(velas)
