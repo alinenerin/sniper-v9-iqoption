@@ -2497,18 +2497,30 @@ if __name__ == "__main__":
     print("  OTC M1 · Forex Real M1 · M5 Filter · Order Blocks")
     print("=" * 60)
 
-    # ── Conexão IQ ANTES do Flask — igual ao sniper_loop.py ──────────
-    # sys.exit(1) aqui derruba o processo inteiro → Railway reinicia
-    _iq_api = _realizar_conexao_iq()   # bloqueia até conectar ou sys.exit(1)
-    _iq_ok  = True
-    saldo_ini = _iq_api.get_balance() or 0.0
-    with _lock:
-        estado["iq_ok"] = True
-        estado["saldo"] = round(float(saldo_ini), 2)
+    def _engine_startup():
+        """Roda em thread — conecta IQ e sobe engines. Se falhar, mata o processo inteiro."""
+        try:
+            api = _realizar_conexao_iq()  # sys.exit(1) interno vira SystemExit
+        except SystemExit:
+            _log("Falha na conexão — reiniciando container...")
+            os._exit(1)   # derruba o processo inteiro (Flask incluso) → Railway reinicia
+        except Exception as e:
+            _log(f"Erro inesperado na conexão: {e} — reiniciando...")
+            os._exit(1)
 
-    # ── Engines em background ─────────────────────────────────────────
-    threading.Thread(target=engine_manual, daemon=True).start()
-    threading.Thread(target=iniciar_motor, daemon=True).start()
+        global _iq_api, _iq_ok
+        _iq_api = api
+        _iq_ok  = True
+        saldo_ini = api.get_balance() or 0.0
+        with _lock:
+            estado["iq_ok"] = True
+            estado["saldo"] = round(float(saldo_ini), 2)
+
+        threading.Thread(target=engine_manual, daemon=True).start()
+        threading.Thread(target=iniciar_motor, daemon=True).start()
+
+    # Flask sobe PRIMEIRO (health check OK) — conexão em background
+    threading.Thread(target=_engine_startup, daemon=True).start()
 
     port = int(os.environ.get("PORT", 8080))
     _log(f"🌐 Sniper V12 — porta {port}")
