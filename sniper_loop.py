@@ -70,9 +70,10 @@ MAX_LOSSES_DIA = 4
 COOLDOWN       = 120   # segundos entre trades no mesmo par
 
 # ── ENGINE FOREX ──────────────────────────────────────────────────
-FOREX_SCORE_MIN  = 150        # Score mínimo (170 máx com bônus OB/FVG)
+FOREX_SCORE_MIN  = 145        # Score mínimo V12.1
 FOREX_PAYOUT_MIN = 0.85
 FOREX_EXPIRACAO  = 3          # minutos (M3)
+FOREX_SPREAD_MAX = 1.8        # spread máximo em pips
 FOREX_PARES = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY", "EURGBP"
 ]
@@ -82,12 +83,13 @@ FOREX_JANELAS = [             # (h_ini, m_ini, h_fim, m_fim) BRT
     (14,  0, 16,  0),         # NY overlap
     (21,  0,  2,  0),         # Tokyo noite
 ]
-FOREX_MINUTOS_BLOQ = [58, 59, 0, 1, 2]  # só virada de hora — Forex real descentralizado
+FOREX_MINUTOS_BLOQ = [0, 1]   # V12.1 simplificado
 
 # ── ENGINE OTC ────────────────────────────────────────────────────
-OTC_SCORE_MIN = 85
+OTC_SCORE_MIN  = 80            # Score mínimo V12.1
 OTC_EXPIRACAO  = 1             # minutos (M1)
 OTC_PAYOUT_MIN = 0.80          # payout mínimo OTC (80%)
+OTC_SEQUENCIA_MAX = 7          # máx velas consecutivas mesma direção
 OTC_PARES = [
     "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC",
     "EURJPY-OTC", "GBPJPY-OTC", "AUDJPY-OTC", "EURGBP-OTC",
@@ -98,7 +100,7 @@ OTC_JANELAS = [
     (13, 15, 17,  0),
     (21,  0,  2,  0),
 ]
-OTC_MINUTOS_BLOQ = [0, 1, 2, 17, 32, 47, 58, 59]
+OTC_MINUTOS_BLOQ = [0, 1]     # V12.1 simplificado
 
 # ══════════════════════════════════════════════════════════════════
 #  ESTADO GLOBAL UNIFICADO
@@ -714,12 +716,12 @@ def calcular_adx(velas, period=14):
     return sum(dxs[-period:]) / min(len(dxs), period)
 
 def shadow_bloqueio(vela):
-    """Pavio > 35% do candle total = BLOQUEIO."""
+    """Pavio > 45% do candle total = BLOQUEIO (V12.1)."""
     total = vela["h"] - vela["l"]
     if total == 0: return False
     pavio_sup = vela["h"] - max(vela["c"], vela["o"])
     pavio_inf = min(vela["c"], vela["o"]) - vela["l"]
-    return max(pavio_sup, pavio_inf) / total > 0.35
+    return max(pavio_sup, pavio_inf) / total > 0.45
 
 # ══════════════════════════════════════════════════════════════════
 #  DXY NATIVO (só para Forex)
@@ -817,41 +819,88 @@ def ff_bloqueado(agora_brt):
     return False, ""
 
 # ══════════════════════════════════════════════════════════════════
-#  SCORE ENGINE FOREX (V9) — máx 170 pts
+#  SCORE ENGINE FOREX (V12.1) — máx 180 pts
 # ══════════════════════════════════════════════════════════════════
-def score_forex(velas):
+def score_forex(velas, spread_pip=0.0):
     """
-    Retorna (score, direcao, det) ou (0, None, motivo)
-    Blocos:
-      A: Direção EMA9/25/50      → máx 60 pts
-      B: RSI momentum            → máx 30 pts
-      C: Corpo/Volatilidade      → máx 60 pts
-      D: Bônus OB/FVG            → +20 pts (se score base ≥ 135)
+    Score Forex V12.1 — máx 180 pts
+    ─────────────────────────────────────────────────────────────────
+    NÍVEL 1 — BLOQUEIOS ABSOLUTOS:
+      • Shadow > 45%
+      • RSI > 85 ou < 15
+      • Spread > 1.8 pip
+      • DXY divergente (checado na engine)
+
+    NÍVEL 2 — PENALIDADES:
+      • RSI 80–85 / 15–20      → -15 pts
+      • Shadow 35–45%          → -10 pts
+      • Spread 1.2–1.8 pip     → -10 pts
+      • ATR baixo (<1.5p)      → -15 pts
+
+    NÍVEL 3 — PONTUAÇÃO:
+      A: EMA 9/25/50 alinhadas → 60 pts
+      B: RSI momentum          → 30 pts
+      C: Corpo + ATR           → 60 pts
+      D: Bônus OB/FVG          → +20 pts (score base ≥ 130)
+      E: Confluência macro     → +10 pts
     """
     if len(velas) < 55:
         return 0, None, "velas insuf"
 
     closes = [v["c"] for v in velas]
     vela   = velas[-2]  # última fechada
+    preco  = closes[-1]
+    pip    = 0.01 if preco > 50 else 0.0001
 
-    # Shadow bloqueio
-    if shadow_bloqueio(vela):
+    # ── NÍVEL 1: Bloqueios absolutos ────────────────────────────────
+
+    # Shadow > 45%
+    total  = vela["h"] - vela["l"]
+    corpo  = abs(vela["c"] - vela["o"])
+    shadow = (total - corpo) / total if total > 0 else 0
+    if shadow > 0.45:
         return 0, None, "Shadow BLOQUEIO"
 
-    # EMA
+    # RSI exaustão
+    rsi = calcular_rsi(closes)
+    if rsi > 85 or rsi < 15:
+        return 0, None, f"RSI {rsi:.1f} exaustão BLOQUEIO"
+
+    # Spread máximo
+    if spread_pip > FOREX_SPREAD_MAX:
+        return 0, None, f"Spread {spread_pip:.1f}p BLOQUEIO"
+
+    # EMA direção
     e9  = ema_series(closes, 9)
     e25 = ema_series(closes, 25)
     e50 = ema_series(closes, 50)
     if not e9 or not e25 or not e50:
         return 0, None, "EMA indispon"
 
-    preco = closes[-1]
-    # Direção base pelo EMA9
     if e9[-1] > e25[-1]:   direcao = "CALL"
     elif e9[-1] < e25[-1]: direcao = "PUT"
     else: return 0, None, "EMA9/25 neutro"
 
-    # Bloco A (60 pts)
+    # ── NÍVEL 2: Penalidades ────────────────────────────────────────
+    penalidade = 0
+
+    if 80 <= rsi <= 85 or 15 <= rsi <= 20:
+        penalidade -= 15
+
+    if 0.35 < shadow <= 0.45:
+        penalidade -= 10
+
+    if 1.2 <= spread_pip <= 1.8:
+        penalidade -= 10
+
+    atrs    = [abs(v["c"] - v["o"]) / pip for v in velas[-6:-1]]
+    atr_med = sum(atrs) / len(atrs) if atrs else 0
+    if atr_med < 1.5:
+        penalidade -= 15
+
+    # ── NÍVEL 3: Pontuação positiva ─────────────────────────────────
+
+    # Bloco A — EMA 9/25/50 (60 pts)
     pts_a = 0
     if (direcao == "CALL" and e9[-1] > e25[-1]) or (direcao == "PUT" and e9[-1] < e25[-1]):
         pts_a += 20
@@ -860,69 +909,76 @@ def score_forex(velas):
     if (direcao == "CALL" and e25[-1] > e50[-1]) or (direcao == "PUT" and e25[-1] < e50[-1]):
         pts_a += 20
 
-    # Bloco B — RSI (30 pts)
-    rsi = calcular_rsi(closes)
-    if rsi > 85 or rsi < 15:
-        return 0, None, f"RSI {rsi:.1f} exaustão BLOQUEIO"
+    # Bloco B — RSI momentum (30 pts)
     pts_b = 0
     if direcao == "CALL" and 55 <= rsi <= 75: pts_b = 30
     if direcao == "PUT"  and 25 <= rsi <= 45: pts_b = 30
 
-    # Bloco C — Corpo/Volatilidade (60 pts)
-    pts_c    = 0
-    pip      = 0.01 if preco > 50 else 0.0001
-    corpo    = abs(vela["c"] - vela["o"]) / pip
-    v_alta   = vela["c"] > vela["o"]
-    atrs     = [abs(v["c"] - v["o"]) / pip for v in velas[-6:-1]]
-    atr_med  = sum(atrs) / len(atrs) if atrs else 0
+    # Bloco C — Corpo + ATR (60 pts)
+    pts_c  = 0
+    corpo_pip = corpo / pip
+    v_alta = vela["c"] > vela["o"]
 
-    if corpo >= 2:   pts_c += 20
-    elif corpo >= 1.5: pts_c += 10
+    if corpo_pip >= 2:     pts_c += 20
+    elif corpo_pip >= 1.5: pts_c += 10
 
     if (direcao == "CALL" and v_alta) or (direcao == "PUT" and not v_alta):
         pts_c += 20
 
-    if atr_med >= 3:   pts_c += 20
+    if atr_med >= 3:     pts_c += 20
     elif atr_med >= 1.5: pts_c += 10
 
-    score_base = pts_a + pts_b + pts_c
+    score_base = pts_a + pts_b + pts_c + penalidade
 
     # Bloco D — Bônus OB/FVG (20 pts)
     pts_d = 0
-    if score_base >= 135:
-        upper, mid, lower = calcular_bb(closes)
-        if upper and lower and (upper - lower) > 0:
-            pos = (preco - lower) / (upper - lower)
-            if (direcao == "CALL" and pos <= 0.20) or (direcao == "PUT" and pos >= 0.80):
-                pts_d = 20
+    if score_base >= 130:
+        ob_ok, pts_d = detectar_order_block(velas, direcao)
 
-    score = score_base + pts_d
+    # Bloco E — Confluência macro (10 pts)
+    # Preço > EMA50 para CALL / < EMA50 para PUT = tendência macro confirmada
+    pts_e = 0
+    if (direcao == "CALL" and preco > e50[-1]) or (direcao == "PUT" and preco < e50[-1]):
+        pts_e = 10
+
+    score = score_base + pts_d + pts_e
     det   = {
-        "rsi": f"{rsi:.1f}", "corpo": f"{corpo:.1f}p",
-        "atr": f"{atr_med:.1f}p", "bonus": pts_d,
-        "pts": f"A:{pts_a} B:{pts_b} C:{pts_c} D:{pts_d}",
+        "rsi": f"{rsi:.1f}", "corpo": f"{corpo_pip:.1f}p",
+        "atr": f"{atr_med:.1f}p", "spread": f"{spread_pip:.1f}p",
+        "pen": penalidade,
+        "pts": f"A:{pts_a} B:{pts_b} C:{pts_c} Pen:{penalidade} D:{pts_d} E:{pts_e}",
     }
     return score, direcao, det
 
 # ══════════════════════════════════════════════════════════════════
-#  SCORE ENGINE OTC (V10) — máx 100 pts
+#  SCORE ENGINE OTC (V12.1) — máx 120 pts
 # ══════════════════════════════════════════════════════════════════
 def score_otc(velas):
     """
-    Score OTC V10 REFORÇADO — máx 100 pts
+    Score OTC V12.1 — máx 120 pts
     ─────────────────────────────────────────────────────────────────
-    FILTROS OBRIGATÓRIOS (qualquer um bloqueia tudo):
-      • Shadow > 35% do candle total
-      • RSI > 82 ou < 18  (exaustão)
-      • ADX < 22          (mercado lateral — sem tendência)
-      • Corpo < 1.0 pip   (vela micro — sem força)
-      • EMA9 vs EMA21 diverge do MACD (conflito de direção)
+    NÍVEL 1 — BLOQUEIOS ABSOLUTOS:
+      • Shadow > 45% do candle total
+      • RSI > 85 ou < 15  (exaustão)
+      • ADX < 22          (mercado lateral)
+      • EMA9 vs EMA21 diverge do MACD (conflito)
+      • 7+ velas consecutivas mesma direção (sequência extrema)
 
-    PONTUAÇÃO:
-      MACD(5,13,4) alinhado com EMA   → 30 pts
-      ADX ≥ 25                        → 25 pts  (22–24 = 10 pts)
-      RSI zona de força               → 20 pts
-      BB extremidade (<15% ou >85%)   → 25 pts  (meio = 0)
+    NÍVEL 2 — PENALIDADES:
+      • Shadow 35–45%          → -10 pts
+      • Corpo < 1.0 pip        → -10 pts
+      • MACD↕EMA conflito leve → -20 pts (já bloqueia se total)
+      • RSI 80–85 / 15–20      → -15 pts
+      • ATR baixo (0.8–1.2p)   → -10 pts
+      • Sequência 5–6 velas    → -15 pts
+
+    NÍVEL 3 — PONTUAÇÃO POSITIVA:
+      MACD(5,13,4) + EMA alinhados → 30 pts
+      ADX ≥ 25                     → 25 pts (22–24 = 10 pts)
+      RSI zona de força            → 20 pts
+      BB extremidade               → 25 pts
+      ATR alto (>2.0p)             → 10 pts
+      Bônus OB/FVG                 → +20 pts
     """
     if len(velas) < 35:
         return 0, None, "velas insuf"
@@ -930,23 +986,23 @@ def score_otc(velas):
     closes = [v["c"] for v in velas]
     vela   = velas[-2]   # última vela fechada
     preco  = closes[-1]
+    pip    = 0.01 if preco > 50 else 0.0001
 
-    # ── Filtro 1: Shadow ────────────────────────────────────────────
-    if shadow_bloqueio(vela):
+    # ── NÍVEL 1: Bloqueios absolutos ────────────────────────────────
+
+    # Shadow > 45%
+    total  = vela["h"] - vela["l"]
+    corpo  = abs(vela["c"] - vela["o"])
+    shadow = (total - corpo) / total if total > 0 else 0
+    if shadow > 0.45:
         return 0, None, "Shadow BLOQUEIO"
 
-    # ── Filtro 2: Corpo mínimo ──────────────────────────────────────
-    pip   = 0.01 if preco > 50 else 0.0001
-    corpo = abs(vela["c"] - vela["o"]) / pip
-    if corpo < 1.0:
-        return 0, None, f"Corpo {corpo:.2f}p BLOQUEIO"
-
-    # ── Filtro 3: ADX mínimo 22 ─────────────────────────────────────
+    # ADX mínimo 22
     adx = calcular_adx(velas)
     if adx < 22:
         return 0, None, f"ADX {adx:.1f} lateral BLOQUEIO"
 
-    # ── MACD → define direção ───────────────────────────────────────
+    # MACD → direção
     macd_val, sig_val = calcular_macd(closes)
     if macd_val == 0 and sig_val == 0:
         return 0, None, "MACD indispon"
@@ -954,7 +1010,7 @@ def score_otc(velas):
     elif macd_val < sig_val: direcao_macd = "PUT"
     else: return 0, None, "MACD neutro"
 
-    # ── Filtro 4: EMA9 vs EMA21 deve confirmar MACD ─────────────────
+    # EMA9 vs EMA21 deve confirmar MACD
     e9  = ema_series(closes, 9)
     e21 = ema_series(closes, 21)
     if not e9 or not e21:
@@ -965,42 +1021,78 @@ def score_otc(velas):
 
     direcao = direcao_macd
 
-    # ── Filtro 5: RSI exaustão ──────────────────────────────────────
+    # RSI exaustão absoluta (>85 / <15)
     rsi = calcular_rsi(closes)
-    if rsi > 82 or rsi < 18:
+    if rsi > 85 or rsi < 15:
         return 0, None, f"RSI {rsi:.1f} exaustão BLOQUEIO"
 
-    # ── Pontuação ───────────────────────────────────────────────────
-    # MACD + EMA alinhados = 30 pts
-    pts_macd = 30
+    # Sequência extrema (≥7 velas consecutivas mesma direção)
+    fechadas = velas[-8:-1]
+    seq = 0
+    if fechadas:
+        ultima_dir = "up" if fechadas[-1]["c"] > fechadas[-1]["o"] else "dn"
+        for v in reversed(fechadas):
+            d = "up" if v["c"] > v["o"] else "dn"
+            if d == ultima_dir: seq += 1
+            else: break
+    if seq >= OTC_SEQUENCIA_MAX:
+        return 0, None, f"Sequência {seq} velas BLOQUEIO"
 
-    # ADX
-    pts_adx = 25 if adx >= 25 else 10   # 22-24 = 10 pts parcial
+    # ── NÍVEL 2: Penalidades ────────────────────────────────────────
+    penalidade = 0
 
-    # RSI zona de força
+    # Shadow 35–45%
+    if 0.35 < shadow <= 0.45:
+        penalidade -= 10
+
+    # Corpo em pips
+    corpo_pip = corpo / pip
+    if corpo_pip < 1.0:
+        penalidade -= 10
+
+    # RSI zona limítrofe (80–85 / 15–20)
+    if 80 <= rsi <= 85 or 15 <= rsi <= 20:
+        penalidade -= 15
+
+    # ATR baixo (0.8–1.2 pip)
+    atrs    = [abs(v["c"] - v["o"]) / pip for v in velas[-6:-1]]
+    atr_med = sum(atrs) / len(atrs) if atrs else 0
+    if 0.8 <= atr_med <= 1.2:
+        penalidade -= 10
+
+    # Sequência 5–6 velas
+    if 5 <= seq <= 6:
+        penalidade -= 15
+
+    # ── NÍVEL 3: Pontuação positiva ─────────────────────────────────
+    pts_macd = 30   # MACD + EMA alinhados (já confirmado acima)
+
+    pts_adx = 25 if adx >= 25 else 10   # 22–24 = 10 pts
+
     pts_rsi = 0
     if direcao == "CALL" and 52 <= rsi <= 72: pts_rsi = 20
     if direcao == "PUT"  and 28 <= rsi <= 48: pts_rsi = 20
 
-    # BB extremidade
     upper, mid, lower = calcular_bb(closes)
     pts_bb = 0
     if upper and lower and (upper - lower) > 0:
         pos = (preco - lower) / (upper - lower)
         if (direcao == "CALL" and pos <= 0.15) or (direcao == "PUT" and pos >= 0.85):
             pts_bb = 25
-        # meio da BB não pontua mais — não é zona de reversão
 
-    score = pts_macd + pts_adx + pts_rsi + pts_bb
+    pts_atr = 10 if atr_med > 2.0 else 0
 
-    # ── Bônus Order Block / FVG (+20 pts) ──────────────────────────
+    score_base = pts_macd + pts_adx + pts_rsi + pts_bb + pts_atr + penalidade
+
+    # Bônus OB/FVG (+20 pts)
     ob_ok, pts_ob = detectar_order_block(velas, direcao)
-    score += pts_ob
+    score = score_base + pts_ob
 
     det = {
-        "adx":  f"{adx:.1f}", "rsi": f"{rsi:.1f}", "corpo": f"{corpo:.1f}p",
-        "pts":  f"MACD:{pts_macd} ADX:{pts_adx} RSI:{pts_rsi} BB:{pts_bb}" + (f" OB:+{pts_ob}" if pts_ob else ""),
-        "ob":   ob_ok,
+        "adx":   f"{adx:.1f}", "rsi": f"{rsi:.1f}", "corpo": f"{corpo_pip:.1f}p",
+        "atr":   f"{atr_med:.1f}p", "seq": seq, "pen": penalidade,
+        "pts":   f"MACD:{pts_macd} ADX:{pts_adx} RSI:{pts_rsi} BB:{pts_bb} ATR:{pts_atr} Pen:{penalidade}" + (f" OB:+{pts_ob}" if pts_ob else ""),
+        "ob":    ob_ok,
     }
     return score, direcao, det
 
@@ -1173,7 +1265,10 @@ def engine_forex():
                 velas = get_candles(par, n=60, tf=60)
                 if len(velas) < 55:
                     continue
-                score, direcao, det = score_forex(velas)
+                # Calcular spread aproximado (high - low da última vela fechada)
+                pip_size = 0.01 if velas[-2]["c"] > 50 else 0.0001
+                spread_pip = round((velas[-2]["h"] - velas[-2]["l"]) / pip_size * 0.1, 2)
+                score, direcao, det = score_forex(velas, spread_pip=spread_pip)
                 with _lock:
                     estado["forex_score"] = score
 
