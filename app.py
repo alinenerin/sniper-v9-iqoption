@@ -31,6 +31,27 @@ for _iq_path in [
         break
     except Exception as _e:
         continue
+
+# ── Patch de compatibilidade websocket-client >= 1.0 ──────────────
+# Corrige assinatura on_message/on_close na lib instalada pelo pip
+try:
+    import iqoptionapi.ws.client as _ws_client
+    import inspect
+    _src = inspect.getsource(_ws_client.WebsocketClient.on_message)
+    if 'def on_message(self, message)' in _src:
+        def _on_message_fixed(self, wss, message):
+            return _ws_client.WebsocketClient.on_message.__wrapped__(self, message)
+        # monkey-patch direto
+        _orig = _ws_client.WebsocketClient.on_message
+        def _patched(self, *args):
+            # aceita 1 ou 2 args extras (wss, message) ou só (message)
+            message = args[-1]
+            return _orig.__func__(self, message) if hasattr(_orig, '__func__') else _orig(self, message)
+        _ws_client.WebsocketClient.on_message = _patched
+        print("[PATCH] on_message corrigido para websocket-client >= 1.0")
+except Exception as _pe:
+    print(f"[PATCH] aviso: {_pe}")
+
 if not _IQ_LIB_OK:
     print("[WARN] IQ lib não carregou em nenhum path")
 
