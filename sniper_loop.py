@@ -377,8 +377,10 @@ def get_candles(ativo, n=60, tf=60):
     # ── 1. IQ Option via lib (WebSocket — tempo real) ─────────────────
     if _iq_ok and _iq_api:
         try:
-            # Busca velas direto — watchdog monitora quedas reais
-            candles = _iq_api.get_candles(par_base, tf, n, time.time())
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_iq_api.get_candles, par_base, tf, n, time.time())
+                candles = fut.result(timeout=8)
             if candles and len(candles) > 0:
                 velas = []
                 for v in candles:
