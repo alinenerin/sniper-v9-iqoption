@@ -335,6 +335,13 @@ def _conectar_iq():
 
 _iq_ultima_tentativa = 0   # timestamp da última tentativa (evita spam de threads)
 
+def _marcar_iq_caiu():
+    """Marca conexão IQ como perdida para forçar reconexão automática."""
+    global _iq_ok
+    _iq_ok = False
+    with _lock:
+        estado["iq_ok"] = False
+
 def garantir_conexao():
     global _iq_ok, _iq_tentando, _iq_ultima_tentativa
     agora = time.time()
@@ -342,15 +349,9 @@ def garantir_conexao():
     if not _iq_ok and not _iq_tentando and (agora - _iq_ultima_tentativa) > 35:
         _iq_ultima_tentativa = agora
         threading.Thread(target=_conectar_iq, daemon=True).start()
-    # Detecta queda de WS quando estava conectado
-    if _iq_ok and _iq_api:
-        try:
-            if not _iq_api.check_connect():
-                _iq_ok = False
-                with _lock:
-                    estado["iq_ok"] = False
-        except:
-            pass
+    # Detecta queda de WS — NÃO usa check_connect() (bloqueia GIL em Railway)
+    # A queda é detectada passivamente: se _iq_api.api.websocket perde conn,
+    # a próxima tentativa de trade vai falhar e _iq_ok é zerado pelo executor.
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
@@ -1023,9 +1024,12 @@ def abrir_trade(par, direcao, stake, expiracao_min):
             _log(f"Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
             return id_op
         _log(f"Falha buy {par}: status={status} id={id_op}")
+        # Se falhou, provavelmente WS caiu — forçar reconexão
+        _marcar_iq_caiu()
         return None
     except Exception as e:
         _log(f"Erro buy {par}: {e}")
+        _marcar_iq_caiu()
         return None
 
 def _checar_resultado_por_saldo(saldo_antes, espera_s):
