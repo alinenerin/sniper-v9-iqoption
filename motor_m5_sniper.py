@@ -301,6 +301,59 @@ IQ_EMAIL = 'laiane.aline@gmail.com'
 IQ_PASS  = 'alineEgui95@'
 
 
+def get_pares_abertos_iq():
+    """
+    Consulta a IQ Option e retorna lista de pares abertos agora.
+    Inclui Forex real (sufixo -op) e OTC (-OTC).
+    Fallback: retorna PARES_REAL + PARES_OTC se falhar.
+    """
+    script = (
+        "import sys,os,time,json\n"
+        f"sys.path.insert(0,r'{os.path.dirname(os.path.abspath(__file__))}')\n"
+        "from iqoptionapi.stable_api import IQ_Option\n"
+        f"iq=IQ_Option('{IQ_EMAIL}','{IQ_PASS}')\n"
+        "ok,_=iq.connect()\n"
+        "if not ok: print('[]'); exit()\n"
+        "time.sleep(1)\n"
+        "abertos=[]\n"
+        "try:\n"
+        "  todos=iq.get_all_open_time()\n"
+        "  for tipo in ['forex','forex-otc']:\n"
+        "    bloco=todos.get(tipo,{})\n"
+        "    for nome,info in bloco.items():\n"
+        "      if info.get('open',False):\n"
+        "        abertos.append(nome)\n"
+        "except Exception as e:\n"
+        "  pass\n"
+        "print(json.dumps(abertos))\n"
+    )
+    for cwd in IQ_LIB_DIRS:
+        if not os.path.isdir(cwd):
+            continue
+        try:
+            res = subprocess.run(
+                ['python3', '-W', 'ignore', '-c', script],
+                capture_output=True, text=True, timeout=30, cwd=cwd
+            )
+            data = json.loads(res.stdout.strip() or '[]')
+            if data:
+                # Normalizar nomes: EURUSD-op → EURUSD, eurusd-otc → EURUSD-OTC
+                normalizados = []
+                for p in data:
+                    p_upper = p.upper()
+                    if p_upper.endswith('-OTC'):
+                        normalizados.append(p_upper)
+                    elif p_upper.endswith('-OP'):
+                        normalizados.append(p_upper.replace('-OP', ''))
+                    else:
+                        normalizados.append(p_upper)
+                return normalizados
+        except:
+            pass
+    # Fallback: retorna listas fixas
+    return PARES_REAL + PARES_OTC
+
+
 def get_velas_m5_iq(par, n=60):
     """Tenta buscar velas M5 via IQ Option (subprocess)."""
     import subprocess
@@ -694,18 +747,34 @@ def gerar_sinais_m5(modo_teste=False, salvar=True, relaxar_markov=False):
     # CAMADA 4 dinâmica: bloqueio por evento
     get_pares_bloqueados_hoje()
 
-    # Selecionar pares
-    if is_mercado_real_ativo():
-        pares_candidatos = [p for p in PARES_REAL if p not in PARES_BLOQUEADOS]
+    # Selecionar pares — consulta IQ Option para pares abertos agora
+    print('   📡 Consultando IQ Option — pares abertos...')
+    pares_abertos_iq = get_pares_abertos_iq()
+
+    # Separar em REAL e OTC
+    pares_real_abertos = [p for p in pares_abertos_iq if not p.endswith('-OTC')]
+    pares_otc_abertos  = [p for p in pares_abertos_iq if p.endswith('-OTC')]
+
+    # Montar candidatos: prioriza REAL se mercado ativo, senão OTC
+    # Mas sempre inclui ambos se disponíveis (motor decide por score)
+    if is_mercado_real_ativo() and pares_real_abertos:
+        pares_base = pares_real_abertos
         modo = 'REAL'
-    else:
-        pares_candidatos = [p for p in PARES_OTC if p not in PARES_BLOQUEADOS]
+    elif pares_otc_abertos:
+        pares_base = pares_otc_abertos
         modo = 'OTC'
+    else:
+        # Fallback para listas fixas se IQ Option não respondeu
+        pares_base = PARES_REAL if is_mercado_real_ativo() else PARES_OTC
+        modo = 'REAL (fallback)' if is_mercado_real_ativo() else 'OTC (fallback)'
+
+    # Remover pares bloqueados por eventos
+    pares_candidatos = [p for p in pares_base if p not in PARES_BLOQUEADOS]
 
     if not pares_candidatos:
         return None, '🚫 Todos os pares bloqueados por eventos'
 
-    print(f'   🎯 M5 | Modo: {modo} | {len(pares_candidatos)} pares | {hora} BRT')
+    print(f'   🎯 M5 | Modo: {modo} | {len(pares_candidatos)} pares abertos | {hora} BRT')
 
     # Análise em paralelo
     sinais = []
