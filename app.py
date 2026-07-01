@@ -263,10 +263,7 @@ def _conectar_iq():
         except:
             pass
 
-        # SSID só é válido se tiver pelo menos 30 caracteres (token real da IQ)
-        ssid_env   = ssid_env   if len(ssid_env)   >= 30 else ""
-        ssid_cache = ssid_cache if len(ssid_cache) >= 30 else ""
-        ssid_usar  = ssid_env or ssid_cache
+        ssid_usar = ssid_env or ssid_cache
         if ssid_usar:
             _gv.SSID = ssid_usar
             _log(f"🔑 SSID carregado ({'env' if ssid_env else 'cache'}): {ssid_usar[:12]}...")
