@@ -77,9 +77,10 @@ FOREX_PARES = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY", "EURGBP"
 ]
 FOREX_JANELAS = [             # (h_ini, m_ini, h_fim, m_fim) BRT
+    (2,   0,  5, 45),         # Tokyo madrugada
     (9,  30, 15,  0),         # Londres
     (14,  0, 16,  0),         # NY overlap
-    (21,  0,  1,  0),         # Tokyo
+    (21,  0,  2,  0),         # Tokyo noite
 ]
 FOREX_MINUTOS_BLOQ = [58, 59, 0, 1, 2]  # só virada de hora — Forex real descentralizado
 
@@ -92,6 +93,7 @@ OTC_PARES = [
     "EURJPY-OTC", "GBPJPY-OTC", "AUDJPY-OTC", "EURGBP-OTC",
 ]
 OTC_JANELAS = [
+    (2,   0,  5, 45),         # Tokyo madrugada
     (6,   0, 11, 44),
     (13, 15, 17,  0),
     (21,  0,  2,  0),
