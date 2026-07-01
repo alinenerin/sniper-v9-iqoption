@@ -1345,7 +1345,7 @@ def engine_forex():
 
             if not estado.get("iq_ok"):
                 garantir_conexao()
-                time.sleep(15)
+                time.sleep(5)
                 continue
 
             bloq, motivo = ff_bloqueado(agora)
@@ -1485,9 +1485,8 @@ def engine_otc():
                 continue
 
             if not estado.get("iq_ok"):
-                _log("⏳ OTC aguardando conexão IQ...", "OTC")
                 garantir_conexao()
-                time.sleep(15)
+                time.sleep(5)
                 continue
 
             # Filtro ForexFactory
@@ -2162,6 +2161,12 @@ def rodar_filtro(texto_bruto):
 #  MOTOR UNIFICADO
 # ══════════════════════════════════════════════════════════════════
 def iniciar_motor():
+    # Aguarda IQ conectar antes de subir as engines (máx 30s)
+    for _ in range(30):
+        if estado.get("iq_ok"):
+            break
+        time.sleep(1)
+
     with _lock:
         estado["iniciado_em"] = datetime.now(BRT).strftime("%d/%m %H:%M")
 
