@@ -1486,6 +1486,7 @@ def engine_otc():
             if check_stop_diario(): break
 
             agora = datetime.now(BRT)
+            _log(f"🔄 OTC ciclo {agora.strftime('%H:%M:%S')}", "OTC")
 
             if not em_janela(agora, OTC_JANELAS):
                 _log(f"Fora da janela ({agora.strftime('%H:%M')})", "OTC")
