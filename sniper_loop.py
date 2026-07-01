@@ -377,26 +377,19 @@ def get_candles(ativo, n=60, tf=60):
     # ── 1. IQ Option via lib (WebSocket — tempo real) ─────────────────
     if _iq_ok and _iq_api:
         try:
-            # Garante reconexão se necessário
-            if not _iq_api.check_connect():
-                _iq_ok = False
-                with _lock:
-                    estado["iq_ok"] = False
-                threading.Thread(target=_conectar_iq, daemon=True).start()
-                _log(f"IQ desconectou ({par_base}) — reconectando...")
-            else:
-                candles = _iq_api.get_candles(par_base, tf, n, time.time())
-                if candles and len(candles) > 0:
-                    velas = []
-                    for v in candles:
-                        velas.append({
-                            "o": float(v.get("open",  v.get("o", 0))),
-                            "c": float(v.get("close", v.get("c", 0))),
-                            "h": float(v.get("max",   v.get("h", 0))),
-                            "l": float(v.get("min",   v.get("l", 0))),
-                            "t": int(v.get("from",    v.get("t", 0))),
-                        })
-                    return sorted(velas, key=lambda x: x["t"])
+            # Busca velas direto — watchdog monitora quedas reais
+            candles = _iq_api.get_candles(par_base, tf, n, time.time())
+            if candles and len(candles) > 0:
+                velas = []
+                for v in candles:
+                    velas.append({
+                        "o": float(v.get("open",  v.get("o", 0))),
+                        "c": float(v.get("close", v.get("c", 0))),
+                        "h": float(v.get("max",   v.get("h", 0))),
+                        "l": float(v.get("min",   v.get("l", 0))),
+                        "t": int(v.get("from",    v.get("t", 0))),
+                    })
+                return sorted(velas, key=lambda x: x["t"])
         except Exception as e:
             _log(f"IQ candles lib erro ({par_base}): {e}")
 
