@@ -205,9 +205,9 @@ if sinais:
     print('  ── CAIXINHA ──')
     print()
     for sc, par, h, d, det, ic in top:
-        par_clean = par.replace('-OTC','')
-        tipo = 'M1'
-        print(f'  {tipo};{par_clean};{h};{d}')
+
+
+        print(f'  M1;{par};{h};{d}')
 else:
     print('  Nenhum sinal gerado no momento.')
 
