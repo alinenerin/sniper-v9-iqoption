@@ -11,7 +11,7 @@ subprocess.call(
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
-import time, math, threading, requests, pytz
+import time, math, threading, requests, pytz, json
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
@@ -2475,9 +2475,11 @@ def get_estado_route():
                 snap[k] = v
             else:
                 snap[k] = str(v)
-        return jsonify(snap)
+        body = json.dumps(snap, ensure_ascii=False)
+        return app.response_class(response=body, status=200, mimetype="application/json")
     except Exception as e:
-        return jsonify({"erro": str(e), "iq_ok": estado.get("iq_ok"), "saldo": estado.get("saldo")})
+        body = json.dumps({"erro": str(e), "iq_ok": estado.get("iq_ok"), "saldo": estado.get("saldo")})
+        return app.response_class(response=body, status=200, mimetype="application/json")
 
 @app.route("/iniciar", methods=["POST"])
 def iniciar():
