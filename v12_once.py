@@ -17,13 +17,16 @@ IQ_PASS  = os.environ.get("IQ_PASS",   "alineEgui95@")
 
 # Diretórios onde a lib IQ Option pode estar (mesma lista do motor M5)
 IQ_LIB_DIRS = [
+    '/app/state/530c6a68-a1ac-4f86-84fa-592cad57d114/work',
+    '/app/state/5eb03c55-04d2-4fdd-a083-a09d64eb9be3/work',
     os.path.dirname(os.path.abspath(__file__)),
 ]
 
 # ── Pares ─────────────────────────────────────────────────────────
+# OTC_PARES é descoberto dinamicamente na IQ Option (todos abertos no momento)
+# FOREX_PARES mantido como fallback caso get_all_open_time falhe
 FOREX_PARES = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY", "EURGBP"]
-OTC_PARES   = ["EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC",
-               "EURJPY-OTC", "GBPJPY-OTC", "AUDJPY-OTC", "EURGBP-OTC"]
+OTC_PARES   = []  # preenchido dinamicamente
 
 FOREX_SCORE_MIN = 150
 OTC_SCORE_MIN   = 85
@@ -50,48 +53,85 @@ def is_mercado_real():
     return True
 
 # ── Busca velas M1 via IQ Option (subprocess — mesmo padrão do motor M5) ──────
-def get_velas_iq(par, n=65, tf=60):
-    """Busca velas M1 da IQ Option via subprocess com timeout de 25s."""
-    if par.endswith("-OTC"):
-        ativo1 = par
-        ativo2 = par
-    elif is_mercado_real():
-        ativo1 = par + "-op"
-        ativo2 = par
-    else:
-        ativo1 = par + "-OTC"
-        ativo2 = par + "-OTC"
+# ── Busca TODOS os pares de uma vez — conexão única ──────────────
+_cache_velas = {}
 
+def buscar_todos_pares():
+    """Conecta uma vez, descobre todos OTC abertos e busca velas de todos os pares."""
+    global _cache_velas, OTC_PARES
+    mercado_real = is_mercado_real()
+
+    _base = os.path.dirname(os.path.abspath(__file__))
+    _lib  = os.path.join(_base, 'libs', 'api_faria')
+
+    # Script que: 1) descobre OTC abertos, 2) busca velas de todos
     script = (
-        "import sys, os, time, json\n"
-        f"sys.path.insert(0, r'{os.path.dirname(os.path.abspath(__file__))}')\n"
+        "import sys, time, json\n"
+        f"sys.path.insert(0, r'{_lib}')\n"
         "from iqoptionapi.stable_api import IQ_Option\n"
         f"iq = IQ_Option('{IQ_EMAIL}', '{IQ_PASS}')\n"
         "ok, _ = iq.connect()\n"
-        "if not ok: print('[]'); exit()\n"
+        "if not ok: print(json.dumps({'pares_otc':[], 'velas':{}})); exit()\n"
         "time.sleep(1)\n"
-        f"for a in ['{ativo1}', '{ativo2}']:\n"
-        f"  v = iq.get_candles(a, {tf}, {n}, time.time())\n"
-        "  if v and len(v) >= 20:\n"
-        "    print(json.dumps([{'o': x['open'], 'c': x['close'], 'h': x['max'], 'l': x['min'], 't': x['from']} for x in v]))\n"
-        "    exit()\n"
-        "print('[]')\n"
+        "# Descobre todos OTC abertos\n"
+        "otc_abertos = []\n"
+        "try:\n"
+        "  abertos = iq.get_all_open_time()\n"
+        "  turbo = abertos.get('turbo', {})\n"
+        "  for nome, info in turbo.items():\n"
+        "    if 'OTC' in nome and info.get('open', False):\n"
+        "      otc_abertos.append(nome)\n"
+        "except: pass\n"
+        "if not otc_abertos:\n"
+        "  otc_abertos = ['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','AUDJPY-OTC','EURGBP-OTC']\n"
+        f"forex_pares = {FOREX_PARES!r}\n"
+        f"mercado_real = {mercado_real!r}\n"
+        "# Monta ativos_map\n"
+        "ativos_map = {}\n"
+        "for p in otc_abertos:\n"
+        "  ativos_map[p] = [p]\n"
+        "for p in forex_pares:\n"
+        "  ativos_map[p] = [p+'-op', p] if mercado_real else [p+'-OTC']\n"
+        "# Busca velas\n"
+        "result = {}\n"
+        "for par, ativos in ativos_map.items():\n"
+        "  for a in ativos:\n"
+        "    v = iq.get_candles(a, 60, 65, time.time())\n"
+        "    if v and len(v) >= 20:\n"
+        "      result[par] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min'],'t':x['from']} for x in v]\n"
+        "      break\n"
+        "print(json.dumps({'pares_otc': otc_abertos, 'velas': result}))\n"
     )
+    try:
+        log("🔌 Conectando IQ Option (descobrindo OTC abertos + velas)...")
+        res = subprocess.run(
+            ["python3", "-W", "ignore", "-c", script],
+            capture_output=True, text=True, timeout=90, cwd=_base
+        )
+        raw = json.loads(res.stdout.strip() or "{}")
+        otc_descobertos = raw.get("pares_otc", [])
+        data = raw.get("velas", {})
 
-    for cwd in IQ_LIB_DIRS:
-        if not os.path.isdir(cwd):
-            continue
-        try:
-            res = subprocess.run(
-                ["python3", "-W", "ignore", "-c", script],
-                capture_output=True, text=True, timeout=25, cwd=cwd
-            )
-            data = json.loads(res.stdout.strip() or "[]")
-            if data and len(data) >= 20:
-                return data
-        except Exception as e:
-            log(f"  IQ subprocess erro ({par}): {e}")
-    return []
+        # Atualiza OTC_PARES globalmente com os abertos agora
+        if otc_descobertos:
+            OTC_PARES = otc_descobertos
+            log(f"📡 OTC abertos descobertos: {len(OTC_PARES)} pares → {', '.join(OTC_PARES)}")
+        else:
+            log("⚠️ Nenhum OTC descoberto — usando lista padrão")
+            OTC_PARES = ["EURUSD-OTC","GBPUSD-OTC","USDJPY-OTC","AUDUSD-OTC",
+                         "EURJPY-OTC","GBPJPY-OTC","AUDJPY-OTC","EURGBP-OTC"]
+
+        log(f"✅ Dados recebidos: {len(data)} pares com velas")
+        _cache_velas = data
+    except Exception as e:
+        log(f"❌ Erro ao buscar velas: {e}")
+        _cache_velas = {}
+        OTC_PARES = ["EURUSD-OTC","GBPUSD-OTC","USDJPY-OTC","AUDUSD-OTC",
+                     "EURJPY-OTC","GBPJPY-OTC","AUDJPY-OTC","EURGBP-OTC"]
+
+def get_velas_iq(par, n=65, tf=60):
+    """Retorna velas do cache (pré-carregado em buscar_todos_pares)."""
+    return _cache_velas.get(par, [])
 
 # ── Indicadores (idênticos ao app.py) ────────────────────────────
 def ema_series(closes, p):
@@ -309,32 +349,33 @@ def main():
 
     sinais = []
 
-    log("🔵 Varrendo FOREX...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-        futuros = {ex.submit(analisar_forex, p): p for p in FOREX_PARES}
-        for f in concurrent.futures.as_completed(futuros, timeout=90):
-            try:
-                r = f.result()
-                if r: sinais.append(r)
-            except: pass
+    log("🔵 Conectando IQ Option e varrendo FOREX...")
+    buscar_todos_pares()
+
+    log("🔵 Analisando FOREX...")
+    for p in FOREX_PARES:
+        try:
+            r = analisar_forex(p)
+            if r: sinais.append(r)
+        except: pass
 
     log("🟠 Varrendo OTC...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-        futuros = {ex.submit(analisar_otc, p): p for p in OTC_PARES}
-        for f in concurrent.futures.as_completed(futuros, timeout=90):
-            try:
-                r = f.result()
-                if r: sinais.append(r)
-            except: pass
+    for p in OTC_PARES:
+        try:
+            r = analisar_otc(p)
+            if r: sinais.append(r)
+        except: pass
 
     # Hora de entrada = próximos 2 minutos
     min_prox = agora.minute + 2
     hora_entrada = f"{agora.hour:02d}:{min_prox:02d}" if min_prox < 60 else f"{(agora.hour+1)%24:02d}:{min_prox-60:02d}"
 
+    total_pares = len(FOREX_PARES) + len(OTC_PARES)
     if not sinais:
         msg = (f"🤖 *Sniper V12 — {agora.strftime('%H:%M')} BRT*\n\n"
                f"📡 Fonte: IQ Option (dados reais)\n"
-               f"⚪ Nenhum sinal aprovado nos {len(FOREX_PARES)+len(OTC_PARES)} pares analisados.")
+               f"📊 OTC abertos: {len(OTC_PARES)} pares\n"
+               f"⚪ Nenhum sinal aprovado nos {total_pares} pares analisados.")
     else:
         sinais.sort(key=lambda x: x["score"], reverse=True)
         linhas = [f"🎯 *Sniper V12 — {agora.strftime('%H:%M')} BRT* | 📡 IQ Option\n"]
