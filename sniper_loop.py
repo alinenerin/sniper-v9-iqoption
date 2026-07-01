@@ -1497,15 +1497,16 @@ def engine_otc():
                 time.sleep(10)
                 continue
 
-            # Filtro ForexFactory — bloqueia OTC também em notícias de alto impacto
+            if not garantir_conexao():
+                _log("⏳ OTC aguardando conexão IQ...", "OTC")
+                time.sleep(15)
+                continue
+
+            # Filtro ForexFactory
             bloq_ff, mot_ff = ff_bloqueado(agora)
             if bloq_ff:
                 _log(f"🚫 OTC bloqueado: {mot_ff}", "OTC")
                 time.sleep(30)
-                continue
-
-            if not garantir_conexao():
-                time.sleep(15)
                 continue
 
             if not trava_livre():
