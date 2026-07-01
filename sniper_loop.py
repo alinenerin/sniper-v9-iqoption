@@ -248,6 +248,7 @@ _iq_sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64
 _iq_ok       = False
 _iq_tentando = False
 _iq_api      = None   # instância da IQ_Option lib
+_engine_heartbeat = {"ultimo": 0}  # watchdog: engines atualizam a cada ciclo
 
 # Mapa ativo → active_id da IQ Option
 _IQ_ACTIVE_ID = {
@@ -1121,6 +1122,7 @@ def engine_forex():
     _log("🔵 Engine FOREX iniciada", "FOREX")
     while estado["ativo"]:
         try:
+            _engine_heartbeat["ultimo"] = time.time()  # pulso watchdog
             if not estado["forex_ativo"]:
                 time.sleep(5)
                 continue
@@ -1249,6 +1251,7 @@ def engine_otc():
     _log("🟠 Engine OTC iniciada", "OTC")
     while estado["ativo"]:
         try:
+            _engine_heartbeat["ultimo"] = time.time()  # pulso watchdog
             if not estado["otc_ativo"]:
                 time.sleep(5)
                 continue
@@ -2530,6 +2533,52 @@ def post_sinais_form():
 # ══════════════════════════════════════════════════════════════════
 #  MAIN
 # ══════════════════════════════════════════════════════════════════
+def _watchdog_conexao():
+    """
+    Thread dedicada — verifica a cada 60s se a IQ Option ainda está conectada.
+    Se caiu: reconecta automaticamente sem precisar de restart do container.
+    Se as engines pararam de bater pulso por >8min: mata o processo (Railway reinicia).
+    """
+    global _iq_ok
+    _ultima_reconexao = 0
+    while True:
+        try:
+            time.sleep(60)
+            agora = time.time()
+
+            # ── 1. Watchdog de processo: se engines pararam, suicida ──
+            ultimo_pulso = _engine_heartbeat.get("ultimo", 0)
+            if ultimo_pulso > 0 and (agora - ultimo_pulso) > 480:
+                _log("🔴 Watchdog: engines travadas há >8min — reiniciando processo...")
+                import os, signal
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+            # ── 2. Watchdog de conexão IQ ─────────────────────────────
+            conectado = False
+            if _iq_api:
+                try:
+                    conectado = _iq_api.check_connect()
+                except Exception:
+                    conectado = False
+
+            if not conectado and not _iq_tentando:
+                if agora - _ultima_reconexao > 90:
+                    _ultima_reconexao = agora
+                    _log("💓 Watchdog: IQ desconectada — reconectando...")
+                    with _lock:
+                        estado["iq_ok"] = False
+                    _iq_ok = False
+                    threading.Thread(target=_conectar_iq, daemon=True).start()
+            elif conectado and not _iq_ok:
+                _iq_ok = True
+                with _lock:
+                    estado["iq_ok"] = True
+                _log("💓 Watchdog: IQ reconectada ✅")
+        except Exception as e:
+            _log(f"Watchdog erro: {e}")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("  SNIPER V12 — QUAD-CHANNEL ENGINE")
@@ -2537,9 +2586,10 @@ if __name__ == "__main__":
     print("=" * 60)
 
     # Conexão IQ em background — Flask sobe independente
-    threading.Thread(target=_conectar_iq,  daemon=True).start()
-    threading.Thread(target=engine_manual, daemon=True).start()
-    threading.Thread(target=iniciar_motor, daemon=True).start()
+    threading.Thread(target=_conectar_iq,       daemon=True).start()
+    threading.Thread(target=engine_manual,       daemon=True).start()
+    threading.Thread(target=iniciar_motor,       daemon=True).start()
+    threading.Thread(target=_watchdog_conexao,   daemon=True).start()
 
     port = int(os.environ.get("PORT", 8080))
     _log(f"🌐 Sniper V12 — porta {port}")
