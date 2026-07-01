@@ -1,1 +1,1 @@
-worker: python conexao.py
+web: bash start.sh
