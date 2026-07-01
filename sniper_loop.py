@@ -2389,7 +2389,11 @@ setInterval(upd, 3000);
 
 @app.route("/")
 def index():
-    return Response(HTML, mimetype='text/html')
+    resp = Response(HTML, mimetype='text/html')
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 @app.route("/estado")
 def get_estado_route():
