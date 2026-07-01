@@ -96,7 +96,7 @@ PARES_OTC = [
 ]
 
 BOT_ATIVO = os.environ.get('BOT_ATIVO', 'false').lower() == 'true'
-BOT_ATIVO_MANUAL = True
+BOT_ATIVO_MANUAL = False   # desativado — controlado via variável BOT_ATIVO no Railway
 BOT_ATIVO = BOT_ATIVO or BOT_ATIVO_MANUAL
 
 # ── LOCK ANTI-DUPLICAÇÃO ─────────────────────────────────────────────
