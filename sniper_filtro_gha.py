@@ -7,7 +7,7 @@ Busca dados na IQ Option e retorna os aprovados
 import sys, os, time, json
 from collections import Counter, defaultdict
 
-sys.path.insert(0, 'libs/api_faria')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from iqoptionapi.stable_api import IQ_Option
 
 # ── Helpers técnicos ──────────────────────────────────────────────────────────
