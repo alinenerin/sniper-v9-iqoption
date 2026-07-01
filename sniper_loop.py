@@ -1377,17 +1377,10 @@ def engine_forex():
                 time.sleep(30)
                 continue
 
-            # ── Ping IQ antes de entrar ───────────────────────────
-            ping = medir_ping_iq()
-            if ping > MAX_PING_MS:
-                _log(f"📡 Ping alto: {ping}ms > {MAX_PING_MS}ms — entrada bloqueada", "FOREX")
-                time.sleep(10)
-                continue
-
             saldo = get_saldo()
             with _lock:
                 estado["saldo"] = saldo
-            _capturar_saldo_inicial()   # captura banca do dia se ainda não feito
+            _capturar_saldo_inicial()
             stake = round(max(1.0, saldo * 0.02), 2)
 
             dxy = calcular_dxy_nativo()
@@ -1523,13 +1516,6 @@ def engine_otc():
             if pausado:
                 _log(f"⏸️ Pausa consec. ativa — {restante}s restantes", "OTC")
                 time.sleep(30)
-                continue
-
-            # ── Ping IQ antes de entrar ───────────────────────────
-            ping = medir_ping_iq()
-            if ping > MAX_PING_MS:
-                _log(f"📡 Ping alto: {ping}ms > {MAX_PING_MS}ms — entrada bloqueada", "OTC")
-                time.sleep(10)
                 continue
 
             saldo = get_saldo()
