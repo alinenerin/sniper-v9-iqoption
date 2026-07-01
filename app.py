@@ -31,27 +31,6 @@ for _iq_path in [
         break
     except Exception as _e:
         continue
-
-# ── Patch de compatibilidade websocket-client >= 1.0 ──────────────
-# Corrige assinatura on_message/on_close na lib instalada pelo pip
-try:
-    import iqoptionapi.ws.client as _ws_client
-    import inspect
-    _src = inspect.getsource(_ws_client.WebsocketClient.on_message)
-    if 'def on_message(self, message)' in _src:
-        def _on_message_fixed(self, wss, message):
-            return _ws_client.WebsocketClient.on_message.__wrapped__(self, message)
-        # monkey-patch direto
-        _orig = _ws_client.WebsocketClient.on_message
-        def _patched(self, *args):
-            # aceita 1 ou 2 args extras (wss, message) ou só (message)
-            message = args[-1]
-            return _orig.__func__(self, message) if hasattr(_orig, '__func__') else _orig(self, message)
-        _ws_client.WebsocketClient.on_message = _patched
-        print("[PATCH] on_message corrigido para websocket-client >= 1.0")
-except Exception as _pe:
-    print(f"[PATCH] aviso: {_pe}")
-
 if not _IQ_LIB_OK:
     print("[WARN] IQ lib não carregou em nenhum path")
 
@@ -61,7 +40,7 @@ if not _IQ_LIB_OK:
 TG_TOKEN  = os.environ.get("TG_TOKEN", "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg")
 TG_CHAT   = os.environ.get("TG_CHAT",  "5911742397")
 IQ_EMAIL  = os.environ.get("IQ_EMAIL",    "laiane.aline@gmail.com")
-IQ_PASS   = os.environ.get("IQ_PASSWORD", os.environ.get("IQ_PASS", "alineEgui95@"))
+IQ_PASS   = os.environ.get("IQ_PASS",    os.environ.get("IQ_PASSWORD", "alineEgui95@"))
 IQ_SSID   = os.environ.get("IQ_SSID",  "")
 POLYGON_KEY = os.environ.get("POLYGON_KEY", "gXySF0ojKao907z3vKOtpxr8opt0cbLx")
 
@@ -257,12 +236,12 @@ _IQ_ACTIVE_ID = {
 def _realizar_conexao_iq():
     """
     Tenta UMA conexão à IQ Option com timeout via thread (45s).
-    connect() NUNCA roda na thread principal — evita travar o container.
-    Retorna o objeto api conectado, ou None em caso de falha/timeout.
+    Se travar: sys.exit(1) → Railway reinicia → tenta de novo.
+    Igual ao sniper_loop.py que funciona em produção.
     """
     if not _IQ_LIB_OK:
         _log("[ERRO DE CONEXÃO] IQ lib não disponível.")
-        return None
+        sys.exit(1)
 
     _log(f"🔌 Tentando conectar à IQ Option ({IQ_EMAIL})...")
     api = _IQLib(IQ_EMAIL, IQ_PASS)
@@ -281,63 +260,47 @@ def _realizar_conexao_iq():
     t.join(timeout=45)
 
     if t.is_alive():
-        # connect() travou — timeout de 45s atingido
-        _log("❌ Falha na conexão: Websocket connect timeout (45s)")
-        return None
+        # connect() travou — Railway reinicia e tenta de novo
+        _log("ERRO: connect() travou (timeout 45s). Reiniciando...")
+        sys.exit(1)
 
-    status, reason = resultado
+    status, reason = resultado[0], resultado[1]
+    _log(f"Conexão: {status} | {reason}")
 
-    if status and api.check_connect():
-        _log("✅ Conexão estabelecida com sucesso!")
-        try:
-            api.change_balance("PRACTICE")
-            time.sleep(1)
-            modo  = api.get_balance_mode()
-            saldo = api.get_balance() or 0.0
-            _log(f"📋 Modo: {modo} | 💰 Saldo: ${saldo:,.2f}")
-        except Exception as ex:
-            _log(f"get_balance erro: {ex}")
-        return api
-    else:
-        if reason == "2FA":
-            _log("🔐 2FA exigida — não suportada no modo automático.")
-        elif reason:
-            try:
-                import json as _json
-                erro     = _json.loads(reason)
-                codigo   = erro.get("code", "desconhecido")
-                mensagem = erro.get("message", str(reason))
-                _log(f"❌ Falha | Código: {codigo} | {mensagem}")
-            except Exception:
-                _log(f"❌ Falha na conexão: {reason}")
-        else:
-            _log("❌ Falha na conexão. Verifique credenciais e rede.")
-        return None
+    if not status:
+        _log("ERRO: falha na conexão.")
+        sys.exit(1)
+
+    # ── Conectado com sucesso ──────────────────────────────────
+    time.sleep(3)
+    try:
+        api.change_balance("PRACTICE")
+        time.sleep(1)
+        modo  = api.get_balance_mode()
+        saldo = api.get_balance() or 0.0
+        _log(f"✅ Conectado! Modo: {modo} | 💰 Saldo: ${saldo:,.2f}")
+    except Exception as ex:
+        _log(f"get_balance erro: {ex}")
+        saldo = 0.0
+    return api
 
 
 def _conectar_iq():
-    """
-    Dispara uma tentativa de conexão e atualiza o estado global.
-    Sem sys.exit() — Flask continua vivo. garantir_conexao() faz retry.
-    """
+    """Chamada em thread daemon — executa conexão e atualiza estado global."""
     global _iq_ok, _iq_tentando, _iq_api
     _iq_tentando = True
     try:
         api = _realizar_conexao_iq()
-        if api is None:
-            _log("⚠️ Conexão falhou. Nova tentativa em 30s...")
-            time.sleep(30)
-            return
-
         _iq_api = api
         _iq_ok  = True
         saldo = api.get_balance() or 0.0
         with _lock:
             estado["iq_ok"] = True
             estado["saldo"] = round(float(saldo), 2)
-
+    except SystemExit:
+        raise   # deixa o sys.exit(1) propagar para derrubar o container
     except Exception as e:
-        _log(f"[ERRO DE CONEXÃO] {type(e).__name__}: {str(e)[:100]} — Aguardando 30 segundos para redefinir...")
+        _log(f"[ERRO DE CONEXÃO] {type(e).__name__}: {str(e)[:100]}")
         time.sleep(30)
     finally:
         _iq_tentando = False
@@ -2534,8 +2497,16 @@ if __name__ == "__main__":
     print("  OTC M1 · Forex Real M1 · M5 Filter · Order Blocks")
     print("=" * 60)
 
-    # Conexão IQ em background — Flask sobe independente
-    threading.Thread(target=_conectar_iq,  daemon=True).start()
+    # ── Conexão IQ ANTES do Flask — igual ao sniper_loop.py ──────────
+    # sys.exit(1) aqui derruba o processo inteiro → Railway reinicia
+    _iq_api = _realizar_conexao_iq()   # bloqueia até conectar ou sys.exit(1)
+    _iq_ok  = True
+    saldo_ini = _iq_api.get_balance() or 0.0
+    with _lock:
+        estado["iq_ok"] = True
+        estado["saldo"] = round(float(saldo_ini), 2)
+
+    # ── Engines em background ─────────────────────────────────────────
     threading.Thread(target=engine_manual, daemon=True).start()
     threading.Thread(target=iniciar_motor, daemon=True).start()
 
