@@ -39,14 +39,30 @@ def log(msg):
     print(f"[{agora.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def tg(msg):
+    """Envia mensagem via Telegram — usa urllib puro (sem dependência de requests)."""
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "Markdown"},
-            timeout=10
+        import urllib.request, urllib.parse
+        url = (
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+            f"?chat_id={TG_CHAT}"
+            f"&text={urllib.parse.quote(msg)}"
+            f"&parse_mode=Markdown"
         )
+        urllib.request.urlopen(url, timeout=10)
+        log("📨 Telegram enviado ✅")
     except Exception as e:
-        log(f"Telegram erro: {e}")
+        log(f"❌ Telegram erro: {e}")
+        # Fallback: tenta via requests se disponível
+        try:
+            import requests as req
+            req.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "Markdown"},
+                timeout=10
+            )
+            log("📨 Telegram enviado via requests ✅")
+        except Exception as e2:
+            log(f"❌ Telegram fallback erro: {e2}")
 
 def is_mercado_real():
     now = datetime.datetime.utcnow()
