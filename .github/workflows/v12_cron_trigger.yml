@@ -5,6 +5,9 @@ on:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
+permissions:
+  actions: write
+
 jobs:
   trigger_v12:
     runs-on: ubuntu-latest
@@ -12,9 +15,9 @@ jobs:
       - name: Disparar Sniper V12
         run: |
           curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" \
             -d '{"ref":"main"}' \
-            "https://api.github.com/repos/alinenerin/sniper-v9-iqoption/actions/workflows/sniper_v12_manual.yml/dispatches"
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/sniper_v12_manual.yml/dispatches"
           echo "V12 disparado!"
