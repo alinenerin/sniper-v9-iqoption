@@ -1,0 +1,20 @@
+name: Sniper V12 - Cron Trigger 🕐
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  trigger_v12:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Disparar Sniper V12
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            -d '{"ref":"main"}' \
+            "https://api.github.com/repos/alinenerin/sniper-v9-iqoption/actions/workflows/sniper_v12_manual.yml/dispatches"
+          echo "V12 disparado!"
