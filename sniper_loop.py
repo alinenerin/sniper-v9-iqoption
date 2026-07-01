@@ -374,28 +374,11 @@ def get_candles(ativo, n=60, tf=60):
     global _iq_ok
     par_base = ativo.replace("-OTC", "").replace("/", "").upper()
 
-    # ── 1. IQ Option via lib — apenas se tiver cache interno (não bloqueia) ──
-    # get_candles da lib IQ pode bloquear a GIL indefinidamente.
-    # Usamos só se já tiver dados em cache local da lib (retorno imediato).
-    if _iq_ok and _iq_api:
-        try:
-            candles = _iq_api.get_candles(par_base, tf, n, time.time())
-            if candles and len(candles) >= n // 2:
-                velas = []
-                for v in candles:
-                    velas.append({
-                        "o": float(v.get("open",  v.get("o", 0))),
-                        "c": float(v.get("close", v.get("c", 0))),
-                        "h": float(v.get("max",   v.get("h", 0))),
-                        "l": float(v.get("min",   v.get("l", 0))),
-                        "t": int(v.get("from",    v.get("t", 0))),
-                    })
-                if len(velas) >= n // 2:
-                    return sorted(velas, key=lambda x: x["t"])
-        except Exception as e:
-            pass  # silencioso — fallback abaixo
+    # NOTA: IQ lib get_candles bloqueia a GIL indefinidamente em Railway.
+    # Dados de candles vêm exclusivamente de APIs HTTP (TwelveData / Polygon).
+    # IQ lib é usada APENAS para executar trades (buy/check_win).
 
-    # ── 2. Twelve Data (tempo real, sem delay) ────────────────────────
+    # ── 1. Twelve Data (tempo real, sem delay) ────────────────────────
     try:
         ATIVOS_TD = {"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY",
                      "AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP","XAUUSD":"XAU/USD"}
