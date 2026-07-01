@@ -1583,7 +1583,8 @@ def engine_otc():
                 estado["otc_status"] = "aguardando"
 
         except Exception as e:
-            _log(f"Erro engine OTC: {e}", "OTC")
+            import traceback
+            _log(f"Erro engine OTC: {e} | {traceback.format_exc()[-200:]}", "OTC")
             time.sleep(10)
 
     _log("⛔ Engine OTC encerrada.", "OTC")
