@@ -273,10 +273,24 @@ def _conectar_iq():
 
         api = _IQLib(IQ_EMAIL, IQ_PASS)
 
-        try:
-            check, reason = api.connect()
-        except Exception as ex:
-            _log(f"[ERRO DE CONEXÃO] {type(ex).__name__}: {str(ex)[:120]} — Aguardando 30 segundos para redefinir...")
+        # connect() pode travar indefinidamente no websocket — usa timeout de 30s
+        check, reason = None, "timeout"
+        _conn_result = [None, None]
+        def _do_connect():
+            try:
+                _conn_result[0], _conn_result[1] = api.connect()
+            except Exception as ex:
+                _conn_result[1] = str(ex)[:120]
+        _t = threading.Thread(target=_do_connect, daemon=True)
+        _t.start()
+        _t.join(timeout=30)
+        if _t.is_alive():
+            _log(f"[ERRO DE CONEXÃO] connect() travou (timeout 30s) — Aguardando 30 segundos para redefinir...")
+            time.sleep(30)
+            return
+        check, reason = _conn_result[0], _conn_result[1]
+        if check is None:
+            _log(f"[ERRO DE CONEXÃO] {reason} — Aguardando 30 segundos para redefinir...")
             time.sleep(30)
             return
 
