@@ -1,0 +1,19 @@
+name: Keep Alive 🔄
+
+on:
+  schedule:
+    # Roda todo dia às 12:00 UTC para manter o repo ativo
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Keep repo alive
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git commit --allow-empty -m "chore: keep-alive $(date -u '+%Y-%m-%d')"
+          git push
