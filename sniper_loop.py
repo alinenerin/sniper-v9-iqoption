@@ -2466,11 +2466,12 @@ def index():
 
 @app.route("/estado")
 def get_estado_route():
-    # Busca saldo real da IQ sempre que possivel
-    # Saldo já é atualizado pelas engines — não chama get_saldo() aqui
-    # para não bloquear o worker Flask com chamadas WS lentas
-    with _lock:
-        return jsonify(dict(estado))
+    # Snapshot sem bloquear — evita deadlock com engines
+    snap = {k: v for k, v in estado.items() if not isinstance(v, list)}
+    snap["log_geral"] = list(estado.get("log_geral", []))[-30:]
+    snap["log_forex"]  = list(estado.get("log_forex", []))[-30:]
+    snap["log_otc"]    = list(estado.get("log_otc",   []))[-30:]
+    return jsonify(snap)
 
 @app.route("/iniciar", methods=["POST"])
 def iniciar():
