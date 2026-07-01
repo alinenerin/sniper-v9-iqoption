@@ -272,12 +272,22 @@ def _conectar_iq():
 
         api = _IQLib(IQ_EMAIL, IQ_PASS)
 
-        try:
-            check, reason = api.connect()
-        except Exception as ex:
-            _log(f"[ERRO DE CONEXÃO] {type(ex).__name__}: {str(ex)[:120]} — Aguardando 30 segundos para redefinir...")
+        # connect() pode travar indefinidamente — timeout de 45s via thread
+        _res = [None, None]
+        def _do_connect():
+            try:
+                _res[0], _res[1] = api.connect()
+            except Exception as ex:
+                _res[1] = str(ex)[:120]
+        _t = threading.Thread(target=_do_connect, daemon=True)
+        _t.start()
+        _t.join(timeout=45)
+        if _t.is_alive() or _res[0] is None:
+            motivo = _res[1] or "timeout 45s"
+            _log(f"[ERRO DE CONEXÃO] Websocket connect timeout ({motivo}) — Aguardando 30 segundos para redefinir...")
             time.sleep(30)
             return
+        check, reason = _res[0], _res[1]
 
         if not check:
             motivo = str(reason)[:120] if reason else "sem resposta"
@@ -332,19 +342,13 @@ _iq_ultima_tentativa = 0   # timestamp da última tentativa (evita spam de threa
 def garantir_conexao():
     global _iq_ok, _iq_tentando, _iq_ultima_tentativa
     agora = time.time()
-    # Só dispara nova thread se não está tentando E passou 35s da última tentativa
+    # Se passou mais de 90s desde a última tentativa e ainda tentando → desbloquear
+    if _iq_tentando and (agora - _iq_ultima_tentativa) > 90:
+        _iq_tentando = False
+    # Dispara nova thread se não conectado e não tentando
     if not _iq_ok and not _iq_tentando and (agora - _iq_ultima_tentativa) > 35:
         _iq_ultima_tentativa = agora
         threading.Thread(target=_conectar_iq, daemon=True).start()
-    # Detecta queda de WS quando estava conectado
-    if _iq_ok and _iq_api:
-        try:
-            if not _iq_api.check_connect():
-                _iq_ok = False
-                with _lock:
-                    estado["iq_ok"] = False
-        except:
-            pass
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
