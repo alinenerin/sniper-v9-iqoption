@@ -140,6 +140,23 @@ def _conectar_iq_uma_vez():
     log(f"🔌 Conectando IQ Option ({IQ_EMAIL})...")
     iq = IQ_Option(IQ_EMAIL, IQ_PASS)
 
+    # ── Injeta SSID ANTES do connect() ──────────────────────────────
+    ssid = IQ_SSID or os.environ.get("IQ_SSID", "")
+    if ssid:
+        for metodo in [
+            lambda: iq.api.session.cookies.set("ssid", ssid),
+            lambda: iq.session.cookies.set("ssid", ssid),
+            lambda: setattr(iq, "_ssid", ssid),
+        ]:
+            try:
+                metodo()
+                log(f"🔑 SSID injetado: {ssid[:10]}...")
+                break
+            except Exception:
+                continue
+    else:
+        log("⚠️ IQ_SSID vazio — usando só usuário/senha")
+
     resultado = [None, None]
     def _do():
         try:
