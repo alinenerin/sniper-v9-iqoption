@@ -1479,7 +1479,6 @@ def engine_otc():
             if check_stop_diario(): break
 
             agora = datetime.now(BRT)
-            _log(f"🔄 OTC ciclo {agora.strftime('%H:%M:%S')}", "OTC")
 
             if not em_janela(agora, OTC_JANELAS):
                 _log(f"Fora da janela ({agora.strftime('%H:%M')})", "OTC")
@@ -1527,7 +1526,6 @@ def engine_otc():
                 if agora_ts - _ultimo_trade.get(par, 0) < COOLDOWN:
                     continue
                 velas = get_candles(par, n=60, tf=60)
-                _log(f"  {par}: {len(velas)} velas obtidas", "OTC")
                 if len(velas) < 30:
                     continue
                 score, direcao, det = score_otc(velas)
@@ -2825,7 +2823,6 @@ if __name__ == "__main__":
 
     # Conexão IQ em background — Flask sobe independente
     threading.Thread(target=_conectar_iq,       daemon=True).start()
-    threading.Thread(target=engine_manual,       daemon=True).start()
     threading.Thread(target=iniciar_motor,       daemon=True).start()
     threading.Thread(target=_watchdog_conexao,   daemon=True).start()
 
