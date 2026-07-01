@@ -72,8 +72,8 @@ def check_news_bloqueio(now_brt):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-IQ_EMAIL     = 'laiane.aline@gmail.com'
-IQ_PASS      = 'alineegui95'
+IQ_EMAIL     = os.environ.get('IQ_EMAIL', 'laiane.aline@gmail.com')
+IQ_PASS      = os.environ.get('IQ_PASS', 'alineEgui95@')
 ACCOUNT_TYPE = 'PRACTICE'
 PAYOUT_MIN   = 0.80
 VALOR_PCT    = 0.02
