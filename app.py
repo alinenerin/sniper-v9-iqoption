@@ -348,37 +348,31 @@ def garantir_conexao():
     return _iq_ok
 
 def get_candles(ativo, n=60, tf=60):
-    """Busca velas M1 — 1º IQ lib WebSocket | 2º Polygon | 3º Twelve Data"""
-    global _iq_ok
+    """Busca velas M1 — 1º Twelve Data (real-time) | 2º Polygon (fallback)
+    NOTA: IQ lib get_candles/check_connect bloqueiam a GIL indefinidamente em Railway.
+    IQ lib é usada APENAS para executar trades."""
     par_base = ativo.replace("-OTC", "").replace("/", "").upper()
 
-    # ── 1. IQ Option via lib (WebSocket — tempo real) ─────────────────
-    if _iq_ok and _iq_api:
-        try:
-            # Garante reconexão se necessário
-            if not _iq_api.check_connect():
-                _iq_ok = False
-                with _lock:
-                    estado["iq_ok"] = False
-                threading.Thread(target=_conectar_iq, daemon=True).start()
-                _log(f"IQ desconectou ({par_base}) — reconectando...")
-            else:
-                candles = _iq_api.get_candles(par_base, tf, n, time.time())
-                if candles and len(candles) > 0:
-                    velas = []
-                    for v in candles:
-                        velas.append({
-                            "o": float(v.get("open",  v.get("o", 0))),
-                            "c": float(v.get("close", v.get("c", 0))),
-                            "h": float(v.get("max",   v.get("h", 0))),
-                            "l": float(v.get("min",   v.get("l", 0))),
-                            "t": int(v.get("from",    v.get("t", 0))),
-                        })
-                    return sorted(velas, key=lambda x: x["t"])
-        except Exception as e:
-            _log(f"IQ candles lib erro ({par_base}): {e}")
+    # ── 1. Twelve Data (tempo real, sem delay) ────────────────────────
+    try:
+        ATIVOS_TD = {"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY",
+                     "AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP","XAUUSD":"XAU/USD"}
+        sym = ATIVOS_TD.get(par_base, "")
+        if sym:
+            r = requests.get(f"https://api.twelvedata.com/time_series?symbol={sym}"
+                             f"&interval=1min&outputsize={n}&apikey=1be0b948fb1c48bb997e350c542edafd",
+                             timeout=8)
+            vals = r.json().get("values", [])
+            if vals and len(vals) >= n // 2:
+                velas = []
+                for v in reversed(vals):
+                    velas.append({"o": float(v["open"]), "c": float(v["close"]),
+                                  "h": float(v["high"]), "l": float(v["low"]), "t": 0})
+                return velas
+    except Exception as e:
+        _log(f"TwelveData candles erro ({par_base}): {e}")
 
-    # ── 2. Polygon.io (delay ~10min no plano free) ─────────────────────
+    # ── 2. Polygon.io (delay ~10min no plano free — último recurso) ────
     try:
         import datetime as dt
         fim    = int(time.time()) * 1000
@@ -398,25 +392,6 @@ def get_candles(ativo, n=60, tf=60):
             return velas
     except Exception as e:
         _log(f"Polygon candles erro ({par_base}): {e}")
-
-    # ── 3. Twelve Data (backup) ────────────────────────────────────────
-    try:
-        ATIVOS_TD = {"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY",
-                     "AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP","XAUUSD":"XAU/USD"}
-        sym = ATIVOS_TD.get(par_base, "")
-        if sym:
-            r = requests.get(f"https://api.twelvedata.com/time_series?symbol={sym}"
-                             f"&interval=1min&outputsize={n}&apikey=1be0b948fb1c48bb997e350c542edafd",
-                             timeout=8)
-            vals = r.json().get("values", [])
-            if vals:
-                velas = []
-                for v in reversed(vals):
-                    velas.append({"o": float(v["open"]), "c": float(v["close"]),
-                                  "h": float(v["high"]), "l": float(v["low"]), "t": 0})
-                return velas
-    except Exception as e:
-        _log(f"TwelveData candles erro ({par_base}): {e}")
 
     return []
 
@@ -1915,6 +1890,12 @@ def rodar_filtro(texto_bruto):
 #  MOTOR UNIFICADO
 # ══════════════════════════════════════════════════════════════════
 def iniciar_motor():
+    # Aguarda IQ conectar antes de subir as engines (máx 30s)
+    for _ in range(30):
+        if estado.get("iq_ok"):
+            break
+        time.sleep(1)
+
     with _lock:
         estado["iniciado_em"] = datetime.now(BRT).strftime("%d/%m %H:%M")
 
