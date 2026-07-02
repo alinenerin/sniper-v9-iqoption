@@ -303,55 +303,15 @@ IQ_PASS  = 'alineEgui95@'
 
 def get_pares_abertos_iq():
     """
-    Consulta a IQ Option e retorna lista de pares abertos agora.
-    Inclui Forex real (sufixo -op) e OTC (-OTC).
-    Fallback: retorna PARES_REAL + PARES_OTC se falhar.
+    Retorna pares disponíveis baseado na janela horária (BRT).
+    OTC: sempre disponível 24h.
+    REAL: apenas nas janelas ativas (04-17h e 21-02h BRT).
+    Sem subprocess extra — evita reinicializações no Railway.
     """
-    script = (
-        "import sys,os,time,json\n"
-        f"sys.path.insert(0,r'{os.path.dirname(os.path.abspath(__file__))}')\n"
-        "from iqoptionapi.stable_api import IQ_Option\n"
-        f"iq=IQ_Option('{IQ_EMAIL}','{IQ_PASS}')\n"
-        "ok,_=iq.connect()\n"
-        "if not ok: print('[]'); exit()\n"
-        "time.sleep(1)\n"
-        "abertos=[]\n"
-        "try:\n"
-        "  todos=iq.get_all_open_time()\n"
-        "  for tipo in ['forex','forex-otc']:\n"
-        "    bloco=todos.get(tipo,{})\n"
-        "    for nome,info in bloco.items():\n"
-        "      if info.get('open',False):\n"
-        "        abertos.append(nome)\n"
-        "except Exception as e:\n"
-        "  pass\n"
-        "print(json.dumps(abertos))\n"
-    )
-    for cwd in IQ_LIB_DIRS:
-        if not os.path.isdir(cwd):
-            continue
-        try:
-            res = subprocess.run(
-                ['python3', '-W', 'ignore', '-c', script],
-                capture_output=True, text=True, timeout=30, cwd=cwd
-            )
-            data = json.loads(res.stdout.strip() or '[]')
-            if data:
-                # Normalizar nomes: EURUSD-op → EURUSD, eurusd-otc → EURUSD-OTC
-                normalizados = []
-                for p in data:
-                    p_upper = p.upper()
-                    if p_upper.endswith('-OTC'):
-                        normalizados.append(p_upper)
-                    elif p_upper.endswith('-OP'):
-                        normalizados.append(p_upper.replace('-OP', ''))
-                    else:
-                        normalizados.append(p_upper)
-                return normalizados
-        except:
-            pass
-    # Fallback: retorna listas fixas
-    return PARES_REAL + PARES_OTC
+    if is_mercado_real_ativo():
+        return PARES_REAL + PARES_OTC
+    else:
+        return PARES_OTC
 
 
 def get_velas_m5_iq(par, n=60):
