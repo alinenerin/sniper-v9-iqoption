@@ -156,20 +156,34 @@ def score_fx(vls):
     _, ob = detectar_ob(vls, dr); _, fv = detectar_fvg(vls, dr)
     return pts+ob+fv, dr, f"RSI:{rsi:.0f}"
 def score_otc(vls):
-    if len(vls)<35: return 0, None, ""
-    cl, v, p = [v["c"] for v in vls], vls[-2], vls[-1]["c"]
-    if shadow_bl(v): return 0, None, "Shadow"
+    if len(vls)<40: return 0, None, ""
+    cl, v, p = [x["c"] for x in vls], vls[-2], vls[-1]["c"]
+    # FILTRO ZERO GALE: Se a vela atual (vls[-1]) já está explodindo na direção oposta, ABORTA
     pip = 0.01 if p>50 else 0.0001
-    if abs(v["c"]-v["o"])/pip < 1.0: return 0, None, "Corpo"
-    adx = calcular_adx(vls)
-    if adx<22: return 0, None, "ADX"
     mv, sv = calcular_macd(cl); e9, e21 = ema_series(cl, 9), ema_series(cl, 21)
-    if not e9 or not e21 or (mv>sv)!=(e9[-1]>e21[-1]): return 0, None, "Conflito"
+    if not e9 or not e21: return 0, None, ""
+    dr = "CALL" if mv>sv else "PUT"
+    
+    # REJEIÇÃO DE EXAUSTÃO: Se o preço não retraiu nada na última vela, o sinal de reversão é falso
+    if dr=="CALL" and vls[-1]["c"] < vls[-1]["o"] and (vls[-1]["o"]-vls[-1]["c"])/pip > 5: return 0, None, "Força de Baixa"
+    if dr=="PUT" and vls[-1]["c"] > vls[-1]["o"] and (vls[-1]["c"]-vls[-1]["o"])/pip > 5: return 0, None, "Força de Alta"
+
+    adx = calcular_adx(vls)
+    if adx < 25: return 0, None, "ADX Baixo" # Aumentado de 22 para 25 para pegar tendência real
+    
+    if (mv>sv) != (e9[-1]>e21[-1]): return 0, None, "Conflito EMA/MACD"
+    
     rsi = calcular_rsi(cl)
-    if rsi>82 or rsi<18: return 0, None, "RSI"
-    dr = "CALL" if mv>sv else "PUT"; pts = 30 + (25 if adx>=25 else 10) + (20 if (dr=="CALL" and 52<=rsi<=72) or (dr=="PUT" and 28<=rsi<=48) else 0)
+    if rsi > 78 or rsi < 22: return 0, None, "RSI Exaustão" # Estreitado para evitar Gale 2
+    
+    pts = 40 + (30 if adx>=30 else 15)
+    pts += 30 if (dr=="CALL" and 48<=rsi<=65) or (dr=="PUT" and 35<=rsi<=52) else 0
+    
     up, _, lo = calcular_bb(cl)
-    if up and lo and ((dr=="CALL" and (p-lo)/(up-lo)<=0.15) or (dr=="PUT" and (p-lo)/(up-lo)>=0.85)): pts+=25
+    if up and lo:
+        if dr=="CALL" and (p-lo)/(up-lo)<=0.10: pts+=40 # Só entra se estiver no fundinho da BB
+        if dr=="PUT" and (p-lo)/(up-lo)>=0.90: pts+=40 # Só entra se estiver no topinho da BB
+    
     _, ob = detectar_ob(vls, dr); _, fv = detectar_fvg(vls, dr)
     return pts+ob+fv, dr, f"ADX:{adx:.0f}"
 def main():
