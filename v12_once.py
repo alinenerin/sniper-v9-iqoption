@@ -202,17 +202,24 @@ def buscar_velas_polygon(pares_forex):
     return result
 
 def buscar_velas_iq_par(par, _base):
-    """Busca velas M1 + M5 de UM par via IQ Option — igual ao método do M5."""
+    """Busca velas M1 + M5 + payout de UM par via IQ Option — igual ao método do M5."""
     script = (
         "import sys, time, json\n"
         f"sys.path.insert(0, r'{_base}')\n"
         "from iqoptionapi.stable_api import IQ_Option\n"
         f"iq = IQ_Option('{IQ_EMAIL}', '{IQ_PASS}')\n"
         "ok, _ = iq.connect()\n"
-        "if not ok: print(json.dumps({'m1':[],'m5':[]})); exit()\n"
+        "if not ok: print(json.dumps({'m1':[],'m5':[],'payout':0})); exit()\n"
         "time.sleep(1)\n"
         f"par = '{par}'\n"
-        "m1 = []; m5 = []\n"
+        "m1 = []; m5 = []; payout = 0\n"
+        "try:\n"
+        "  abertos = iq.get_all_open_time()\n"
+        "  turbo = abertos.get('turbo', {})\n"
+        "  info = turbo.get(par, {})\n"
+        "  if info.get('open', False):\n"
+        "    payout = info.get('profit', {}).get('percent', 0)\n"
+        "except: pass\n"
         "try:\n"
         "  v = iq.get_candles(par, 60, 70, time.time())\n"
         "  if v and len(v)>=20:\n"
@@ -223,7 +230,7 @@ def buscar_velas_iq_par(par, _base):
         "  if v and len(v)>=10:\n"
         "    m5 = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min']} for x in v]\n"
         "except: pass\n"
-        "print(json.dumps({'m1':m1,'m5':m5}))\n"
+        "print(json.dumps({'m1':m1,'m5':m5,'payout':payout}))\n"
     )
     try:
         res = subprocess.run(
@@ -231,9 +238,9 @@ def buscar_velas_iq_par(par, _base):
             capture_output=True, text=True, timeout=25, cwd=_base
         )
         raw = json.loads(res.stdout.strip() or "{}")
-        return raw.get("m1", []), raw.get("m5", [])
+        return raw.get("m1", []), raw.get("m5", []), raw.get("payout", 0)
     except:
-        return [], []
+        return [], [], 0
 
 def buscar_todos_pares():
     global _cache_velas, _cache_payouts, OTC_PARES, FOREX_PARES
@@ -250,11 +257,13 @@ def buscar_todos_pares():
 
     iq_ok_count = 0
     for par in todos:
-        m1, m5 = buscar_velas_iq_par(par, _base)
+        m1, m5, payout_iq = buscar_velas_iq_par(par, _base)
+        if payout_iq and payout_iq > 0:
+            _cache_payouts[par] = payout_iq
         if m1:
             _cache_velas[par] = m1
             iq_ok_count += 1
-            log(f"  ✅ {par}: {len(m1)} velas M1 (IQ)")
+            log(f"  ✅ {par}: {len(m1)} velas M1 (IQ) payout={_cache_payouts.get(par,0)}%")
         else:
             # OTC: sem fallback externo — sem dados = sem sinal
             # Forex: usa Twelve Data como fallback
