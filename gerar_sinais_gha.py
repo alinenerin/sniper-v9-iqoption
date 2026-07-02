@@ -1,104 +1,102 @@
-#!/usr/bin/env python3
-"""
-Gerador de Sinais M1 — GitHub Actions
-Busca velas M1 da IQ Option para pares Forex e OTC
-Aplica análise técnica e retorna lista de sinais aprovados
-"""
-import sys, os, time, json, threading
-from collections import Counter
-from datetime import datetime, timezone, timedelta
 
-sys.path.insert(0, '.')
+import os, sys, time, threading, json
+from datetime import datetime
+import pytz
 from iqoptionapi.stable_api import IQ_Option
 
-BRT = timezone(timedelta(hours=-3))
+# Configurações
+BRT = pytz.timezone('America/Sao_Paulo')
+MODO = os.environ.get('MODO', 'AMBOS') # FOREX, OTC, AMBOS
 
-PARES_FOREX = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','GBPJPY','EURGBP','USDCAD','EURAUD','EURCAD','NZDUSD','USDCHF']
-PARES_OTC   = ['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','EURGBP-OTC']
+PARES_FOREX = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','EURGBP','USDCAD','USDCHF','NZDUSD']
+PARES_OTC   = ['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','EURGBP-OTC','USDCAD-OTC','USDCHF-OTC','NZDUSD-OTC']
 
-MODO = os.environ.get('MODO', 'AMBOS').upper()  # FOREX, OTC, AMBOS
+def ema(data, period):
+    if len(data) < period: return data[-1]
+    alpha = 2 / (period + 1)
+    ema_val = data[0]
+    for price in data[1:]:
+        ema_val = (price * alpha) + (ema_val * (1 - alpha))
+    return ema_val
 
-def ema(v, n):
-    k = 2/(n+1); e = v[0]
-    for x in v[1:]: e = x*k + e*(1-k)
-    return e
-
-def rsi(c, n=14):
-    g = [max(c[i]-c[i-1],0) for i in range(1,len(c))]
-    l = [max(c[i-1]-c[i],0) for i in range(1,len(c))]
-    ag = sum(g[-n:])/n; al = sum(l[-n:])/n
-    return round(100-100/(1+ag/al),1) if al>0 else 50
+def rsi(data, period=14):
+    if len(data) < period + 1: return 50
+    deltas = [data[i+1]-data[i] for i in range(len(data)-1)]
+    up = [d if d>0 else 0 for d in deltas]
+    dn = [-d if d<0 else 0 for d in deltas]
+    avg_up = sum(up[-period:])/period
+    avg_dn = sum(dn[-period:])/period
+    if avg_dn == 0: return 100
+    rs = avg_up / avg_dn
+    return 100 - (100 / (1 + rs))
 
 def markov(closes, opens):
-    cores = list(reversed(['V' if closes[i]>=opens[i] else 'M' for i in range(len(closes))]))
-    cor = cores[0]; seq = 1
-    for cc in cores[1:]:
-        if cc == cor: seq += 1
-        else: break
-    tr = {'VV':0,'VM':0,'MV':0,'MM':0}
-    for i in range(min(30,len(cores))-1):
-        k = cores[i]+cores[i+1]
-        if k in tr: tr[k] += 1
-    if cor == 'V':
-        tot = tr['VV']+tr['VM']
-        p_cont = tr['VV']/tot if tot>0 else 0.5
-        p_rev  = tr['VM']/tot if tot>0 else 0.5
-        s_cont, s_rev = 'CALL','PUT'
+    if len(closes) < 10: return None, 0
+    seq = ['U' if closes[i] > opens[i] else 'D' for i in range(len(closes))]
+    last = seq[-1]
+    u_after_u = 0; d_after_u = 0; u_after_d = 0; d_after_d = 0
+    for i in range(len(seq)-1):
+        if seq[i] == 'U':
+            if seq[i+1] == 'U': u_after_u += 1
+            else: d_after_u += 1
+        else:
+            if seq[i+1] == 'U': u_after_d += 1
+            else: d_after_d += 1
+    if last == 'U':
+        total = u_after_u + d_after_u
+        if total == 0: return None, 0
+        return ('CALL', (u_after_u/total)*100) if u_after_u >= d_after_u else ('PUT', (d_after_u/total)*100)
     else:
-        tot = tr['MM']+tr['MV']
-        p_cont = tr['MM']/tot if tot>0 else 0.5
-        p_rev  = tr['MV']/tot if tot>0 else 0.5
-        s_cont, s_rev = 'PUT','CALL'
-    exaustao = seq >= 4
-    if exaustao and p_rev > 0.5: return s_rev, round(p_rev*100,1)
-    if p_cont > 0.60: return s_cont, round(p_cont*100,1)
-    if p_rev >= 0.65: return s_rev, round(p_rev*100,1)
-    return None, 50
+        total = u_after_d + d_after_d
+        if total == 0: return None, 0
+        return ('CALL', (u_after_d/total)*100) if u_after_d >= d_after_d else ('PUT', (d_after_d/total)*100)
 
-def analisar(velas, par):
+def analisar_par(par, iq):
+    velas = iq.get_candles(par, 60, 60, time.time())
+    if not velas or len(velas) < 40: return None, 0, 'Sem dados'
+    
     closes = [v['close'] for v in velas]
     opens  = [v['open']  for v in velas]
     highs  = [v['max']   for v in velas]
     lows   = [v['min']   for v in velas]
     pip = 0.01 if closes[-1] > 50 else 0.0001
-
+    
     atr  = sum(highs[i]-lows[i] for i in range(-5,0))/5
     atrm = sum(highs[i]-lows[i] for i in range(-20,-5))/15 if len(velas)>=20 else atr
     corpo = sum(abs(closes[i]-opens[i]) for i in range(-5,0))/5
-
-    if atr < atrm*0.80: return None,0,'ATR baixo'
+    
+    if atr < atrm*0.80: return None,0,'ATR baixo (Volatilidade)'
     if corpo < pip*0.10: return None,0,'Corpo fraco'
-
+    
     e9  = ema(closes[-20:], 9)
     e25 = ema(closes[-35:] if len(closes)>=35 else closes, 20)
     r   = rsi(closes)
     preco = closes[-1]
-
+    
+    # Filtro Vela Elefante Contra V13
+    last_body = abs(closes[-1]-opens[-1])
+    if last_body > atr * 2.5:
+        vela_contra = (closes[-1] < opens[-1]) # Exemplo simples, sera refinado no bloco de score
+    
     dir_tec = None; score = 0; setup = []
-
+    
     # Tendência
     if e9 > e25 and preco > e25 and r < 65:
         dist9 = abs(preco-e9)/pip
         if dist9 < 1.0: return None,0,'Colado na EMA9'
+        if last_body > atr * 2.5 and closes[-1] < opens[-1]: return None,0,'Vela Elefante contra'
         dir_tec = 'CALL'; score = 60; setup.append('TEND')
         if r < 55: score += 10
-        if abs(preco-e9)/pip < 10: score += 15
+        if dist9 < 10: score += 15
     elif e9 < e25 and preco < e25 and r > 35:
         dist9 = abs(preco-e9)/pip
         if dist9 < 1.0: return None,0,'Colado na EMA9'
+        if last_body > atr * 2.5 and closes[-1] > opens[-1]: return None,0,'Vela Elefante contra'
         dir_tec = 'PUT'; score = 60; setup.append('TEND')
         if r > 45: score += 10
-        if abs(preco-e9)/pip < 10: score += 15
-
-    # Pullback
-    if not dir_tec:
-        dist = abs(preco-e9)/pip
-        if e9 > e25 and dist < 5 and preco > e25 and r < 62:
-            dir_tec = 'CALL'; score = 80; setup.append('PULL')
-        elif e9 < e25 and dist < 5 and preco < e25 and r > 38:
-            dir_tec = 'PUT'; score = 80; setup.append('PULL')
-
-    # Reversão
+        if dist9 < 10: score += 15
+        
+    # Reversão (Apenas Score 85+)
     if not dir_tec:
         body_v  = abs(closes[-1]-opens[-1])
         h_range = highs[-1]-lows[-1] if highs[-1]>lows[-1] else 0.00001
@@ -108,36 +106,25 @@ def analisar(velas, par):
             dir_tec = 'CALL'; score = 85; setup.append('REV')
         elif r > 70 and wick_up > body_v*1.5 and wick_up/h_range > 0.35:
             dir_tec = 'PUT'; score = 85; setup.append('REV')
-
+            
     if not dir_tec or score < 65: return None,0,'Sem setup'
-    if 'REV' in setup and score < 85: return None,0,f'REV com score baixo ({score})'
-
+    
     # Markov
     dir_mkv, prob_mkv = markov(closes, opens)
     if dir_mkv and dir_mkv != dir_tec: score -= 15
-    if dir_mkv and dir_mkv == dir_tec: score += 10
-
-    # Vela atual alinhada?
-    vela_dir = 'UP' if closes[-1] >= opens[-1] else 'DN'
-    alinhada = (dir_tec=='CALL' and vela_dir=='UP') or (dir_tec=='PUT' and vela_dir=='DN')
-    if alinhada: score += 5
-
-
-    # Filtro Vela Elefante Contra V13
-    last_body = abs(closes[-1]-opens[-1])
-    if last_body > atr * 2.5:
-        vela_contra = (dir_tec=='CALL' and closes[-1] < opens[-1]) or (dir_tec=='PUT' and closes[-1] > opens[-1])
-        if vela_contra: return None, 0, 'Vela Elefante contra'
-
+    if dir_mkv and dir_mkv == dir_tec: 
+        score += 10
+        if prob_mkv > 70: score += 5
+    
     if score < 70: return None, 0, f'Score insuf ({score})'
-
-    # Dados completos para autópsia
+    
+    # Dados para autópsia
     dist_e9  = round(abs(preco - e9)  / pip, 1)
     dist_e25 = round(abs(preco - e25) / pip, 1)
     tendencia_e9_e25 = 'ALTA' if e9 > e25 else 'BAIXA'
     vela_cor = 'VERDE' if closes[-1] >= opens[-1] else 'VERMELHA'
     atr_ratio = round(atr / atrm, 2) if atrm > 0 else 0
-
+    
     det = {
         'setup':   '+'.join(setup),
         'rsi':     r,
@@ -156,110 +143,47 @@ def analisar(velas, par):
     }
     return dir_tec, score, det
 
-# ── Conectar IQ Option ────────────────────────────────────────────
+# Conectar
 IQ_USER = os.environ.get('IQ_USER','')
 IQ_PASS = os.environ.get('IQ_PASS','')
-
-print('🔌 Conectando na IQ Option...')
 iq = IQ_Option(IQ_USER, IQ_PASS)
-result = [False, 'timeout']
-def do_connect():
-    try:
-        ok, reason = iq.connect()
-        result[0] = ok; result[1] = reason
-    except Exception as e:
-        result[1] = str(e)
-t = threading.Thread(target=do_connect); t.daemon=True; t.start(); t.join(timeout=20)
-if not result[0]:
-    print(f'❌ Conexão: {result[1]}'); sys.exit(1)
-print('✅ Conectado!')
-time.sleep(1)
+ok, reason = iq.connect()
+if not ok: sys.exit(1)
 
-# ── Selecionar pares ──────────────────────────────────────────────
+# Analisar
 now = datetime.now(BRT)
-weekday = now.weekday()  # 0=seg ... 4=sex, 5=sab, 6=dom
-
-if MODO == 'FOREX':
-    pares = PARES_FOREX
-elif MODO == 'OTC':
-    pares = PARES_OTC
-else:
-    # Ambos: OTC sempre disponível, Forex seg-sex
-    if weekday >= 5:
-        pares = PARES_OTC
-        print(f'📅 Fim de semana → OTC apenas')
-    else:
-        pares = PARES_FOREX + PARES_OTC
-        print(f'📅 Dia de semana → Forex + OTC')
-
-print(f'🔍 Analisando {len(pares)} pares...')
-
-# ── Buscar velas ──────────────────────────────────────────────────
-cache = {}
-for par in pares:
-    try:
-        c = iq.get_candles(par, 60, 60, int(time.time()))
-        if c and len(c) >= 25:
-            cache[par] = [{'close':v['close'],'open':v['open'],'max':v['max'],'min':v['min']} for v in c]
-            print(f'  {par}: {len(c)} velas ✅')
-        else:
-            print(f'  {par}: sem dados ⚠️')
-    except Exception as e:
-        print(f'  {par}: erro {str(e)[:40]} ⚠️')
-    time.sleep(0.3)
-
-# ── Analisar ──────────────────────────────────────────────────────
-# Próximos minutos para entrada
-from datetime import timedelta as td
-proximos = [(now + td(minutes=i)).strftime('%H:%M') for i in range(2,6)]
+h_sinal = (now.replace(minute=now.minute+2, second=0, microsecond=0)).strftime('%H:%M')
+pares = (PARES_FOREX if MODO=='FOREX' else PARES_OTC if MODO=='OTC' else PARES_FOREX+PARES_OTC)
 
 sinais = []
-for par, velas in cache.items():
-    dir_tec, score, det = analisar(velas, par)
-    if not dir_tec: continue
-    hora = proximos[0]
-    ic = '💎' if score >= 90 else '✅' if score >= 80 else '🟡'
-    label = par.replace('-OTC','') + ('-OTC' if 'OTC' in par else '')
-    sinais.append((score, label, hora, dir_tec, det, ic))
+for p in pares:
+    d, sc, det = analisar_par(p, iq)
+    if d:
+        # Trava JPY Score 95
+        if 'JPY' in p and sc < 95: continue
+        # Trava OTC Markov 75%
+        if '-OTC' in p and (sc < 85 or det.get('mkv',0) < 75): continue
+        
+        ic = '💎' if sc >= 90 else '✅'
+        sinais.append((sc, p, h_sinal, d, det, ic))
 
-sinais.sort(key=lambda x: -x[0])
+sinais.sort(key=lambda x: x[0], reverse=True)
 
-# ── Resultado ─────────────────────────────────────────────────────
-print()
 print('══════════════════════════════════════════')
-print(f'  SNIPERFILTRO GERADOR 🎯 — {now.strftime("%H:%M")} BRT')
-print(f'  {len(cache)} pares analisados')
+print(f'  SNIPER V13 🎯 — {now.strftime("%H:%M")} BRT')
+print(f'  {len(pares)} pares analisados')
 print('══════════════════════════════════════════')
 
-# Filtro JPY V13
-    sinais = [s for s in sinais if not ('JPY' in s[1] and s[0] < 95)]
-
-    if sinais:
+if sinais:
     top = sinais[:6]
     for sc, par, h, d, det, ic in top:
-        rsi_v  = det.get('rsi', 0)   if isinstance(det, dict) else 0
-        setup  = det.get('setup','?') if isinstance(det, dict) else '?'
-        mkv    = det.get('mkv_dir','?')
-        mkv_p  = det.get('mkv', 0)
-        tend   = det.get('tend','?')
-        vela   = det.get('vela','?')
-        dist9  = det.get('dist_e9', '?')
-        dist25 = det.get('dist_e25','?')
-        atr_v  = det.get('atr', '?')
-        atr_r  = det.get('atr_ratio','?')
-        preco  = det.get('preco','?')
         print(f'  {ic} {par} {h} {d}')
-        print(f'     Score:{sc} | Setup:{setup} | RSI:{rsi_v:.0f}')
-        print(f'     Tendência EMA: {tend} | Vela: {vela}')
-        print(f'     Dist EMA9:{dist9}pip | Dist EMA25:{dist25}pip')
-        print(f'     Markov: {mkv} ({mkv_p:.0f}%) | ATR:{atr_v}pip (ratio:{atr_r})')
-        print(f'     Preço: {preco}')
+        print(f"     Score:{sc} | Setup:{det['setup']} | RSI:{det['rsi']:.0f}")
+        print(f"     Markov: {det['mkv_dir']} ({det['mkv']:.0f}%) | ATR Ratio:{det['atr_ratio']}")
         print()
     print('  ── CAIXINHA ──')
-    print()
     for sc, par, h, d, det, ic in top:
         print(f'  M1;{par};{h};{d}')
 else:
-    print('  Nenhum sinal gerado no momento.')
-
+    print('  Nenhum sinal Diamante encontrado.')
 print('══════════════════════════════════════════')
