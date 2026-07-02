@@ -65,7 +65,7 @@ def analisar_par(par, iq):
     atrm = sum(highs[i]-lows[i] for i in range(-20,-5))/15 if len(velas)>=20 else atr
     corpo = sum(abs(closes[i]-opens[i]) for i in range(-5,0))/5
     
-    if atr < atrm*0.80: return None,0,'ATR baixo (Volatilidade)'
+    if atr < atrm*0.50: return None,0,'ATR baixo (Volatilidade)'
     if corpo < pip*0.10: return None,0,'Corpo fraco'
     
     e9  = ema(closes[-20:], 9)
@@ -75,7 +75,7 @@ def analisar_par(par, iq):
     
     # Filtro Vela Elefante Contra V13
     last_body = abs(closes[-1]-opens[-1])
-    if last_body > atr * 2.5:
+    if last_body > atr * 3.5:
         vela_contra = (closes[-1] < opens[-1]) # Exemplo simples, sera refinado no bloco de score
     
     dir_tec = None; score = 0; setup = []
@@ -84,14 +84,14 @@ def analisar_par(par, iq):
     if e9 > e25 and preco > e25 and r < 65:
         dist9 = abs(preco-e9)/pip
         if dist9 < 1.0: return None,0,'Colado na EMA9'
-        if last_body > atr * 2.5 and closes[-1] < opens[-1]: return None,0,'Vela Elefante contra'
+        if last_body > atr * 3.5 and closes[-1] < opens[-1]: return None,0,'Vela Elefante contra'
         dir_tec = 'CALL'; score = 60; setup.append('TEND')
         if r < 55: score += 10
         if dist9 < 10: score += 15
     elif e9 < e25 and preco < e25 and r > 35:
         dist9 = abs(preco-e9)/pip
         if dist9 < 1.0: return None,0,'Colado na EMA9'
-        if last_body > atr * 2.5 and closes[-1] > opens[-1]: return None,0,'Vela Elefante contra'
+        if last_body > atr * 3.5 and closes[-1] > opens[-1]: return None,0,'Vela Elefante contra'
         dir_tec = 'PUT'; score = 60; setup.append('TEND')
         if r > 45: score += 10
         if dist9 < 10: score += 15
