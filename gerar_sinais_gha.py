@@ -51,7 +51,7 @@ def markov(closes, opens):
         s_cont, s_rev = 'PUT','CALL'
     exaustao = seq >= 4
     if exaustao and p_rev > 0.5: return s_rev, round(p_rev*100,1)
-    if p_cont > 0.55: return s_cont, round(p_cont*100,1)
+    if p_cont > 0.60: return s_cont, round(p_cont*100,1)
     if p_rev >= 0.65: return s_rev, round(p_rev*100,1)
     return None, 50
 
@@ -66,7 +66,7 @@ def analisar(velas, par):
     atrm = sum(highs[i]-lows[i] for i in range(-20,-5))/15 if len(velas)>=20 else atr
     corpo = sum(abs(closes[i]-opens[i]) for i in range(-5,0))/5
 
-    if atr < atrm*0.30: return None,0,'ATR baixo'
+    if atr < atrm*0.80: return None,0,'ATR baixo'
     if corpo < pip*0.10: return None,0,'Corpo fraco'
 
     e9  = ema(closes[-20:], 9)
@@ -77,11 +77,15 @@ def analisar(velas, par):
     dir_tec = None; score = 0; setup = []
 
     # Tendência
-    if e9 > e25 and preco > e25 and r < 72:
+    if e9 > e25 and preco > e25 and r < 65:
+        dist9 = abs(preco-e9)/pip
+        if dist9 < 1.0: return None,0,'Colado na EMA9'
         dir_tec = 'CALL'; score = 60; setup.append('TEND')
         if r < 55: score += 10
         if abs(preco-e9)/pip < 10: score += 15
-    elif e9 < e25 and preco < e25 and r > 28:
+    elif e9 < e25 and preco < e25 and r > 35:
+        dist9 = abs(preco-e9)/pip
+        if dist9 < 1.0: return None,0,'Colado na EMA9'
         dir_tec = 'PUT'; score = 60; setup.append('TEND')
         if r > 45: score += 10
         if abs(preco-e9)/pip < 10: score += 15
@@ -89,9 +93,9 @@ def analisar(velas, par):
     # Pullback
     if not dir_tec:
         dist = abs(preco-e9)/pip
-        if e9 > e25 and dist < 5 and preco > e25 and r < 68:
+        if e9 > e25 and dist < 5 and preco > e25 and r < 62:
             dir_tec = 'CALL'; score = 80; setup.append('PULL')
-        elif e9 < e25 and dist < 5 and preco < e25 and r > 32:
+        elif e9 < e25 and dist < 5 and preco < e25 and r > 38:
             dir_tec = 'PUT'; score = 80; setup.append('PULL')
 
     # Reversão
