@@ -48,12 +48,12 @@ def buscar_todos_pares():
     OTC_PARES, FOREX_PARES = list(OTC_PARES_FALLBACK), list(FOREX_PARES_FALLBACK)
     ativos = list(set(OTC_PARES + FOREX_PARES))
     log(f"🔌 Conectando IQ Option (BATCH) — {len(ativos)} pares...")
-    script = ("import sys, time, json\nsys.path.insert(0, r'"+_base+"')\nfrom iqoptionapi.stable_api import IQ_Option\niq = IQ_Option('"+IQ_EMAIL+"', '"+IQ_PASS+"')\nok, _ = iq.connect()\nif not ok: print(json.dumps({'err':'login'})); exit()\ntime.sleep(2)\npayouts = {}\ntry:\n  turbo = iq.get_all_open_time().get('turbo', {})\n  for n, info in turbo.items():\n    if info.get('open'): payouts[n] = info.get('profit', {}).get('percent', 0)\nexcept: pass\nvelas, velas_m5 = {}, {}\nfor a in "+str(ativos)+":\n  iq.start_candles_stream(a, 60, 70)\n  iq.start_candles_stream(a, 300, 35)\ntime.sleep(15)\nfor a in "+str(ativos)+":\n  v1, v5 = iq.get_realtime_candles(a, 60), iq.get_realtime_candles(a, 300)\n  if v1: velas[a] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min']} for x in v1.values()]\n  if v5: velas_m5[a] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min']} for x in v5.values()]\nprint(json.dumps({'velas':velas,'velas_m5':velas_m5,'payouts':payouts}))")
+    script = ("import sys, time, json\nsys.path.insert(0, r'"+_base+"')\nfrom iqoptionapi.stable_api import IQ_Option\niq = IQ_Option('"+IQ_EMAIL+"', '"+IQ_PASS+"')\nok, _ = iq.connect()\nif not ok: print(json.dumps({'err':'login'})); exit()\ntime.sleep(2)\npayouts = {}\ntry:\n  turbo = iq.get_all_open_time().get('turbo', {})\n  for n, info in turbo.items():\n    if info.get('open'): payouts[n] = info.get('profit', {}).get('percent', 0)\nexcept: pass\nvelas, velas_m5 = {}, {}\nfor a in "+str(ativos)+":\n  v1 = iq.get_candles(a, 60, 70, time.time())\n  v5 = iq.get_candles(a, 300, 35, time.time())\n  if v1: velas[a] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min']} for x in v1]\n  if v5: velas_m5[a] = [{'o':x['open'],'c':x['close'],'h':x['max'],'l':x['min']} for x in v5]\nprint(json.dumps({'velas':velas,'velas_m5':velas_m5,'payouts':payouts}))")
     try:
         res = subprocess.run(["python3", "-W", "ignore", "-c", script], capture_output=True, text=True, timeout=240, cwd=_base)
         raw = json.loads(res.stdout.strip() or "{}")
         if raw.get("velas"):
-            _cache_velas, _cache_velas_m5, _cache_payouts = raw["velas"], raw.get("velas_m5", {}), raw.get("payouts", {})
+            _cache_velas, _cache_payouts, _cache_velas_m5 = raw["velas"], raw.get("payouts", {}), raw.get("velas_m5", {})
             log(f"✅ BATCH IQ OK — {len(_cache_velas)} pares."); return
     except Exception as e: log(f"⚠️ BATCH IQ timeout/erro: {e}")
     import urllib.request, urllib.parse
