@@ -122,6 +122,13 @@ def analisar(velas, par):
     alinhada = (dir_tec=='CALL' and vela_dir=='UP') or (dir_tec=='PUT' and vela_dir=='DN')
     if alinhada: score += 5
 
+
+    # Filtro Vela Elefante Contra V13
+    last_body = abs(closes[-1]-opens[-1])
+    if last_body > atr * 2.5:
+        vela_contra = (dir_tec=='CALL' and closes[-1] < opens[-1]) or (dir_tec=='PUT' and closes[-1] > opens[-1])
+        if vela_contra: return None, 0, 'Vela Elefante contra'
+
     if score < 70: return None, 0, f'Score insuf ({score})'
 
     # Dados completos para autópsia
@@ -224,7 +231,10 @@ print(f'  SNIPERFILTRO GERADOR 🎯 — {now.strftime("%H:%M")} BRT')
 print(f'  {len(cache)} pares analisados')
 print('══════════════════════════════════════════')
 
-if sinais:
+# Filtro JPY V13
+    sinais = [s for s in sinais if not ('JPY' in s[1] and s[0] < 95)]
+
+    if sinais:
     top = sinais[:6]
     for sc, par, h, d, det, ic in top:
         rsi_v  = det.get('rsi', 0)   if isinstance(det, dict) else 0
