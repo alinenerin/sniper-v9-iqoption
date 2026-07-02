@@ -110,6 +110,7 @@ def analisar(velas, par):
             dir_tec = 'PUT'; score = 85; setup.append('REV')
 
     if not dir_tec or score < 65: return None,0,'Sem setup'
+    if 'REV' in setup and score < 85: return None,0,f'REV com score baixo ({score})'
 
     # Markov
     dir_mkv, prob_mkv = markov(closes, opens)
