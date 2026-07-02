@@ -2,9 +2,13 @@ name: Keep Alive 🔄
 
 on:
   schedule:
-    # Roda todo dia às 12:00 UTC para manter o repo ativo
-    - cron: '0 12 * * *'
+    # A cada hora — mantém o cron ativo e dispara o V12
+    - cron: '0 * * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
 
 jobs:
   keepalive:
@@ -15,5 +19,14 @@ jobs:
         run: |
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
-          git commit --allow-empty -m "chore: keep-alive $(date -u '+%Y-%m-%d')"
+          git commit --allow-empty -m "chore: keep-alive $(date -u '+%Y-%m-%d %H:%M')"
           git push
+      - name: Disparar V12 agora
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            -d '{"ref":"main"}' \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/sniper_v12_manual.yml/dispatches"
+          echo "V12 disparado pelo keepalive!"
