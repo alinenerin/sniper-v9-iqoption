@@ -221,8 +221,10 @@ def is_mercado_real_ativo():
     hora = now_brt.hour
 
     # Fim de semana — só OTC
-    if weekday == 5 and hora >= 18: return False
-    if weekday == 6: return False
+    # Sábado (weekday 5): o mercado real fecha na sexta à tarde.
+    # Domingo (weekday 6): o mercado real abre domingo à noite (Tokyo).
+    if weekday == 5: return False
+    if weekday == 6 and hora < 21: return False
 
     # Janela principal: 04:00–17:00 BRT
     if 4 <= hora < 17:
