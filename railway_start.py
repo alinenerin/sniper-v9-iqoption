@@ -1,34 +1,24 @@
-import os
-import sys
-import subprocess
-import time
+import os, sys, subprocess, time, requests
 
 def start():
     print("🚀 Sniper System: Iniciando via Railway + Webshare Tunnel...")
     
-    # Configuração do Proxy Webshare (SOCKS5) - IP: 31.59.20.176
+    # Configuração do Proxy Webshare (SOCKS5)
     proxy = "socks5h://gjgztyys:gqyu31jfhdqo@socks.webshare.io:1080"
     os.environ['all_proxy'] = proxy
     os.environ['http_proxy'] = proxy
     os.environ['https_proxy'] = proxy
     
-    # Prioridade para FOREX conforme solicitado
-    bot_type = os.environ.get("BOT_TYPE", "FOREX")
-    
-    if bot_type == "BINARIAS":
-        print("📈 Modo Ativo: Binárias (M5 Sniper)")
-        target = "sniper_loop_m5.py"
-    else:
-        print("🏛️ Modo Ativo: Forex (Quant Pro V2.1)")
-        target = "main.py"
-    
-    print(f"Executando {target}...")
-    # Tentar rodar e capturar erros
+    # Teste de IP para confirmar o Webshare
     try:
-        subprocess.run([sys.executable, target], check=True)
+        ip = requests.get("https://api.ipify.org", timeout=10).text
+        print(f"📡 Tunnel OK! IP Webshare: {ip}")
     except Exception as e:
-        print(f"❌ Erro na execução: {e}")
-        time.sleep(10)
+        print(f"⚠️ Erro no Tunnel: {e}")
+
+    # Executar o robô de Forex (main.py)
+    print("🏛️ Ativando Forex Quant Pro V2.1...")
+    subprocess.run([sys.executable, "main.py"])
 
 if __name__ == "__main__":
     start()
