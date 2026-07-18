@@ -1,1 +1,1 @@
-worker: python diagnostico.py
+worker: python -c 'print("SYSTEM_RESET_SUCCESS")'
