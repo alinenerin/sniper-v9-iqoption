@@ -1,40 +1,41 @@
-import os, sys, time, threading
+import os, sys, time, requests
 from iqoptionapi.stable_api import IQ_Option
 
-# PROTOCOLO FOREX QUANT PRO V2.1 (SOBERANO)
-# Foco: M15 Contexto -> M5 Confirmação -> M1 Gatilho
+def check_ip():
+    try:
+        r = requests.get("https://api.ipify.org?format=json", timeout=10)
+        return r.json().get("ip")
+    except:
+        return "Erro ao checar IP"
 
-def logica_forex():
-    print("🏛️ Sniper Forex Quant Pro V2.1: Iniciando Operações...")
+def start_forex():
+    print("🏛️ Sniper Forex Quant Pro V2.1: OPERACIONAL")
     
-    # Proxy Webshare (Obrigatório para evitar bloqueio de IP no Forex Real)
-    os.environ['all_proxy'] = "socks5h://gjgztyys:gqyu31jfhdqo@socks.webshare.io:1080"
+    # Configuração de Proxy (Deve estar no railway_start.py, mas repetimos aqui por segurança)
+    proxy = "socks5h://gjgztyys:gqyu31jfhdqo@socks.webshare.io:1080"
+    os.environ['all_proxy'] = proxy
+    
+    print(f"📡 Validando Conexão... IP Atual: {check_ip()}")
     
     iq = IQ_Option("laiane.aline@gmail.com", "alineEgui95@")
     
-    while True:
+    intentos = 0
+    while intentos < 5:
+        print(f"尝试 (Try {intentos+1}) - Conectando IQ Option via Webshare...")
         check, reason = iq.connect()
         if check:
-            print("✅ Conectado ao Mercado Forex Real.")
-            iq.change_balance("PRACTICE") # Segurança inicial
-            
-            pares = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
-            
+            print("✅ CONECTADO AO MERCADO FOREX REAL!")
+            iq.change_balance("PRACTICE")
+            print(f"Saldo: {iq.get_balance()}")
+            # Loop de monitoramento infinito
             while True:
-                if not iq.check_connect():
-                    break
-                
-                # Simulação de monitoramento do Comitê de Decisão
-                # Aqui o bot rodaria a análise M15/M5/M1
-                current_time = time.strftime('%H:%M:%S')
-                print(f"[{current_time}] Monitorando Hierarquia Temporal (M15/M5/M1) - Status: SOBERANO")
-                
-                # Sleep de 1 minuto para manter o loop
+                if not iq.check_connect(): break
+                print(f"[{time.strftime('%H:%M:%S')}] Monitorando Comite de Decisao (EURUSD, GBPUSD, USDJPY)...")
                 time.sleep(60)
         else:
-            print(f"⚠️ Falha de Conexão: {reason}. Reconectando...")
-            time.sleep(30)
+            print(f"⚠️ Falha: {reason}. Tentando novamente...")
+            intentos += 1
+            time.sleep(15)
 
 if __name__ == "__main__":
-    # Rodar como script puro para evitar exigências de porta do Render (tentando modo simples)
-    logica_forex()
+    start_forex()
