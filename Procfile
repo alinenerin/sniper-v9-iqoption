@@ -1,1 +1,1 @@
-worker: python diagnostico_rede.py
+worker: python main.py
