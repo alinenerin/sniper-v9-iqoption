@@ -1,4 +1,3 @@
-websocket-client==0.56
-requests[socks]
-PySocks
+requests
+websocket-client
 iqoptionapi
