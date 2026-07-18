@@ -1,0 +1,4 @@
+websocket-client==0.56
+requests[socks]
+PySocks
+iqoptionapi
