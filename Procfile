@@ -1,1 +1,1 @@
-worker: python main.py
+worker: python executar_agora.py
