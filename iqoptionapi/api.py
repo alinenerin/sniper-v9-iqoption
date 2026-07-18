@@ -167,6 +167,12 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.session = requests.Session()
         self.session.verify = False
         self.session.trust_env = False
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://iqoption.com",
+            "Referer": "https://iqoption.com/"
+        })
         self.username = username
         self.password = password
         self.token_login2fa = None
@@ -206,12 +212,22 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
 
         logger.debug(url)
 
-        response = self.session.request(method=method,
-                                        url=url,
-                                        data=data,
-                                        params=params,
-                                        headers=headers,
-                                        proxies=self.proxies)
+        if method == "POST" and isinstance(data, dict):
+            response = self.session.request(method=method,
+                                            url=url,
+                                            json=data,
+                                            params=params,
+                                            headers=headers,
+                                            proxies=self.proxies,
+                                            verify=False)
+        else:
+            response = self.session.request(method=method,
+                                            url=url,
+                                            data=data,
+                                            params=params,
+                                            headers=headers,
+                                            proxies=self.proxies,
+                                            verify=False)
         logger.debug(response)
         logger.debug(response.text)
         logger.debug(response.headers)
@@ -237,13 +253,22 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         logger.debug(method + ": " + url + " headers: " + str(self.session.headers) +
                      " cookies:  " + str(self.session.cookies.get_dict()))
 
-        response = self.session.request(method=method,
-                                        url=url,
-                                        data=data,
-                                        params=params,
-                                        headers=headers,
-                                        proxies=self.proxies,
-                                        verify=False)
+        if method == "POST" and isinstance(data, dict):
+            response = self.session.request(method=method,
+                                            url=url,
+                                            json=data,
+                                            params=params,
+                                            headers=headers,
+                                            proxies=self.proxies,
+                                            verify=False)
+        else:
+            response = self.session.request(method=method,
+                                            url=url,
+                                            data=data,
+                                            params=params,
+                                            headers=headers,
+                                            proxies=self.proxies,
+                                            verify=False)
         logger.debug(response)
         logger.debug(response.text)
         logger.debug(response.headers)
@@ -787,20 +812,22 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.websocket_thread = threading.Thread(target=self.websocket.run_forever, kwargs={'sslopt': _sslopt})
         self.websocket_thread.daemon = True
         self.websocket_thread.start()
-        import time as _time
-        _deadline = _time.time() + 20  # timeout 20s
-        while _time.time() < _deadline:
+        print("DEBUG: WebSocket thread iniciada. Aguardando conexão...")
+        while True:
             try:
                 if global_value.check_websocket_if_error:
+                    print(f"DEBUG: WebSocket erro detectado: {global_value.websocket_error_reason}")
                     return False, global_value.websocket_error_reason
                 if global_value.check_websocket_if_connect == 0:
+                    print("DEBUG: WebSocket conexão fechada.")
                     return False, "Websocket connection closed."
                 elif global_value.check_websocket_if_connect == 1:
+                    print("DEBUG: WebSocket CONECTADO com sucesso!")
                     return True, None
             except:
                 pass
-            _time.sleep(0.05)
-        return False, "Websocket connection timeout (20s)"
+
+            pass
 
     # @tokensms.setter
     def setTokenSMS(self, response):
@@ -813,6 +840,7 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.token_login2fa = token_2fa
 
     def get_ssid(self):
+        print("DEBUG: Chamando get_ssid()...")
         response = None
         try:
             if self.token_login2fa is None:
@@ -843,6 +871,7 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
 
     def connect(self):
 
+        print("DEBUG: Entrou no método connect")
         global_value.ssl_Mutual_exclusion = False
         global_value.ssl_Mutual_exclusion_write = False
         """Method for connection to IQ Option API."""
@@ -887,17 +916,12 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
             self.session.cookies, {"ssid": global_value.SSID})
 
         self.timesync.server_timestamp = None
-        import time as _tsync
-        _deadline_ts = _tsync.time() + 15
-        while _tsync.time() < _deadline_ts:
+        while True:
             try:
                 if self.timesync.server_timestamp != None:
                     break
             except:
                 pass
-            _tsync.sleep(0.05)
-        if self.timesync.server_timestamp is None:
-            return False, "Timesync timeout (15s)"
         return True, None
 
     def connect2fa(self, sms_code):
