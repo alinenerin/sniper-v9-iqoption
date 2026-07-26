@@ -1,12 +1,1 @@
-requests
-python-dotenv
-websocket-client
-pysocks
-numpy
-pandas
-xgboost
-scikit-learn
-joblib
-iqoptionapi
-mem0ai
-# Force build: 1785093648
+lse-data
