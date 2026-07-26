@@ -1,5 +1,5 @@
-pandas==2.2.2
-numpy==1.26.4
-requests==2.31.0
-python-dotenv==1.0.1
-iqoptionapi==0.5
+pandas
+numpy
+requests
+python-dotenv
+iqoptionapi
