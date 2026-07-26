@@ -1,1 +1,1 @@
-worker: python sentinela_v16_background.py
+worker: python3 main.py
