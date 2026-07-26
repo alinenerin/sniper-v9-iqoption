@@ -10,3 +10,6 @@ websocket-client
 requests
 python-dotenv
 mem0ai
+
+pythalesians
+
