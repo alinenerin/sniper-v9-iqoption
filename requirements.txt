@@ -8,4 +8,4 @@ xgboost
 scikit-learn
 joblib
 iqoptionapi
-memo
+mem0ai
