@@ -1,8 +1,8 @@
-pandas==2.2.2
-numpy==1.26.4
-requests[socks]==2.31.0
-python-dotenv==1.0.1
-websocket-client==1.8.0
-six==1.16.0
-PySocks==1.7.1
+pandas
+numpy
+requests[socks]
+python-dotenv
+websocket-client
+six
+PySocks
 iqoptionapi
