@@ -2,3 +2,6 @@ lse-data
 
 
 TA-Lib
+
+
+pandas-ta
