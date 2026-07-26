@@ -1,1 +1,1 @@
-worker: python executar_agora.py
+worker: python sentinela_v16_background.py
