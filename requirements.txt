@@ -7,3 +7,5 @@ pandas
 xgboost
 scikit-learn
 joblib
+iqoptionapi
+memo-server
