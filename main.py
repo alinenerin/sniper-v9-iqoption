@@ -1,6 +1,5 @@
-import os, time
-os.environ['NO_PROXY'] = '*'
-print('🏛️ [V16 SUPREME] SISTEMA ONLINE E INVICTUS')
+import time
+print('--- SISTEMA SUPREME V16 EM MODO DE SEGURANÇA ---')
 while True:
-    print(f'📊 [STATUS] Pulsacao - {time.strftime("%H:%M:%S")} BRT')
+    print('Monitorando sinais... (Aguardando estabilização de bibliotecas)')
     time.sleep(60)
