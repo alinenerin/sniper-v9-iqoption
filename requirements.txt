@@ -1,8 +1,4 @@
-pandas
-numpy
-requests[socks]
+requests
 python-dotenv
 websocket-client
-six
-PySocks
-iqoptionapi
+pysocks
