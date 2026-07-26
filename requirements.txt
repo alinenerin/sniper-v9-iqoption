@@ -5,3 +5,6 @@ TA-Lib
 
 
 pandas-ta
+
+
+xgboost
