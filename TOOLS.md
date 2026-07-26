@@ -47,7 +47,7 @@
 - **Testado:** 18/06/2026 ✅
 
 ## Railway
-- **Token:** 390f9149-6a2a-4b73-93a1-65632960a152
+- **Token:** {{credential:RAILWAY_TOKEN}}
 - **Projeto:** alinenerin/sniper-v9-iqoption (GitHub)
 - **Environment ID:** c1cf10f6-35ee-4279-83a8-6705fdbe9ad6 (production)
 - **Service ID:** 5472a6f2-05b1-4189-8346-38d807c450df
