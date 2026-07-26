@@ -4,3 +4,6 @@ websocket-client
 pysocks
 numpy
 pandas
+xgboost
+scikit-learn
+joblib
