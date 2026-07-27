@@ -1,16 +1,13 @@
-# Core de Operação e Dados
+lse-data
+TA-Lib
+pandas-ta
+xgboost
+scikit-learn
+numpy
+pandas
 iqoptionapi
 websocket-client
 requests
 python-dotenv
-lse-data
-
-# Inteligência Artificial (Prioridade Máxima)
-# Usando a versão 'fast-histogram' e removendo o scikit-learn pesado se possível
-xgboost
-numpy
-pandas
-
-# Análise Técnica (Leve)
-TA-Lib
-pandas-ta
+mem0ai
+finmarketpy
