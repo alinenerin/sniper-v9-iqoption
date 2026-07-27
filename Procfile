@@ -1,1 +1,1 @@
-worker: python sentinela_v16_background.py
+worker: python executor_v16_supreme.py & python FOREX_SUPREME_FINAL_V16.py
