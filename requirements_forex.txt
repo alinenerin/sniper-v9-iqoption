@@ -1,0 +1,9 @@
+lse-data
+TA-Lib
+pandas-ta
+xgboost
+scikit-learn
+numpy
+pandas
+python-dotenv
+finmarketpy
