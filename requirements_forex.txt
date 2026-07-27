@@ -1,8 +1,11 @@
 lse-data
 xgboost-cpu
+finmarketpy
 scikit-learn==1.2.2
 numpy<1.24.0
 pandas==1.5.3
 python-dotenv
 pandas-ta
 TA-Lib
+matplotlib
+plotly
