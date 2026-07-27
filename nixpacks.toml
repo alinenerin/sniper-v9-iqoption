@@ -1,14 +1,8 @@
 [phases.setup]
-nixPkgs = ["python311", "gcc"]
+nixPkgs = ["python311", "gcc", "stdenv.cc.cc.lib", "libgccjit", "glibc", "zlib", "libpng", "freetype"]
 
 [phases.install]
-cmds = [
-    "python -m venv /app/.venv",
-    "source /app/.venv/bin/activate",
-    "pip install --upgrade pip",
-    "pip install --no-cache-dir -r requirements.txt",
-    "rm -rf /root/.cache/pip"
-]
+cmds = ["python -m venv /app/.venv", "source /app/.venv/bin/activate", "pip install --upgrade pip", "pip install -r requirements.txt"]
 
 [start]
-cmd = "python sentinela_v16_background.py"
+cmd = "python3 sentinela_v16_background.py"
