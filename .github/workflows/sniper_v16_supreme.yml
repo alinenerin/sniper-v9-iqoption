@@ -2,29 +2,32 @@ name: Sniper V16 Supreme - Dual Engine (Binary & Forex)
 on:
   workflow_dispatch:
 jobs:
-  smc-deployment:
+  titan-final:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Install Official TA-Lib (System Level)
+      - name: Force Install TA-Lib (Direct Binary)
         run: |
-          # Usando o repositório de backports para pegar a TA-Lib oficial sem compilar do zero
-          sudo apt-get update
-          sudo apt-get install -y libta-lib0 libta-lib0-dev build-essential
+          # Download do binário pré-compilado oficial para Linux 64 bits
+          wget -q http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/
+          ./configure --prefix=/usr > /dev/null
+          make -s -j$(nproc) > /dev/null
+          sudo make install > /dev/null
+          cd ..
+          sudo ldconfig
 
-      - name: Link and Install AI Stack
+      - name: Install AI Stack
         run: |
-          # Instalar o Numpy primeiro para evitar o erro de compilação do wrapper
-          pip install numpy==1.23.5
-          # Instalar a TA-Lib apontando para os diretórios do sistema (SUDO garante permissão)
-          export TA_INCLUDE_PATH=/usr/include
-          export TA_LIBRARY_PATH=/usr/lib
-          pip install TA-Lib
-          # Restante da IA
-          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib pandas
+          pip install --upgrade pip > /dev/null
+          pip install numpy==1.23.5 > /dev/null
+          TA_INCLUDE_PATH=/usr/include TA_LIBRARY_PATH=/usr/lib pip install TA-Lib > /dev/null
+          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib pandas > /dev/null
 
       - name: Final Verification
         run: |
           python -c "import talib; import xgboost; print('TA-Lib: OK ✅'); print('XGBoost: OK ✅')"
+          python cérebro_v16.py --check-only
