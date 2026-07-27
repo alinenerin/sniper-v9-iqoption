@@ -1,2 +1,12 @@
 python-dotenv
 pandas
+numpy
+scipy
+scikit-learn
+xgboost-cpu
+pandas-ta
+TA-Lib
+finmarketpy
+lse-data
+marketaux
+yfinance
