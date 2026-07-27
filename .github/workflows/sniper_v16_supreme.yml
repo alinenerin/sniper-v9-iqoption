@@ -2,24 +2,20 @@ name: Sniper V16 Supreme - Dual Engine (Binary & Forex)
 on:
   workflow_dispatch:
 jobs:
-  apex-deployment:
+  victory-deployment:
     runs-on: ubuntu-latest
     container:
-      # Imagem de elite que já vem com TA-Lib (Programa + Python) pronta. 
-      # Usada por cientistas de dados para evitar justamente esses erros de compilação.
       image: cloudsuite/data-analytics
+      options: --user root
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Verify TA-Lib (Native)
+      - name: Install AI Stack (The Right Way)
         run: |
-          python3 -c "import talib; print('TA-Lib Nativa: OK ✅')" || echo 'Instalando backup...'
-
-      - name: Install Remaining AI Stack
-        run: |
+          # Usar o python3 e pip3 do container que já tem a TA-Lib
           python3 -m pip install --upgrade pip
-          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib pandas numpy==1.23.5
+          python3 -m pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib pandas numpy==1.23.5
 
       - name: Final Verification
         run: |
