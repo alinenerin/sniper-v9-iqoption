@@ -2,22 +2,28 @@ name: Sniper V16 Supreme - Dual Engine (Binary & Forex)
 on:
   workflow_dispatch:
 jobs:
-  titan-deployment:
+  smc-deployment:
     runs-on: ubuntu-latest
-    container:
-      # Imagem de elite para Trading Quantitativo - Já contém TA-Lib e Python otimizados.
-      image: quantlib/python:latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Install System Engine
+      - name: Install Official TA-Lib (System Level)
         run: |
-          apt-get update && apt-get install -y libta-lib0-dev build-essential
+          # Usando o repositório de backports para pegar a TA-Lib oficial sem compilar do zero
+          sudo apt-get update
+          sudo apt-get install -y libta-lib0 libta-lib0-dev build-essential
 
-      - name: Activate AI Stack
+      - name: Link and Install AI Stack
         run: |
-          pip install --no-cache-dir xgboost==1.7.5 TA-Lib iqoptionapi marketaux polygon-api-client pytz joblib pandas numpy==1.23.5
+          # Instalar o Numpy primeiro para evitar o erro de compilação do wrapper
+          pip install numpy==1.23.5
+          # Instalar a TA-Lib apontando para os diretórios do sistema (SUDO garante permissão)
+          export TA_INCLUDE_PATH=/usr/include
+          export TA_LIBRARY_PATH=/usr/lib
+          pip install TA-Lib
+          # Restante da IA
+          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib pandas
 
       - name: Final Verification
         run: |
