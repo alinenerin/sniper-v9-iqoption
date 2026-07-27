@@ -2,39 +2,23 @@ name: Sniper V16 Supreme - Dual Engine (Binary & Forex)
 on:
   workflow_dispatch:
 jobs:
-  master-build-v16:
+  ultimate-build-v16:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Setup Conda & TA-Lib
+        uses: s-weigand/setup-conda@v1
         with:
-          python-version: '3.10'
-
-      - name: Build TA-Lib C-Library (Root)
+          update-conda: true
+      
+      - name: Install TA-Lib and AI Stack
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential wget
-          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-          tar -xzf ta-lib-0.4.0-src.tar.gz
-          cd ta-lib/
-          ./configure --prefix=/usr
-          make
-          sudo make install
-          cd ..
+          # O Conda instala a TA-Lib e já faz o link com o Python de forma nativa
+          conda install -c conda-forge ta-lib -y
+          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib numpy pandas
 
-      - name: Install Python Stack (with explicit TA-Lib paths)
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy==1.23.5 pandas==1.5.3
-          # Aqui está o segredo para o Python achar a TA-Lib instalada
-          export TA_INCLUDE_PATH=/usr/include
-          export TA_LIBRARY_PATH=/usr/lib
-          pip install TA-Lib
-          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib
-
-      - name: Final Verification (The Moment of Truth)
+      - name: Final Verification (The Veredict)
         run: |
           python -c "import xgboost; import talib; print('XGBoost: OK ✅'); print('TA-Lib: OK ✅')"
