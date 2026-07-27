@@ -2,23 +2,37 @@ name: Sniper V16 Supreme - Dual Engine (Binary & Forex)
 on:
   workflow_dispatch:
 jobs:
-  definitive-build-v16:
+  definitive-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
+
+      - name: Install System TA-Lib (The Program)
+        run: |
+          # Baixar e instalar o programa base (C-Library)
+          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/
+          # Usar /usr como prefixo para garantir que as libs fiquem no path global
+          ./configure --prefix=/usr
+          make
+          sudo make install
+          cd ..
+          sudo ldconfig
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install AI Stack (TA-Lib Binary Method)
+      - name: Connect Python to TA-Lib
         run: |
           python -m pip install --upgrade pip
-          # TA-Lib-Binary é a solução para ambientes de nuvem restritos
-          pip install ta-lib-binary
-          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib numpy pandas
+          pip install numpy==1.23.5 pandas==1.5.3 
+          # Instalar o conector Python forçando a busca no /usr onde o programa foi instalado
+          TA_INCLUDE_PATH=/usr/include TA_LIBRARY_PATH=/usr/lib pip install TA-Lib
+          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib
 
       - name: Final Verification
         run: |
