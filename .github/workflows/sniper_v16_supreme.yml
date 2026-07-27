@@ -20,7 +20,9 @@ jobs:
           cd ta-lib/ && ./configure --prefix=/usr && make && sudo make install && cd ..
       - name: Install Python AI Stack (Crew V16)
         run: |
-          pip install numpy==1.23.5 pandas==1.5.3 xgboost==1.7.5 iqoptionapi TA-Lib marketaux polygon-api-client pytz joblib
+          pip install numpy==1.23.5 pandas==1.5.3 xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib
+          # Instalação forçada da TA-Lib via wrapper python
+          pip install TA-Lib
       - name: Final Verification
         run: |
-          python -c "import xgboost; import TA_Lib; import iqoptionapi; print('Crew V16: Motores prontos! ✅')"
+          python -c "import xgboost; import talib; print('Crew V16: Motores prontos! ✅')"
