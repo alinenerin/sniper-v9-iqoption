@@ -2,7 +2,7 @@
 nixPkgs = ["python311", "gcc", "stdenv.cc.cc.lib", "libgccjit", "glibc", "zlib", "libpng", "freetype"]
 
 [phases.install]
-cmds = ["python -m venv /app/.venv", "source /app/.venv/bin/activate", "pip install --upgrade pip", "pip install -r requirements.txt"]
+cmds = ["python -m venv /app/.venv", "source /app/.venv/bin/activate", "pip install --upgrade pip"]
 
 [start]
-cmd = "python3 sentinela_v16_background.py"
+cmd = "python3 railway_start.py"
