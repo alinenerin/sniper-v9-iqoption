@@ -1,71 +1,28 @@
 name: Sniper V16 Supreme - Dual Engine (Binary & Forex)
-
 on:
-  workflow_dispatch: # Permite iniciar manualmente
+  workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *' # Reinicia a cada 6 horas automaticamente
-
+    - cron: '0 */6 * * *'
 jobs:
   trading-engines:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          cache: 'pip'
-
-      - name: Download Previous State
-        uses: dawidd6/action-download-artifact@v2
-        with:
-          workflow: sniper_v16_supreme.yml
-          name: zapia-v16-state
-          if_no_artifact_found: warn
-          path: zapia_persistence/
-
-      - name: Install System Dependencies
+      - name: Install AI Stack
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential wget
-          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-          tar -xzf ta-lib-0.4.0-src.tar.gz
-          cd ta-lib/
-          ./configure --prefix=/usr
-          make
-          sudo make install
-          cd ..
-
-      - name: Install Python AI Stack
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy==1.23.5 pandas==1.5.3
-          pip install xgboost==1.7.5 scikit-learn==1.2.2
-          pip install TA-Lib iqoptionapi marketaux polygon-api-client pytz joblib
-
-      - name: Run Binary & Forex Engines
+          pip install numpy==1.23.5 pandas==1.5.3 xgboost==1.7.5 scikit-learn==1.2.2 iqoptionapi marketaux polygon-api-client pytz joblib
+      - name: Run Engines
         env:
           IQ_USER: ${{ secrets.IQ_USER }}
-          IQ_PASSWORD: ${{ secrets.IQ_PASS }} # Ajustado conforme seus secrets (IQ_PASS)
+          IQ_PASSWORD: ${{ secrets.IQ_PASS }}
           MARKETAUX_API_KEY: ${{ secrets.MARKETAUX_API_KEY }}
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-          LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
         run: |
-          echo "🚀 Iniciando Motor BINÁRIAS (V16 Supreme)..."
           python executor_v16_supreme.py --max-runtime 21000 &
-          
-          echo "📈 Iniciando Motor FOREX (Supreme Final)..."
           python FOREX_SUPREME_FINAL_V16.py --max-runtime 21000 &
-          
           wait
-          echo "🏛️ Ciclo finalizado."
-
-      - name: Persist State (Upload Artifact)
-        uses: actions/upload-artifact@v3
-        if: always()
-        with:
-          name: zapia-v16-state
-          path: zapia_persistence/
-          retention-days: 1
