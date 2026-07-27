@@ -1,4 +1,10 @@
-# Sniper V9 IQ Option - V16 Supreme
+---
+title: V16-Forex-Supreme
+emoji: 🏛️
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
 
-Protocolo Forex Quant Supreme V3.0 ativado.
-Último reset de build: 26/07/2026 16:16 BRT
+Motor de Elite Forex V16 Supreme - Arquitetura de 16GB.
