@@ -3,6 +3,4 @@ numpy
 xgboost
 scikit-learn
 iqoptionapi
-websocket-client
-requests
-python-dotenv
+pytz
