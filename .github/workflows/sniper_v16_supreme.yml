@@ -2,33 +2,37 @@ name: Sniper V16 Supreme - Dual Engine (Binary & Forex)
 on:
   workflow_dispatch:
 jobs:
-  titan-deployment:
+  zenith-deployment:
     runs-on: ubuntu-latest
     container:
-      image: python:3.10-slim-bullseye
+      image: python:3.10-bullseye
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Install System Dependencies
+      - name: Install Base System
         run: |
           apt-get update
           apt-get install -y build-essential wget
+          # Instalar o Programa TA-Lib (C-Library)
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
           tar -xzf ta-lib-0.4.0-src.tar.gz
           cd ta-lib/
           ./configure --prefix=/usr
-          make
+          make -j$(nproc)
           make install
           cd ..
           ldconfig
 
-      - name: Install AI Stack
+      - name: Install Python Dependencies (Sequence Corrected)
         run: |
-          pip install --upgrade pip
-          pip install numpy==1.23.5 pandas==1.5.3
+          python -m pip install --upgrade pip
+          # PRIMEIRO: Instalar Numpy e Cython (necessários para compilar o wrapper da TA-Lib)
+          pip install numpy==1.23.5 Cython
+          # SEGUNDO: Instalar o conector TA-Lib com caminhos explícitos
           TA_INCLUDE_PATH=/usr/include TA_LIBRARY_PATH=/usr/lib pip install TA-Lib
-          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib
+          # TERCEIRO: O restante da AI Stack
+          pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib pandas
 
       - name: Final Verification
         run: |
