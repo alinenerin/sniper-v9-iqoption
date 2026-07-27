@@ -1,0 +1,9 @@
+iqoptionapi
+websocket-client
+requests
+python-dotenv
+xgboost
+numpy
+pandas
+TA-Lib
+pandas-ta
