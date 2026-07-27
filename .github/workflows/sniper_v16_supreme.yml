@@ -2,21 +2,26 @@ name: Sniper V16 Supreme - Dual Engine (Binary & Forex)
 on:
   workflow_dispatch:
 jobs:
-  victory-deployment:
+  ultra-deployment:
     runs-on: ubuntu-latest
     container:
-      image: cloudsuite/data-analytics
-      options: --user root
+      # Imagem de Elite (Kaggle/Python) - Contém TA-Lib, XGBoost, Pandas e Numpy pré-instalados.
+      image: gcr.io/kaggle-images/python:latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Install AI Stack (The Right Way)
+      - name: Supreme Verification (No Installation Needed)
         run: |
-          # Usar o python3 e pip3 do container que já tem a TA-Lib
-          python3 -m pip install --upgrade pip
-          python3 -m pip install xgboost==1.7.5 iqoptionapi marketaux polygon-api-client pytz joblib pandas numpy==1.23.5
+          # Aqui não instalamos nada, apenas testamos o que já vem "de fábrica" na imagem de elite.
+          python3 -c "import talib; import xgboost; print('TA-Lib: OK ✅'); print('XGBoost: OK ✅')"
 
-      - name: Final Verification
+      - name: Final Connectivity (IQ Option & Tools)
         run: |
-          python3 -c "import xgboost; import talib; print('XGBoost: OK ✅'); print('TA-Lib: OK ✅')"
+          # Apenas instalar conectores leves
+          pip install iqoptionapi marketaux polygon-api-client pytz joblib
+
+      - name: Execution Test (Cérebro V16)
+        run: |
+          # Testar se o coração do sistema pulsa
+          python3 cérebro_v16.py --check-only
