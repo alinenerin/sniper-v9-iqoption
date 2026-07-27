@@ -10,5 +10,5 @@ websocket-client
 requests
 python-dotenv
 mem0ai
-# FinMarketPy é o sucessor do PyThalesians (mais estável e atualizado)
+# Agora com suporte a compilação via nixpacks
 finmarketpy
