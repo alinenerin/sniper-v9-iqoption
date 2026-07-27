@@ -2,7 +2,7 @@ name: Sniper V16 Supreme - Dual Engine (Binary & Forex)
 on:
   workflow_dispatch:
 jobs:
-  check-critical-libs:
+  build-crew-v16:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -11,10 +11,16 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - name: Install Primary Stack
+      - name: Install System TA-Lib
         run: |
-          pip install xgboost==1.7.5 iqoptionapi
-      - name: Double Check Verification
+          sudo apt-get update
+          sudo apt-get install -y build-essential wget
+          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/ && ./configure --prefix=/usr && make && sudo make install && cd ..
+      - name: Install Python AI Stack (Crew V16)
         run: |
-          python -c "import xgboost; print('XGBoost: OK ✅')"
-          python -c "import iqoptionapi; print('IQOptionAPI: OK ✅')"
+          pip install numpy==1.23.5 pandas==1.5.3 xgboost==1.7.5 iqoptionapi TA-Lib marketaux polygon-api-client pytz joblib
+      - name: Final Verification
+        run: |
+          python -c "import xgboost; import TA_Lib; import iqoptionapi; print('Crew V16: Motores prontos! ✅')"
