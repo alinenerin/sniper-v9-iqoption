@@ -4,3 +4,5 @@ xgboost
 scikit-learn
 iqoptionapi
 pytz
+marketaux
+polygon-api-client
