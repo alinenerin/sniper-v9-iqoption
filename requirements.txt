@@ -1,14 +1,16 @@
-lse-data
-TA-Lib
-pandas-ta
-xgboost
-scikit-learn
-numpy
-pandas
+# Core de Operação e Dados
 iqoptionapi
 websocket-client
 requests
 python-dotenv
-mem0ai
-# Agora com suporte a compilação via nixpacks
-finmarketpy
+lse-data
+
+# Inteligência Artificial (Prioridade Máxima)
+# Usando a versão 'fast-histogram' e removendo o scikit-learn pesado se possível
+xgboost
+numpy
+pandas
+
+# Análise Técnica (Leve)
+TA-Lib
+pandas-ta
