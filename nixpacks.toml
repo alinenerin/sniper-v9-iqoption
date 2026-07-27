@@ -1,5 +1,14 @@
 [phases.setup]
-aptPkgs = ["libgomp1"]
+aptPkgs = ["libgomp1", "build-essential", "wget"]
+
+[phases.build]
+cmds = [
+    "wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz",
+    "tar -xvzf ta-lib-0.4.0-src.tar.gz",
+    "cd ta-lib/ && ./configure --prefix=/usr && make && make install",
+    "rm -rf ta-lib ta-lib-0.4.0-src.tar.gz",
+    "pip install -r requirements.txt"
+]
 
 [env]
-LD_LIBRARY_PATH = "/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:/usr/local/lib"
+LD_LIBRARY_PATH = "/usr/lib:/usr/local/lib"
