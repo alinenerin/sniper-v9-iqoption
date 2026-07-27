@@ -13,36 +13,10 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - name: Restore Memory
-        uses: dawidd6/action-download-artifact@v2
-        with:
-          workflow: sniper_v16_supreme.yml
-          name: zapia-v16-memory
-          if_no_artifact_found: warn
-          path: zapia_persistence/
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y build-essential wget
-          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-          tar -xzf ta-lib-0.4.0-src.tar.gz
-          cd ta-lib/ && ./configure --prefix=/usr && make && sudo make install && cd ..
       - name: Install AI Stack
         run: |
-          pip install numpy==1.23.5 pandas==1.5.3 xgboost==1.7.5 scikit-learn==1.2.2 TA-Lib iqoptionapi marketaux polygon-api-client pytz joblib
-      - name: Run Engines
-        env:
-          IQ_USER: ${{ secrets.IQ_USER }}
-          IQ_PASSWORD: ${{ secrets.IQ_PASS }}
-          MARKETAUX_API_KEY: ${{ secrets.MARKETAUX_API_KEY }}
-          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          python -m pip install --upgrade pip
+          pip install xgboost==1.7.5 numpy==1.23.5 pandas==1.5.3 iqoptionapi
+      - name: Verify XGBoost
         run: |
-          mkdir -p zapia_persistence
-          python executor_v16_supreme.py --max-runtime 21000 &
-          python FOREX_SUPREME_FINAL_V16.py --max-runtime 21000 &
-          wait
-      - name: Save Memory
-        uses: actions/upload-artifact@v3
-        if: always()
-        with:
-          name: zapia-v16-memory
-          path: zapia_persistence/
+          python -c "import xgboost; print('XGBoost Operacional:', xgboost.__version__)"
