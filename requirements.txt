@@ -1,13 +1,8 @@
-lse-data
-TA-Lib
-pandas-ta
+pandas
+numpy
 xgboost
 scikit-learn
-numpy
-pandas
 iqoptionapi
 websocket-client
 requests
 python-dotenv
-mem0ai
-finmarketpy
