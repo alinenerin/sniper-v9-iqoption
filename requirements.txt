@@ -1,5 +1,4 @@
 lse-data
-TA-Lib
 pandas-ta
 xgboost
 scikit-learn
