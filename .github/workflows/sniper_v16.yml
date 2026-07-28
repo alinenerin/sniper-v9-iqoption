@@ -1,32 +1,34 @@
-name: Sniper V16 Supreme - Operacional Grátis 24/7
-
+name: Sniper V16 Supreme
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    paths:
+      - '.github/workflows/sniper_v16.yml'
+      - 'sniper_loop.py'
 
 jobs:
   trading:
     runs-on: ubuntu-latest
     steps:
-      - name: 🚚 Checkout
+      - name: Checkout
         uses: actions/checkout@v4
-      - name: 🐍 Python
+      - name: Python Setup
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: ⚙️ Setup
+      - name: System Deps
+        run: sudo apt-get update && sudo apt-get install -y libgomp1
+      - name: Install Libs
         run: |
-          sudo apt-get update && sudo apt-get install -y libgomp1
-          pip install xgboost pandas requests websocket-client==0.56.0
+          pip install --no-cache-dir xgboost pandas requests websocket-client==0.56.0
           pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git
-      - name: 🚀 Start V16
+      - name: Create AI Engine
         run: |
-          cat <<EOF > supreme_intelligence.py
-class SupremeIntelligence:
-    def __init__(self): print('🏛️ V16 OMNI LOADED: XGBoost 2.0.3 Ativo')
-    def analyze(self, p): return 98
-EOF
-          export IQ_USER='laiane.aline@gmail.com'
-          export IQ_PASS='alineegui95'
-          python sniper_loop.py
+          echo "class SupremeIntelligence:" > supreme_intelligence.py
+          echo "    def __init__(self): print('V16 OMNI LOADED')" >> supreme_intelligence.py
+          echo "    def analyze(self, p): return 98" >> supreme_intelligence.py
+      - name: Start Sniper
+        env:
+          IQ_USER: 'laiane.aline@gmail.com'
+          IQ_PASS: 'alineegui95'
+        run: python sniper_loop.py
