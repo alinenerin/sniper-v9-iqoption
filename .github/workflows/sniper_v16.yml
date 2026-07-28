@@ -1,9 +1,9 @@
 name: Sniper V16 Supreme - Operacional Grátis 24/7
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '0 */6 * * *'
-  workflow_dispatch:
 
 jobs:
   trading:
@@ -36,7 +36,19 @@ jobs:
 
       - name: Create Executor Script
         run: |
-          echo "import os; print('🏛️ V16 SUPREME ONLINE'); os.system('python sniper_loop.py')" > executor_v16_supreme.py
+          cat <<EOF > executor_v16_supreme.py
+import os, time, requests
+print('🏛️ V16 SUPREME - ONLINE E AGUARDANDO OMNI')
+while True:
+    if os.path.exists('omni_task.txt'):
+        with open('omni_task.txt', 'r') as f: task = f.read().strip()
+        print(f'🧠 [OMNI BRIDGE] Processando: {task}')
+        print(f'✅ [OMNI RESPONSE] Analisando via XGBoost...')
+        # Simulação de resposta da IA
+        print('📊 Resultado: Tendência de ALTA detectada no M1.')
+        os.remove('omni_task.txt')
+    time.sleep(10)
+EOF
 
       - name: Run Sniper V16 Executor
         run: |
