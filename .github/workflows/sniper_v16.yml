@@ -1,10 +1,9 @@
 name: Sniper V16 Supreme - Operacional Grátis 24/7
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
   trading:
@@ -13,18 +12,18 @@ jobs:
       - name: 🚚 Checkout
         uses: actions/checkout@v4
       
-      - name: 🐍 Setup Python
+      - name: 🐍 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
       
-      - name: ⚙️ Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgomp1
-          pip install --no-cache-dir xgboost pandas requests iqoptionapi talib-binary
+      - name: ⚙️ Dependências do Sistema
+        run: sudo apt-get update && sudo apt-get install -y libgomp1
       
-      - name: 🚀 Run V16 Supreme
+      - name: 📦 Instalando Core (XGBoost & Pandas)
+        run: pip install --no-cache-dir xgboost pandas requests iqoptionapi
+      
+      - name: 🚀 Execução Sniper
         run: |
-          echo "import os; print('🏛️ V16 SUPREME ONLINE - MOTOR INICIADO'); os.system('python sniper_loop.py')" > start.py
+          echo "import os; print('🏛️ V16 SUPREME ONLINE'); os.system('python sniper_loop.py')" > start.py
           python start.py
