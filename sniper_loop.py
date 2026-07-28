@@ -15,6 +15,13 @@ import time, math, threading, requests, pytz, json
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
+# --- V16 SUPREME BRIDGE ---
+try:
+    from supreme_intelligence import SupremeIntelligence
+    _supreme = SupremeIntelligence()
+except:
+    _supreme = None
+
 # ── IQ Option via lib WebSocket ────────────────────────────────────
 # Tenta "api_faria/" (dev local) depois a raiz do repo (Railway)
 _IQ_LIB_OK = False
@@ -1222,6 +1229,14 @@ def abrir_trade(par, direcao, stake, expiracao_min):
         option_type = "turbo" if expiracao_min <= 1 else "binary"
         direcao_iq  = direcao.lower()  # "call" ou "put"
 
+        # --- V16 SUPREME INTELLIGENCE FILTER ---
+        if _supreme:
+            _score, _motivo = _supreme.get_supreme_score(par, direcao)
+            if _score < 95:
+                _log(f'⚠️ [FILTRO V16] Entrada VETADA: Score {_score}/100 | Motivo: {_motivo}')
+                return None
+            _log(f'🏛️ [SUPREME OK] Score {_score}/100 | Execução Sniper autorizada!')
+        # ---------------------------------------
         status, id_op = _iq_api.buy(stake, par_base, direcao_iq, expiracao_min)
         if status and id_op:
             _log(f"Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
