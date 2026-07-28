@@ -2,55 +2,22 @@ name: Sniper V16 Supreme - Operacional Grátis 24/7
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 */6 * * *'
 
 jobs:
   trading:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Python
+      - name: Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
-      - name: Install System Dependencies
+      - name: Libs
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgomp1
-
-      - name: Install Core AI (XGBoost)
+          sudo apt-get update && sudo apt-get install -y libgomp1
+          pip install xgboost pandas requests iqoptionapi talib-binary
+      - name: Exec
         run: |
-          pip install --no-cache-dir xgboost pandas requests
-
-      - name: Install Broker API
-        run: |
-          pip install --no-cache-dir iqoptionapi || pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git
-
-      - name: Install Technical Analysis (TA-Lib)
-        run: |
-          pip install talib-binary || echo 'TA-Lib installation failed, skipping...'
-
-      - name: Create Executor Script
-        run: |
-          cat <<EOF > executor_v16_supreme.py
-import os, time, requests
-print('🏛️ V16 SUPREME - ONLINE E AGUARDANDO OMNI')
-while True:
-    if os.path.exists('omni_task.txt'):
-        with open('omni_task.txt', 'r') as f: task = f.read().strip()
-        print(f'🧠 [OMNI BRIDGE] Processando: {task}')
-        print(f'✅ [OMNI RESPONSE] Analisando via XGBoost...')
-        # Simulação de resposta da IA
-        print('📊 Resultado: Tendência de ALTA detectada no M1.')
-        os.remove('omni_task.txt')
-    time.sleep(10)
-EOF
-
-      - name: Run Sniper V16 Executor
-        run: |
-          timeout 350m python executor_v16_supreme.py || echo 'Sessão finalizada.'
-
+          echo "import os; print('🏛️ V16 SUPREME ONLINE'); os.system('python sniper_loop.py')" > run.py
+          python run.py
