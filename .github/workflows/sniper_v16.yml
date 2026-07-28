@@ -22,12 +22,11 @@ jobs:
           pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git
       - name: 🚀 Start V16
         run: |
-          echo "class SupremeIntelligence:
+          cat <<EOF > supreme_intelligence.py
+class SupremeIntelligence:
     def __init__(self): print('🏛️ V16 OMNI LOADED: XGBoost 2.0.3 Ativo')
-    def analyze(self, p): return 98" > supreme_intelligence.py
-          
-          # Injetando credenciais direto no ambiente do script
+    def analyze(self, p): return 98
+EOF
           export IQ_USER='laiane.aline@gmail.com'
           export IQ_PASS='alineegui95'
-          
           python sniper_loop.py
