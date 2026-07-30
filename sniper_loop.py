@@ -15,7 +15,7 @@ import time, math, threading, requests, pytz, json
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
-# --- Binary Quant X V16 Supreme - Unified Edition Bridge ---
+# --- Binary Quant X16 SUPREME BRIDGE (UNIFICADO) ---
 try:
     from supreme_intelligence import SupremeIntelligence
     _supreme = SupremeIntelligence()
