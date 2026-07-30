@@ -15,12 +15,30 @@ import time, math, threading, requests, pytz, json
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, render_template_string, request as freq, Response, redirect
 
-# --- V16 SUPREME BRIDGE ---
+# --- V16 SUPREME BRIDGE (UNIFICADO) ---
 try:
     from supreme_intelligence import SupremeIntelligence
     _supreme = SupremeIntelligence()
 except:
     _supreme = None
+try:
+    from core.forecasting.google_timesfm_bridge impoimport TimesFMBridge
+    _timesfm = TimesFMBridge()
+except:
+    _timesfm = None
+try:
+    from core.zapia_memory import ZapiaMemory
+    _memoria = ZapiaMemory()
+except:
+    _memoria = None
+try:
+    from core.integrations.darts_anomaly_shield import run_anomaly_check
+    _darts_ok = True
+except:
+    _darts_ok = False
+try:
+    import xgboost as xgb
+            pass
 
 # ── IQ Option via lib WebSocket ────────────────────────────────────
 # Tenta "api_faria/" (dev local) depois a raiz do repo (Railway)
@@ -1229,14 +1247,38 @@ def abrir_trade(par, direcao, stake, expiracao_min):
         option_type = "turbo" if expiracao_min <= 1 else "binary"
         direcao_iq  = direcao.lower()  # "call" ou "put"
 
-        # --- V16 SUPREME INTELLIGENCE FILTER ---
-        if _supreme:
-            _score, _motivo = _supreme.get_supreme_score(par, direcao)
-            if _score < 95:
-                _log(f'⚠️ [FILTRO V16] Entrada VETADA: Score {_score}/100 | Motivo: {_motivo}')
+         # V16 SCORE
+        try:
+            sc = 50
+            if _darts_ok:
+                try:
+                    if run_anomaly_check(symbol=par_base).get('veto'):
+                        return None
+                    sc += 10
+                except: pass
+            if _supreme:
+                try:
+                    s,_ = _supreme.get_supreme_score(par, direcao)
+                    sc += int(s*0.4)
+                except: pass
+            if _timesfm:
+                try:
+                    sc += int(_timesfm.forecast_next_candle().get('confidence',0)*28)
+                except: pass
+            if _xgb_ok: sc += 5
+            if _memoria:
+                try:
+                    p = _memoria.recall('score ' + par + ' ' + direcao)
+                    if p and len(p)>0: sc += 2
+                except: pass
+            sc = min(100, max(0, sc))
+            if sc < 95:
+                _log(f'⚠️ [V16] VETADO: {sc}/100')
                 return None
-            _log(f'🏛️ [SUPREME OK] Score {_score}/100 | Execução Sniper autorizada!')
-        # ---------------------------------------
+            _log(f'🏛️ [V16] AUTORIZADO: {sc}/100')
+        except Exception as e:
+            _log(f'[V16] Erro: {e}')
+        # ---# ---------------------------------------
         status, id_op = _iq_api.buy(stake, par_base, direcao_iq, expiracao_min)
         if status and id_op:
             _log(f"Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
