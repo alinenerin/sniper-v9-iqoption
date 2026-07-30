@@ -25,10 +25,10 @@ jobs:
         run: |
           pip install --no-cache-dir xgboost pandas numpy scipy requests websocket-client==0.56.0
           pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git
-      - name: Install TimesFM 2.5
+      - name: Install TimesFM 2.5 (CPU)
         run: |
-          pip install torch
-          pip install -e git+https://github.com/google-research/timesfm.git
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install git+https://github.com/google-research/timesfm.git
       - name: Start Sniper V16 Supreme
         env:
           IQ_USER: laiane.aline@gmail.com
