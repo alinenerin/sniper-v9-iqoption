@@ -36,3 +36,13 @@ who's in their life.
 
 - Trader profissional
 - Focada, objetiva, sabe exatamente o que quer
+
+## Arquitetura de IA V16 Supreme (Briefing de Elite)
+- **O Databank (London Strategic Edge):** Nova fonte de dados de elite integrada para análise de Ticks e SMC Histórico.
+- **O Cérebro (XGBoost):** Árbitro final, cálculo probabilístico 95+ Score.
+- **O Analista (Agente SMC):** Identifica pegada institucional, FVG e Order Blocks.
+- **O Estrategista (VSA Engine):** Análise de volume e detecção de exaustão.
+- **O Auditor (News Shield):** NLP Sentiment IA para proteção contra notícias.
+- **O Complemento (Mem0):** Memória de longo prazo e aprendizado adaptativo.
+- **A Equipe (Crew V16):** Sistema multi-agente para consenso e segurança.
+- **O Sniper (Probability Engine):** Execução técnica com precisão de milissegundos (V8/V15/V16).
