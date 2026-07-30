@@ -1,10 +1,13 @@
 name: Sniper V16 Supreme
 on:
+  schedule:
+    - cron: '*/30 * * * *'
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/sniper_v16.yml'
       - 'sniper_loop.py'
+      - 'core/forecasting/google_timesfm/google_timesfm_bridge.py'
 
 jobs:
   trading:
@@ -20,15 +23,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libgomp1
       - name: Install Libs
         run: |
-          pip install --no-cache-dir xgboost pandas requests websocket-client==0.56.0
+          pip install --no-cache-dir xgboost pandas numpy scipy requests websocket-client==0.56.0
           pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git
-      - name: Create AI Engine
+      - name: Install TimesFM 2.5
         run: |
-          echo "class SupremeIntelligence:" > supreme_intelligence.py
-          echo "    def __init__(self): print('V16 OMNI LOADED')" >> supreme_intelligence.py
-          echo "    def analyze(self, p): return 98" >> supreme_intelligence.py
-      - name: Start Sniper
+          pip install torch
+          pip install -e git+https://github.com/google-research/timesfm.git
+      - name: Start Sniper V16 Supreme
         env:
-          IQ_USER: 'laiane.aline@gmail.com'
-          IQ_PASS: 'alineegui95'
+          IQ_USER: laiane.aline@gmail.com
+          IQ_PASS: alineegui95
         run: python sniper_loop.py
