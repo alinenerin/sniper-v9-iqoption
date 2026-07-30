@@ -22,7 +22,7 @@ try:
 except:
     _supreme = None
 try:
-    from core.forecasting.google_timesfm_bridge impoimport TimesFMBridge
+    from core.forecasting.google_timesfm_bridge import TimesFMBridge
     _timesfm = TimesFMBridge()
 except:
     _timesfm = None
@@ -38,7 +38,9 @@ except:
     _darts_ok = False
 try:
     import xgboost as xgb
-            pass
+    _xgb_ok = True
+except:
+    _xgb_ok = False
 
 # ── IQ Option via lib WebSocket ────────────────────────────────────
 # Tenta "api_faria/" (dev local) depois a raiz do repo (Railway)
