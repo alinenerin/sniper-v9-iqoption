@@ -32,6 +32,7 @@ class TimesFMBridge:
     
     def __init__(self, json_path="timesfm_previsao.json"):
         self.json_path = json_path
+        self.alt_path = "previsao_timesfm.json"  # Nome usado pelo autopush do Colab
         self.max_age = 7200  # 2 horas em segundos
         self.model_name = "google/timesfm-2.0-500m"
         self.context_len = 512
@@ -43,8 +44,20 @@ class TimesFMBridge:
         Retorna None se o JSON não existir ou estiver expirado.
         """
         if not os.path.exists(self.json_path):
+            if os.path.exists(self.alt_path):
+                try:
+                    with open(self.alt_path, 'r') as f:
+                        data = json.load(f)
+                    if 'timestamp' in data:
+                        t = datetime.strptime(data['timestamp'], '%Y-%m-%d %H:%M:%S')
+                        idade = (datetime.now() - t).total_seconds()
+                        if idade <= self.max_age:
+                            return data
+                    return None
+                except:
+                    return None
             return None
-            
+
         try:
             with open(self.json_path, 'r') as f:
                 data = json.load(f)
