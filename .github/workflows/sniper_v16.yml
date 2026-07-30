@@ -7,7 +7,7 @@ on:
     paths:
       - '.github/workflows/sniper_v16.yml'
       - 'sniper_loop.py'
-      - 'core/forecasting/google_timesfm/google_timesfm_bridge.py'
+      - 'core/forecasting/google_timesfm_bridge.py'
 
 jobs:
   trading:
