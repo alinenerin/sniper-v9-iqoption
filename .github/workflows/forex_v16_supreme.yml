@@ -17,6 +17,7 @@ on:
         type: boolean
   schedule:
     - cron: '0 7-20 * * 1-5'   # 04:00-17:00 BRT (Londres + NY)
+    - cron: '0 0-5 * * 2-6'    # 21:00-02:00 BRT (Tokyo - sessão noturno)
 
 env:
   PYTHON_VERSION: '3.11'
