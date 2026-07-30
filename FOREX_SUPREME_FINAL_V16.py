@@ -13,6 +13,7 @@ ARQUITETURA DE CAMADAS:
     🧠 CAMADA 3: Google TimesFM (Voto de Minerva para Score 95+)
     🎯 CAMADA 4: Sniper Aline (EMAs 7/9/21/50/200 + Rejeição de Pavio)
     💎 CAMADA 5: Score Diamante (XGBoost 0-100)
+    🧠 MEM0: Memória de Longo Prazo (Aprendizado Contínuo SQLite)
 
 MODO DE USO:
     python3 FOREX_SUPREME_FINAL_V16.py                    # Modo automático (sessão ativa)
@@ -126,6 +127,15 @@ def load_modules():
         modules['vsa'] = None
         logger.warning(f"⚠️ [VSA] não carregado: {e}")
     
+    # MEM0 - Memoria de Longo Prazo
+    try:
+        from core.mem0_memory import Mem0Memory
+        modules['mem0'] = Mem0Memory(db_path=TRADING_CONFIG.db_path)
+        logger.info("✅ [MEM0] Memoria de Longo Prazo - ATIVO")
+    except Exception as e:
+        modules['mem0'] = None
+        logger.warning("⚠️ [MEM0] nao carregado: %s", e)
+
     # Sentiment Analysis
     try:
         from core.sentiment_analysis import SentimentAnalysis
@@ -504,6 +514,17 @@ def analyze_full_pipeline(iq_api, modules, symbol):
             except Exception as e:
                 logger.warning(f"⚠️ XGBoost prediction falhou: {e}")
         
+        # --- MEM0 Veto (Memoria de Longo Prazo) ---
+        if modules.get('mem0'):
+            try:
+                if modules['mem0'].should_skip_pair(symbol):
+                    result["veto"] = True
+                    result["veto_reason"] = f"MEM0_VETO - {symbol} com 3+ losses consecutivos"
+                    logger.warning(f"🛑 [MEM0] Vetando {symbol} - padrao perdedor detectado")
+                    return result
+            except Exception as e:
+                logger.warning(f"⚠️ MEM0 veto falhou: {e}")
+        
         # --- 7. VEREDICTO FINAL ---
         if not result.get("veto", False) and result["score"] >= TRADING_CONFIG.diamond_threshold:
             logger.info(f"✅ {symbol} | Score: {result['score']:.1f} | "
@@ -569,6 +590,23 @@ def execute_sniper(iq_api, signal):
                     "result": 0  # Pendente
                 })
             except:
+                    pass
+            
+            # Registrar no MEM0 (Memoria de Longo Prazo)
+            now_h = datetime.now(TRADING_CONFIG.tz_br).hour
+            now_d = datetime.now(TRADING_CONFIG.tz_br).weekday()
+            if modules.get('mem0'):
+                try:
+                    modules['mem0'].record_trade(
+                        pair=symbol,
+                        direction=direction,
+                        session=session_name,
+                        score=score,
+                        result="PENDENTE",
+                        profit=0.0,
+                        hour=now_h
+                    )
+                except:
                     pass
             
             return True, order_id
