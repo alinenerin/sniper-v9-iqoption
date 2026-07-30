@@ -1,0 +1,102 @@
+name: 🏛️ V16 SUPREME - FOREX SNIPER
+
+on:
+  workflow_dispatch:
+    inputs:
+      balance_mode:
+        description: 'Modo de operação'
+        required: true
+        default: 'PRACTICE'
+        type: choice
+        options:
+          - PRACTICE
+          - REAL
+      scan_only:
+        description: 'Apenas scan (sem executar)'
+        default: false
+        type: boolean
+  schedule:
+    - cron: '0 7-20 * * 1-5'   # 04:00-17:00 BRT (Londres + NY)
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Clonando Arquitetura V16 Supreme
+        uses: actions/checkout@v4
+
+      - name: 🐍 Configurando Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: ⚙️ Instalando Dependências de Sistema (TA-Lib + libgomp)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgomp1 wget build-essential
+          
+          # TA-Lib Nativa (Compilada em C)
+          wget -q http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/
+          ./configure --prefix=/usr
+          make -j$(nproc)
+          sudo make install
+          cd ..
+
+      - name: 🐍 Instalando Bibliotecas Python
+        run: |
+          pip install --upgrade pip
+          
+          # Core
+          pip install numpy pandas scipy
+          
+          # XGBoost 2.0.3 (Cérebro do Score Diamante)
+          pip install xgboost==2.0.3
+          
+          # Machine Learning auxiliar
+          pip install scikit-learn
+          
+          # TA-Lib bindings Python
+          pip install TA-Lib
+          
+          # Conectividade
+          pip install iqoptionapi requests pytz
+          
+          # Darts (Anomaly Shield - Camada 0)
+          pip install darts
+
+      - name: 🔧 Verificando TA-Lib + XGBoost
+        run: |
+          python3 -c "import talib; print(f'✅ TA-Lib nativa: {talib.__version__}')"
+          python3 -c "import xgboost; print(f'✅ XGBoost: {xgboost.__version__}')"
+          python3 -c "import iqoptionapi; print('✅ IQ Option API')"
+          python3 -c "from darts import TimeSeries; print('✅ Darts (Anomaly Shield)')"
+
+      - name: 🚀 EXECUTANDO MOTOR V16 SUPREME
+        env:
+          IQ_USER: ${{ secrets.IQ_USER }}
+          IQ_PASS: ${{ secrets.IQ_PASS }}
+          BALANCE_MODE: ${{ github.event.inputs.balance_mode || 'PRACTICE' }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.scan_only }}" = "true" ]; then
+            ARGS="$ARGS --scan-only"
+          fi
+          python3 FOREX_SUPREME_FINAL_V16.py $ARGS
+
+      - name: 📤 Salvando Logs e Resultados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v16-supreme-logs
+          path: |
+            *.log
+            forex_performance.db
+            core/forex_brain_v1.json
+            logs/
+          retention-days: 7
