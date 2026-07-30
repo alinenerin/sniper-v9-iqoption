@@ -1,6 +1,6 @@
 """
 ====================================================
-Binary Quant X V16 Supreme
+Binary Quant X V16 Supreme — Unified Edition
 PROTOCOLO SOBERANO V3.5 (Supreme Edition)
 
 ARQUITETURA DE CAMADAS:
