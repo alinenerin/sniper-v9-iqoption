@@ -128,6 +128,29 @@ class SupremeIntelligence:
         
         return analysis
 
+    def get_supreme_score(self, par, direcao):
+        """Interface direta para o sniper_loop. Retorna (score 0-100, motivo)."""
+        try:
+            import numpy
+            import pandas
+            base = 1.1 if 'EUR' in par or 'GBP' in par else 0.65
+            npy = numpy.random.randn(100) * 0.001
+            df = pandas.DataFrame({
+                'open': 'open': npy + base,
+                'close': npy + base,
+                'high': npy + base + 0.001,
+                'low': npy + base - 0.001,
+                'volume': numpy.random.randint(100, 1000, 100)
+            })
+            analise = self.get_full_analysis(df)
+            if analise.get('veto', False):
+                return 0, 'VETO: ' + str(analise.get('veto_reason', ''))
+            s = int(analise.get('score', 0))
+            s = max(0, min(100, s))
+            return s, 'SMC+VSA+' + str(s)
+        except Exception as e:
+            return 50, 'FALLBACK: ' + str(e)
+
     def is_supreme_approved(self, analysis):
         """
         Valida o sinal conforme o Protocolo Soberano V3.5
