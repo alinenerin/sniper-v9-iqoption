@@ -32,5 +32,5 @@ jobs:
       - name: Start Sniper V16 Supreme
         env:
           IQ_USER: laiane.aline@gmail.com
-          IQ_PASS: alineegui95
+          IQ_PASS: alineEgui95@
         run: python sniper_loop.py
