@@ -38,8 +38,21 @@ import pytz
 # CONFIGURAÇÃO CENTRAL
 # =============================================================================
 sys.path.insert(0, os.path.dirname(__file__))
-from config.settings import TRADING_CONFIG, IQ_USER, IQ_PASS, \
-    PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS, BALANCE_MODE
+# O repositório também possui config.py na raiz; carregar settings.py por caminho
+# evita que esse módulo sombreie o pacote config/ no GitHub Actions.
+import importlib.util
+_settings_path = os.path.join(os.path.dirname(__file__), "config", "settings.py")
+_settings_spec = importlib.util.spec_from_file_location("v16_config_settings", _settings_path)
+_settings = importlib.util.module_from_spec(_settings_spec)
+_settings_spec.loader.exec_module(_settings)
+TRADING_CONFIG = _settings.TRADING_CONFIG
+IQ_USER = _settings.IQ_USER
+IQ_PASS = _settings.IQ_PASS
+PROXY_HOST = _settings.PROXY_HOST
+PROXY_PORT = _settings.PROXY_PORT
+PROXY_USER = _settings.PROXY_USER
+PROXY_PASS = _settings.PROXY_PASS
+BALANCE_MODE = _settings.BALANCE_MODE
 
 # ============================================================================== LOGGING =====
 logging.basicConfig(
