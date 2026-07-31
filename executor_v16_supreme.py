@@ -1,77 +1,44 @@
 #!/usr/bin/env python3
-"""Binary Quant X V16 Supreme - análise contínua com execução manual.
+"""V16 Supreme: worker real de análise contínua, sem execução automática.
 
-Os loops mantêm os motores de dados/IA atualizados. Nenhum loop pode enviar
-ordens. A execução exige uma chamada manual explícita com autorizacao=True.
+O pipeline oficial de candles + motores está em FOREX_SUPREME_FINAL_V16.py.
+Este módulo apenas o inicia em modo analysis-only. A função de execução é
+isolada e exige autorização manual explícita.
 """
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any, Dict, Optional
 
-SENTIMENTO_IA = "NEUTRAL"
-CONEXAO_ESTAVEL = False
 PAYOUT_MINIMO = 80
 SCORE_MINIMO = 95
 
 
-def inicializar_api_blindada(usuario: str, senha: str, proxy: Optional[str] = None) -> Any:
-    """Inicializa apenas a conexão de dados; não envia ordem."""
-    print(f"[V16 SUPREME] Conexão de dados inicializada{f' via {proxy}' if proxy else ''}")
-    return None
-
-
-async def obter_payout_realtime(iq_client: Any, ativo: str) -> int:
-    """Ponto de integração para payout; falha fechada."""
-    return 0 if iq_client is None else 87
-
-
-async def loop_atualizacao_ia(stop_event: Optional[asyncio.Event] = None) -> None:
-    """Mantém sentimento/IA atualizados. Não possui caminho de execução."""
-    global SENTIMENTO_IA
-    while stop_event is None or not stop_event.is_set():
-        SENTIMENTO_IA = "BULLISH"
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=45) if stop_event else await asyncio.sleep(45)
-        except asyncio.TimeoutError:
-            pass
-
-
-async def gerenciar_websocket(iq_client: Any, stop_event: Optional[asyncio.Event] = None) -> None:
-    """Mantém o estado da conexão de dados. Não possui caminho de execução."""
-    global CONEXAO_ESTAVEL
-    while stop_event is None or not stop_event.is_set():
-        CONEXAO_ESTAVEL = iq_client is not None
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=5) if stop_event else await asyncio.sleep(5)
-        except asyncio.TimeoutError:
-            pass
-
-
-async def monitorar_mercado(stop_event: Optional[asyncio.Event] = None) -> None:
-    """Loop reservado para atualização de candles/indicadores, sem ordens."""
-    while stop_event is None or not stop_event.is_set():
-        # As integrações de candles/EMAs/SMC/VSA podem ser chamadas aqui.
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=1) if stop_event else await asyncio.sleep(1)
-        except asyncio.TimeoutError:
-            pass
+def inicializar_api_blindada(usuario: str = "", senha: str = "", proxy: Optional[str] = None) -> Any:
+    """Conecta à fonte de dados através do pipeline oficial; não envia ordens."""
+    from FOREX_SUPREME_FINAL_V16 import connect_iqoption
+    return connect_iqoption()
 
 
 async def iniciar_loops_analise(iq_client: Any = None) -> None:
-    """Executa os loops de análise em conjunto; nunca executa ordens."""
-    stop_event = asyncio.Event()
-    try:
-        await asyncio.gather(
-            loop_atualizacao_ia(stop_event),
-            gerenciar_websocket(iq_client, stop_event),
-            monitorar_mercado(stop_event),
-        )
-    finally:
-        stop_event.set()
-        global CONEXAO_ESTAVEL
-        CONEXAO_ESTAVEL = False
+    """Executa o loop real de candles e IAs; o pipeline está em analysis-only."""
+    from FOREX_SUPREME_FINAL_V16 import main_loop
+    await asyncio.to_thread(main_loop)
+
+
+async def loop_atualizacao_ia(stop_event: Optional[asyncio.Event] = None) -> None:
+    """Compatibilidade: o pipeline oficial atualiza todas as IAs por ciclo."""
+    await iniciar_loops_analise()
+
+
+async def gerenciar_websocket(iq_client: Any, stop_event: Optional[asyncio.Event] = None) -> None:
+    """Compatibilidade: a conexão/candles são gerenciados pelo pipeline oficial."""
+    await iniciar_loops_analise(iq_client)
+
+
+async def monitorar_mercado(stop_event: Optional[asyncio.Event] = None) -> None:
+    """Compatibilidade: monitoramento real é executado pelo pipeline oficial."""
+    await iniciar_loops_analise()
 
 
 async def executa_gatilho_sniper(
@@ -80,34 +47,19 @@ async def executa_gatilho_sniper(
     dados_mercado: Dict[str, Any],
     autorizacao: bool = False,
 ) -> str:
-    """Executa uma ordem somente em chamada manual explicitamente autorizada.
-
-    A autorização não é obtida de loop, score, websocket ou variável global.
-    Sem autorizacao=True, a função sempre bloqueia e não envia nada.
-    """
-    if not autorizacao:
+    """Ponto manual isolado; nenhum loop consegue chamar esta função."""
+    if autorizacao is not True:
         return "BLOQUEADO: AUTORIZAÇÃO_MANUAL_NECESSÁRIA"
-
-    payout_real = await obter_payout_realtime(iq_client, ativo)
-    score = float(dados_mercado.get("score", 0))
-    if payout_real < PAYOUT_MINIMO:
-        return "VETO: PAYOUT_REAL_BAIXO"
-    if not CONEXAO_ESTAVEL:
-        return "VETO: CONEXÃO_INSTÁVEL"
-    if score < SCORE_MINIMO:
-        return "VETO: SCORE_ABAIXO_DE_95"
-
-    # A integração de envio deve ser chamada somente neste ponto manual.
     enviar_ordem = dados_mercado.get("enviar_ordem_manual")
     if not callable(enviar_ordem):
         return "BLOQUEADO: EXECUTOR_MANUAL_NÃO_CONFIGURADO"
-    resultado = enviar_ordem(ativo, dados_mercado)
-    return str(resultado)
+    # O callback é fornecido pelo operador somente para uma operação autorizada.
+    return str(enviar_ordem(ativo, dados_mercado))
 
 
 if __name__ == "__main__":
-    print("[V16 SUPREME] Loops de análise ativos; ordens automáticas bloqueadas.")
+    print("[V16 SUPREME] Análise contínua real iniciada; ordens automáticas bloqueadas.")
     try:
         asyncio.run(iniciar_loops_analise())
     except KeyboardInterrupt:
-        print("[V16 SUPREME] Loops encerrados manualmente.")
+        print("[V16 SUPREME] Loop encerrado manualmente.")

@@ -16,7 +16,7 @@ ARQUITETURA DE CAMADAS:
     🧠 MEM0: Memória de Longo Prazo (Aprendizado Contínuo SQLite)
 
 MODO DE USO:
-    python3 FOREX_SUPREME_FINAL_V16.py                    # Modo automático (sessão ativa)
+    python3 FOREX_SUPREME_FINAL_V16.py                    # Análise contínua (sem ordens)
     python3 FOREX_SUPREME_FINAL_V16.py --scan-only        # Só escaneia, não executa
     python3 FOREX_SUPREME_FINAL_V16.py --backtest         # Modo backtest
     
@@ -302,7 +302,7 @@ def calculate_force_ema(df):
     try:
         # Cálculo das EMAs
         df['ema7'] = df['close'].ewm(span=7, adjust=False).mean()
-        df['ema9'] = cl.ewm(span=9, adjust=False).mean()
+        df['ema9'] = df['close'].ewm(span=9, adjust=False).mean()
         df['ema21'] = df['close'].ewm(span=21, adjust=False).mean()
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
@@ -428,10 +428,22 @@ def analyze_full_pipeline(iq_api, modules, symbol):
             import pandas as pd
             import numpy as np
             df = pd.DataFrame(candles)
-            df = df.rename(columns={'open': 0, 'high': 1, 'low': 2, 'close': 3, 'volume': 4})
-            df.columns = ['open', 'high', 'low', 'close', 'volume']
+            # IQ Option retorna chaves nomeadas; compatibilidade com payload posicional
+            if set(['open','high','low','close']).issubset(df.columns):
+                if 'volume' not in df.columns:
+                    df['volume'] = df.get('volume', 0)
+            else:
+                df = df.rename(columns={c: n for c, n in zip(df.columns, ['id','from','to','open','close','min','max','volume'])})
+                if 'high' not in df.columns and 'max' in df.columns: df['high'] = df['max']
+                if 'low' not in df.columns and 'min' in df.columns: df['low'] = df['min']
+            df = df[['open','high','low','close','volume']]
             df = df.dropna()
         
+        else:
+            result["veto"] = True
+            result["veto_reason"] = "SEM_CONEXAO_DE_DADOS"
+            return result
+
         logger.info(f"📊 {symbol}: {len(candles)} candles coletados")
         result["candles_count"] = len(df)
         
@@ -458,7 +470,7 @@ def analyze_full_pipeline(iq_api, modules, symbol):
         
         # --- 3. CAMADA 1 — SUPREME INTELLIGENCE (SMC + VSA + Score) ---
         if modules.get('supreme'):
-            analysis = modules['supreme'].full_analysis(df)
+            analysis = modules['supreme'].get_full_analysis(df)
             result["score"] = analysis.get("score", 0)
             result["smc"] = analysis.get("smc", {})
             result["vsa"] = analysis.get("vsa", {})
@@ -557,13 +569,15 @@ def analyze_full_pipeline(iq_api, modules, symbol):
 # EXECUÇÃO SNIPER
 # =============================================================================
 
-def execute_sniper(iq_api, signal):
+def execute_sniper(iq_api, signal, manual_authorized=False):
     """
     🎯 EXECUÇÃO SNIPER V8/V16
     Aplica o delay de 2-5s e executa a ordem
     """
     global TRADES_TODAY
-    
+    from execution_guard import require_manual_authorization
+    require_manual_authorization(manual_authorized)
+
     if not iq_api or signal.get("veto"):
         return False, "SINAL_INVALIDO"
     
@@ -658,7 +672,8 @@ def main_loop():
     logger.info("=" * 60)
     
     # Verificar se é scan-only
-    scan_only = "--scan-only" in sys.argv
+    # Segurança: este processo é sempre análise; não há modo automático.
+    scan_only = True
     
     # Carregar módulos de inteligência
     modules = load_modules()
@@ -666,9 +681,8 @@ def main_loop():
     # Conectar à IQ Option
     iq_api = connect_iqoption()
     
-    if not iq_api and not scan_only:
-        logger.info("⏳ Rodando em modo scan (sem execução)...")
-        scan_only = True
+    if not iq_api:
+        logger.warning("⚠️ Sem conexão de dados: análise permanecerá em veto até reconectar.")
     
     # Loop infinito — a cada 60s (1 candle M1)
     cycle_count = 0
@@ -713,17 +727,13 @@ def main_loop():
                     if not best_signal or signal["score"] > best_signal["score"]:
                         best_signal = signal
             
-            # 4. EXECUTAR MELHOR SINAL
-            if best_signal and not scan_only:
+            # 4. PUBLICAR SINAL — nunca executar ordem neste loop
+            if best_signal:
                 logger.info(f"\n🏆 MELHOR SINAL: {best_signal['symbol']} | "
                           f"Score: {best_signal['score']:.1f} | "
                           f"Dir: {best_signal['direction']}")
                 
-                success, order_id = execute_sniper(iq_api, best_signal)
-                if success:
-                    logger.info(f"✅ TRADE #{TRADES_TODAY} executado com sucesso!")
-                else:
-                    logger.warning(f"⚠️ Ordem falhou: {order_id}")
+                logger.info("🔒 SINAL DISPONÍVEL PARA AUTORIZAÇÃO MANUAL — nenhuma ordem será enviada")
             elif best_signal:
                 logger.info(f"\n📋 [SCAN] Sinal detectado: {best_signal['symbol']} "
                           f"{best_signal['direction']} | Score: {best_signal['score']:.1f}")
@@ -754,7 +764,6 @@ if __name__ == "__main__":
         logger.info("📊 MODO BACKTEST — Não implementado neste ciclo")
         sys.exit(0)
     
-    if "--scan-only" in sys.argv:
-        logger.info("🔍 MODO SCAN-ONLY — Apenas análise, sem execução")
-    
+    logger.info("🔒 MODO ANALYSIS-ONLY — ordens automáticas permanentemente bloqueadas")
     main_loop()
+
