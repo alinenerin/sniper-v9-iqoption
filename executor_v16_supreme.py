@@ -1,51 +1,80 @@
 #!/usr/bin/env python3
+"""Binary Quant X V16 Supreme - Unified Edition.
+
+Manual analysis helper only.  It never starts a background loop and never
+places an order.  An order executor, if used, must be called separately and
+explicitly by the user.
 """
-Binary Quant X V16 Supreme - Unified Edition - Motor Real
-Protocolo Soberano V3.5 | Zero Gale | 8x0
-"""
-import sys, os, time, json, asyncio
+from __future__ import annotations
 
-def _log(m):
-    print("[V16 EXEC] " + str(m), flush=True)
+import asyncio
+from typing import Any, Dict, Tuple
 
-try:
-    from sniper_loop import _supreme, _timesfm, _darts_ok, _xgb_ok, _memoria
-except:
-    _supreme = _timesfm = None
-    _darts_ok = _xgb_ok = False
-    _memoria = None
 
-async def analisar(par="par="EURUSD", direcao="CALL"):
+SCORE_MINIMO = 95
+
+
+def _normalizar_par(par: str) -> str:
+    return str(par).replace("/", "").upper().strip()
+
+
+async def analisar(par: str = "EURUSD", direcao: str = "CALL") -> Tuple[bool, int]:
+    """Return (approved, score) for one explicit, manual analysis request."""
+    par = _normalizar_par(par)
+    direcao = str(direcao).upper().strip()
     score = 50
+
+    # Optional integrations are deliberately fail-closed: an unavailable
+    # component cannot create an approved signal.
+    try:
+        from sniper_loop import _supreme, _timesfm, _darts_ok, _xgb_ok, _memoria
+    except Exception:
+        return False, 0
+
     if _darts_ok:
         try:
             from core.integrations.darts_anomaly_shield import run_anomaly_check
-            a = run_anomaly_check(symbol=par.replace("/","").upper())
-            if a.get("veto", False):
-                return 0 True
+            anomaly = run_anomaly_check(symbol=par)
+            if anomaly.get("veto", False):
+                return False, 0
             score += 10
-        except:
-            pass
+        except Exception:
+            return False, 0
+
     if _supreme:
         try:
-            s, m = _supreme.get_supreme_score(par, direcao)
-            score += int(s * 0.4)
-        except:
-            pass
+            result = _supreme.get_supreme_score(par, direcao)
+            technical_score = result[0] if isinstance(result, tuple) else result
+            score += int(float(technical_score) * 0.4)
+        except Exception:
+            return False, 0
+
     if _timesfm:
         try:
-            prev e_timesfm.forecast_next_candle()
-            score += int(prev.get("confidence", 0) * 25)
-        except:
-            pass
+            forecast = _timesfm.forecast_next_candle()
+            score += int(float(forecast.get("confidence", 0)) * 25)
+        except Exception:
+            return False, 0
+
     if _xgb_ok:
         score += 5
-    score min(100, max(0, score))
-    return score >= 95, score
+
+    score = min(100, max(0, score))
+    return score >= SCORE_MINIMO, score
+
+
+async def analisar_manual(par: str, direcao: str) -> Dict[str, Any]:
+    """Explicit manual entry point; analysis only, with no order side effect."""
+    aprovado, score = await analisar(par, direcao)
+    return {
+        "par": _normalizar_par(par),
+        "direcao": str(direcao).upper().strip(),
+        "aprovado": aprovado,
+        "score": score,
+        "modo": "MANUAL_ANALISE_SEM_EXECUCAO",
+    }
+
 
 if __name__ == "__main__":
-    _log("V16 SUPREME EXECUTOR ATIVO")
-    for p in ["EURUSD", "GBPUSDJPY"]:
-        for d in ["CALL", "PUT"]:
-            ok, s = asyncio.run(analisar(p, d))
-            _log(f"{p} {d} -> {'CONFIRMADO' if ok else 'VETADO'} ({s}/100)")
+    # Safe smoke test only. No loop, login, websocket, or order is started.
+    print("V16 Supreme: modo manual de análise; execução automática desativada.")
