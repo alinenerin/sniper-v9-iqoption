@@ -35,19 +35,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: ⚙️ Instalando Dependências de Sistema (TA-Lib + libgomp)
+      - name: ⚙️ Instalando Dependências de Sistema (libgomp)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgomp1 wget build-essential
-          
-          # TA-Lib Nativa (Compilada em C)
-          wget -q http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-          tar -xzf ta-lib-0.4.0-src.tar.gz
-          cd ta-lib/
-          ./configure --prefix=/usr
-          make -j$(nproc)
-          sudo make install
-          cd ..
+          sudo apt-get install -y libgomp1
 
       - name: 🐍 Instalando Bibliotecas Python
         run: |
