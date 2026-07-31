@@ -2,9 +2,6 @@ name: Sniper V12 🎯
 
 on:
   workflow_dispatch:
-  schedule:
-    # Roda a cada 5 minutos — 24h por dia, 7 dias por semana
-    - cron: '*/5 * * * *'
 
 jobs:
   sniper_v12:
