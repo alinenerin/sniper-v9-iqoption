@@ -1,1 +1,1 @@
-worker: python executor_v16_supreme.py & python FOREX_SUPREME_FINAL_V16.py
+worker: python3 railway_start.py
