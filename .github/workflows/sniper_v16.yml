@@ -1,7 +1,5 @@
 name: Sniper V16 Supreme
 on:
-  schedule:
-    - cron: '*/30 * * * *'
   workflow_dispatch:
   push:
     paths:
@@ -33,4 +31,4 @@ jobs:
         env:
           IQ_USER: laiane.aline@gmail.com
           IQ_PASS: alineEgui95@
-        run: python sniper_loop.py
+        run: python sniper_loop.py --scan-only
