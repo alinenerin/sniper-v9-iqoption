@@ -1,0 +1,1 @@
+web: gunicorn --bind 0.0.0.0:$PORT zapia_light_api:app
