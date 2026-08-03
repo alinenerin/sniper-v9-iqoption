@@ -18,7 +18,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/market/candles'):
             symbol=q.get('symbol',['EURUSD'])[0]; interval=int(q.get('interval',['60'])[0]); count=int(q.get('count',['300'])[0]); self._send(SESSION.candles(symbol,interval,count)); return
         if self.path.startswith('/api/market/payout'):
-            self._send(SESSION.payout(q.get('symbol',['EURUSD'])[0])); return
+            self._send(SESSION.payout(q.get('symbol',['EURUSD'])[0], q.get('instrument',['binary'])[0])); return
+        if self.path.startswith('/api/market/assets'):
+            self._send(SESSION.assets(q.get('instrument',['all'])[0])); return
         self._send({'error':'NOT_FOUND','execution_allowed':False},404)
     def log_message(self,*args): pass
 

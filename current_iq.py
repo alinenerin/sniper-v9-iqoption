@@ -77,15 +77,38 @@ class IQOptionReadonly:
         except Exception as exc:
             return {'ok': False, 'reason': f'IQ_OPTION_CANDLES_UNAVAILABLE:{type(exc).__name__}'}
 
-    def payout(self, symbol):
+    def payout(self, symbol, instrument='binary'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
             symbol = str(symbol).upper().replace('/', '')
-            for name in ('get_digital_payout', 'get_binary_payout'):
-                fn = getattr(self.api, name, None)
-                if callable(fn): return {'ok': True, 'symbol': symbol, 'payout': fn(symbol), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
-            return {'ok': False, 'reason': 'PAYOUT_NOT_EXPOSED_BY_SDK'}
-        except Exception: return {'ok': False, 'reason': 'IQ_OPTION_PAYOUT_UNAVAILABLE'}
+            # This SDK exposes binary/turbo payout through the init snapshot.
+            profits = self.api.get_all_profit()
+            row = profits.get(symbol) or profits.get(symbol.replace('-OTC', '_OTC'))
+            if not row:
+                return {'ok': False, 'symbol': symbol, 'reason': 'ASSET_NOT_IN_PROFIT_SNAPSHOT', 'read_only': True}
+            key = 'turbo' if instrument in ('turbo', 'turbo-option') else 'binary'
+            value = row.get(key)
+            if value is None:
+                return {'ok': False, 'symbol': symbol, 'instrument': key, 'reason': 'PAYOUT_NOT_AVAILABLE', 'read_only': True}
+            return {'ok': True, 'symbol': symbol, 'instrument': key, 'payout': float(value), 'payout_percent': round(float(value) * 100, 2), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+        except Exception: return {'ok': False, 'reason': 'IQ_OPTION_PAYOUT_UNAVAILABLE', 'read_only': True}
+
+    def assets(self, instrument='all'):
+        if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
+        try:
+            opened = self.api.get_all_open_time()
+            profits = self.api.get_all_profit()
+            kinds = ['forex', 'binary', 'turbo', 'digital'] if instrument == 'all' else [instrument]
+            out = []
+            for kind in kinds:
+                for symbol, row in (opened.get(kind) or {}).items():
+                    if not isinstance(row, dict): continue
+                    item = {'symbol': symbol, 'instrument': kind, 'open': bool(row.get('open')), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+                    pr = (profits.get(symbol) or {})
+                    if kind in ('binary', 'turbo'): item['payout'] = pr.get(kind)
+                    out.append(item)
+            return {'ok': True, 'instrument': instrument, 'assets': out, 'count': len(out), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+        except Exception: return {'ok': False, 'reason': 'IQ_OPTION_ASSETS_UNAVAILABLE', 'read_only': True}
 
 def connection_status():
     return dict(_state)
