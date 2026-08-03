@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 from engines.binary.sniper_timing import plan_sniper_window
+from engines.binary.rate_optimizer import choose_rate_window
 
 BRT = ZoneInfo('America/Sao_Paulo')
 OTC_SYMBOLS = ('EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','AUDJPY-OTC','EURGBP-OTC')
@@ -59,7 +60,7 @@ class BinaryPolicy:
         result = {'market': 'otc' if '-OTC' in symbol.upper() else 'binary', 'symbol': symbol,
                   'score': float(getattr(consultation, 'score', 0)),
                   'probability': float(getattr(consultation, 'probability', 0)),
-                  'execution_allowed': False, 'veto': True, 'vetoes': [], 'sniper_timing': plan_sniper_window()}
+                  'execution_allowed': False, 'veto': True, 'vetoes': [], 'sniper_timing': plan_sniper_window(), 'rate_decision': choose_rate_window()}
         if now.minute in BLOCKED_MINUTES: result['vetoes'].append('MINUTO_BLOQUEADO')
         if time.time() - self.last_scan.get(symbol, 0) < COOLDOWN_SECONDS: result['vetoes'].append('COOLDOWN')
         payout = self.payout(api, symbol)

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 BRT = ZoneInfo("America/Sao_Paulo")
 M1_SECONDS = 60
-PREFERRED_OFFSETS_SECONDS = (-2, 2)
+CANDIDATE_OFFSETS_SECONDS = (-5, -4, -3, -2, -1, 1, 2, 3, 4, 5)
 
 
 def next_candle_start(epoch: float | None = None, timeframe_seconds: int = M1_SECONDS) -> float:
@@ -22,7 +22,7 @@ def plan_sniper_window(epoch: float | None = None, timeframe_seconds: int = M1_S
     now = time.time() if epoch is None else epoch
     start = next_candle_start(now, timeframe_seconds)
     candidates = []
-    for offset in PREFERRED_OFFSETS_SECONDS:
+    for offset in CANDIDATE_OFFSETS_SECONDS:
         target = start + offset
         candidates.append({
             "offset_seconds": offset,
@@ -34,6 +34,6 @@ def plan_sniper_window(epoch: float | None = None, timeframe_seconds: int = M1_S
         "timeframe_seconds": timeframe_seconds,
         "next_candle_start_brt": datetime.fromtimestamp(start, BRT).strftime("%H:%M:%S"),
         "preferred_windows": candidates,
-        "timing_policy": "avaliar taxa em -2s e +2s; não entrar fora da janela sem nova validação",
+        "timing_policy": "monitorar dinamicamente de -5s a +5s e selecionar a melhor taxa observada; sem cotação ao vivo, não selecionar janela", 
         "execution_allowed": False,
     }
