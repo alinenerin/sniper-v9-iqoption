@@ -151,7 +151,23 @@ class IQOptionReadonly:
         except Exception: return {'ok': False, 'reason': 'COMMISSION_UNAVAILABLE', 'read_only': True}
 
     def snapshot(self, symbol, interval=60):
-        return {'ok': True, 'symbol': symbol, 'realtime': self.realtime_candles(symbol, interval, 10), 'binary_payout': self.payout(symbol, 'binary'), 'turbo_payout': self.payout(symbol, 'turbo'), 'assets': self.assets('all'), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+        if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
+        try:
+            # One init snapshot, parsed locally into all binary/turbo assets and payouts.
+            snap = self._init_snapshot()
+            if not isinstance(snap, dict): return {'ok': False, 'reason': 'INIT_SNAPSHOT_TIMEOUT', 'read_only': True}
+            assets=[]; payouts={}
+            for kind in ('binary','turbo'):
+                for _, active in (snap.get(kind, {}).get('actives', {}) or {}).items():
+                    name=str(active.get('name','')).split('.')[-1]
+                    option=active.get('option',{}).get('profit',{})
+                    commission=option.get('commission')
+                    item={'symbol':name,'instrument':kind,'open':bool(active.get('enabled')) and not bool(active.get('is_suspended')),'source':'IQ_OPTION_WEBSHARE','read_only':True}
+                    if commission is not None:
+                        item['payout']=(100.0-float(commission))/100.0; payouts.setdefault(name,{})[kind]=item['payout']
+                    assets.append(item)
+            return {'ok': True, 'symbol': symbol, 'realtime': self.realtime_candles(symbol, interval, 10), 'assets': assets, 'payouts': payouts, 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+        except Exception as exc: return {'ok': False, 'reason': f'SNAPSHOT_UNAVAILABLE:{type(exc).__name__}', 'read_only': True}
 
     def assets(self, instrument='all'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}

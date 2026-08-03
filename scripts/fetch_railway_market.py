@@ -11,11 +11,10 @@ def get(path):
     with urllib.request.urlopen(base+path, timeout=40) as r: return json.load(r)
 try:
     out['health']=get('/health')
-    out['assets']=get('/api/market/assets?instrument=all')
     for s in symbols:
         q=urllib.parse.urlencode({'symbol':s,'interval':60,'count':300})
-        out['symbols'][s]={'candles':get('/api/market/candles?'+q),'stream':get('/api/market/stream&'+q if False else '/api/market/stream?'+urllib.parse.urlencode({'symbol':s,'interval':60,'maxdict':20}))}
-        out['symbols'][s]['payout']=get('/api/market/payout?'+urllib.parse.urlencode({'symbol':s,'instrument':'binary'}))
+        out['symbols'][s]={'snapshot':get('/api/market/snapshot?'+urllib.parse.urlencode({'symbol':s,'interval':60})), 'candles':get('/api/market/candles?'+q)}
+    out['assets']=out['symbols'][symbols[0]].get('snapshot',{}).get('assets',[]) if symbols else []
 except Exception as e:
     out['error']=type(e).__name__+':'+str(e)
     raise
