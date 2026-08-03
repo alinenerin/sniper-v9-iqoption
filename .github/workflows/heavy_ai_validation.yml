@@ -52,7 +52,9 @@ jobs:
           for path in ('executor_v16_supreme.py', 'engines/binary/operational.py'):
               text = Path(path).read_text()
               assert 'buy(' not in text, path
-          assert 'EXECUTION_ALLOWED' in Path('execution_guard.py').read_text()
+          guard = Path('execution_guard.py').read_text()
+          assert 'manual_authorized' in guard
+          assert 'require_manual_authorization' in guard
           print('heavy AI read-only guard: OK')
       - name: Publish capability evidence
         run: |
