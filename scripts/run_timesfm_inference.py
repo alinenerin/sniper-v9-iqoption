@@ -1,6 +1,9 @@
 """Run real TimesFM inference on Railway Forex candles; cached/fallback is blocked."""
 import json
+import sys
 from pathlib import Path
+# Make repository-root imports deterministic when executed as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.forecasting.google_timesfm_bridge import TimesFMBridge
 
 market=json.loads(Path('reports/market_data.json').read_text())
