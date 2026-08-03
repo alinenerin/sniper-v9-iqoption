@@ -1,44 +1,98 @@
-"""Gera contrato único de relatório sem autorizar execução."""
+"""Generate a read-only Forex/Binary scan report from Railway market_data.json."""
 from __future__ import annotations
-import json, os, subprocess, sys
+
+import json
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+# GitHub invokes this file by path; make repository imports deterministic.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
-def run_command(command: list[str], timeout: int = 90) -> dict:
+def _candles(payload: Any) -> list[dict[str, Any]]:
+    """Accept the gateway's list or its usual {candles: [...]} envelope."""
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if isinstance(payload, dict):
+        for key in ("candles", "data", "result"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [x for x in value if isinstance(x, dict)]
+            if isinstance(value, dict):
+                found = _candles(value)
+                if found:
+                    return found
+    return []
+
+
+def _blocked_components(reason: str) -> dict[str, dict[str, str]]:
+    return {name: {"status": "blocked", "reason": reason} for name in
+            ("darts", "timesfm", "finbert", "news_api", "xgboost", "smc", "vsa")}
+
+
+def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[str, Any]:
+    from config.markets.contracts import MarketRequest
+    from shared_ai.consultation import SharedAI
+
+    if not candles:
+        return {"market": market, "symbol": symbol, "status": "blocked",
+                "reason": "NO_RAILWAY_CANDLES", "components": _blocked_components("NO_RAILWAY_CANDLES"),
+                "execution_allowed": False}
     try:
-        p = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
-        return {"returncode": p.returncode, "stdout": p.stdout[-12000:], "stderr": p.stderr[-4000:]}
-    except subprocess.TimeoutExpired:
-        return {"returncode": 124, "stdout": "", "stderr": "TIMEOUT"}
+        consultation = SharedAI(score_minimum=95).consult(MarketRequest(
+            market=market, symbol=symbol, timeframe="M1", candles=candles,
+            account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
+        ))
+        result = {
+            "market": market, "symbol": symbol, "status": "inference_ok",
+            "approved": consultation.approved, "score": consultation.score,
+            "probability": consultation.probability,
+            "anomaly_score": consultation.anomaly_score,
+            "vetoes": consultation.vetoes, "explanation": consultation.explanation,
+            "components": consultation.components.get("component_status", {}),
+            "execution_allowed": False,
+        }
+        return result
     except Exception as exc:
-        return {"returncode": 125, "stdout": "", "stderr": type(exc).__name__}
+        reason = "ANALYSIS_ERROR:" + type(exc).__name__
+        return {"market": market, "symbol": symbol, "status": "blocked",
+                "reason": reason, "components": _blocked_components(reason),
+                "execution_allowed": False}
 
 
 def main() -> int:
-    otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     symbols = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").split()
-    binary_cmd = [sys.executable, "executor_v16_supreme.py", "--once", "--symbols", *symbols]
-    if otc:
-        binary_cmd.append("--otc")
-    market_path = Path('reports/market_data.json')
-    market_data = json.loads(market_path.read_text()) if market_path.exists() else {'status': 'not_fetched'}
+    include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
+    path = Path("reports/market_data.json")
+    market_data = json.loads(path.read_text()) if path.exists() else {}
+    by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
+    forex, binary = [], []
+    for symbol in symbols:
+        forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
+        binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
+        if include_otc:
+            otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
+            binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles"))))
+
     result = {
-        "schema_version": "1.0",
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "commit": os.getenv("GITHUB_SHA"),
-        "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
-        "mode": "read_only",
-        "execution_allowed": False,
-        "forex": {"status": "not_run", "reason": "FOREX_ENTRYPOINT_ANALYSIS_ONLY"},
-        "binary": run_command(binary_cmd),
+        "schema_version": "2.0", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
+        "mode": "read_only", "execution_allowed": False,
+        "forex": {"status": "completed", "analyses": forex},
+        "binary": {"status": "completed", "analyses": binary},
         "market_data": market_data,
-        "inputs": {"symbols": symbols, "include_otc": otc},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "source": "Railway"},
         "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
-        "note": "Raw engine output is retained for subsequent parser integration; no order primitive is called.",
+        "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
     }
     Path("reports").mkdir(exist_ok=True)
-    Path("reports/latest_scan.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    Path("reports/latest_scan.json").write_text(json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n")
+    print("unified_readonly_scan=OK", len(forex), len(binary))
     return 0
 
 

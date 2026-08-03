@@ -43,9 +43,11 @@ jobs:
         env:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: python scripts/fetch_railway_market.py
-      - name: Generate unified report
+      - name: Compile read-only analysis modules
+        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py
+      - name: Generate unified report from Railway candles
         run: python scripts/generate_scan_report.py
-      - name: Validate report contract
+      - name: Validate report contract and component evidence
         run: |
           python - <<'PY'
           import json
@@ -53,7 +55,16 @@ jobs:
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
           assert 'binary' in r and 'forex' in r
-          print('unified_report=OK')
+          assert r['forex']['status'] == 'completed'
+          assert r['binary']['status'] == 'completed'
+          for book in (r['forex'], r['binary']):
+              for item in book['analyses']:
+                  assert item['execution_allowed'] is False
+                  assert item.get('components')
+                  for component in item['components'].values():
+                      assert component['status'] in ('inference_ok', 'blocked')
+                      if component['status'] == 'blocked': assert component.get('reason')
+          print('unified_report=OK; component_statuses=OK; execution=BLOCKED')
           PY
       - name: Upload latest scan
         uses: actions/upload-artifact@v4

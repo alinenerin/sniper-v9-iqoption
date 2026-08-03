@@ -7,6 +7,7 @@ Falhas são fail-closed: a consulta nunca aprova um sinal incompleto.
 from __future__ import annotations
 
 from typing import Any, Dict
+from pathlib import Path
 
 from config.markets.contracts import AIConsultation, MarketRequest
 
@@ -39,6 +40,29 @@ class SharedAI:
     def _anomaly_score(analysis: Dict[str, Any]) -> float:
         details = analysis.get("anomaly_details") or analysis.get("camada_0_darts") or {}
         return float(details.get("anomaly_score", details.get("score", 0)) or 0)
+
+    @staticmethod
+    def _component_status(analysis: Dict[str, Any], advisory: Dict[str, Any]) -> Dict[str, Any]:
+        """Report evidence, rather than claiming optional models are active."""
+        darts = analysis.get("anomaly_details") or {}
+        darts_available = bool(darts.get("darts_available"))
+        times = advisory.get("timesfm") or {}
+        times_source = str(times.get("source", "")).upper()
+        news = analysis.get("sentiment") or {}
+        news_ok = bool(news.get("api_success") or news.get("status") in ("ok", "success"))
+        model_path = Path("models/xgboost_supreme.model")
+        return {
+            "darts": {"status": "inference_ok" if darts_available else "blocked",
+                      "reason": None if darts_available else "DARTS_LIBRARY_OR_MODEL_UNAVAILABLE"},
+            "timesfm": {"status": "inference_ok" if "TIMESFM" in times_source and "FALLBACK" not in times_source else "blocked",
+                        "reason": None if "TIMESFM" in times_source and "FALLBACK" not in times_source else "TIMESFM_WEIGHTS_OR_LIBRARY_UNAVAILABLE"},
+            "finbert": {"status": "blocked", "reason": "FINBERT_NOT_IMPLEMENTED; sentiment is not FinBERT"},
+            "news_api": {"status": "inference_ok" if news_ok else "blocked",
+                         "reason": None if news_ok else "NEWS_API_UNAVAILABLE_OR_UNVERIFIED"},
+            "xgboost": {"status": "blocked", "reason": "XGBOOST_MODEL_WEIGHTS_MISSING_OR_NOT_WIRED" if not model_path.exists() else "XGBOOST_INFERENCE_NOT_WIRED"},
+            "smc": {"status": "inference_ok" if "smc" in analysis else "blocked", "reason": None if "smc" in analysis else "SMC_NOT_RUN"},
+            "vsa": {"status": "inference_ok" if "vsa" in analysis else "blocked", "reason": None if "vsa" in analysis else "VSA_NOT_RUN"},
+        }
 
     def consult(self, request: MarketRequest) -> AIConsultation:
         if request.market not in _ALLOWED_MARKETS:
@@ -82,6 +106,7 @@ class SharedAI:
             except Exception as exc:
                 advisory["timesfm"] = {"active": False, "error": type(exc).__name__}
             analysis["shared_advisory"] = advisory
+            component_status = self._component_status(analysis, advisory)
             approved, reason = engine.is_supreme_approved(analysis)
             score = float(analysis.get("score", 0) or 0)
             anomaly = self._anomaly_score(analysis)
@@ -101,6 +126,7 @@ class SharedAI:
                     "market": request.market,
                     "symbol": request.symbol,
                     "timeframe": request.timeframe,
+                    "component_status": component_status,
                 },
                 explanation="; ".join(vetoes) if vetoes else "SHARED_AI_APPROVED",
             )
