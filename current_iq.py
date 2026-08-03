@@ -94,7 +94,7 @@ class IQOptionReadonly:
         try:
             symbol = str(symbol).upper().replace('/', '')
             # This SDK exposes binary/turbo payout through the init snapshot.
-            profits = _bounded_call(self.api.get_all_profit, timeout=8)
+            profits = _bounded_call(self.api.get_all_profit, timeout=40)
             if not isinstance(profits, dict):
                 return {'ok': False, 'symbol': symbol, 'reason': 'PAYOUT_SNAPSHOT_TIMEOUT', 'read_only': True}
             row = profits.get(symbol) or profits.get(symbol.replace('-OTC', '_OTC'))
@@ -143,10 +143,10 @@ class IQOptionReadonly:
     def assets(self, instrument='all'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
-            opened = _bounded_call(self.api.get_all_open_time, timeout=8)
+            opened = _bounded_call(self.api.get_all_open_time, timeout=40)
             if not isinstance(opened, dict):
                 return {'ok': False, 'reason': 'OPEN_TIME_SNAPSHOT_TIMEOUT', 'read_only': True}
-            profits = _bounded_call(self.api.get_all_profit, timeout=8) or {}
+            profits = _bounded_call(self.api.get_all_profit, timeout=40) or {}
             kinds = ['forex', 'binary', 'turbo', 'digital'] if instrument == 'all' else [instrument]
             out = []
             for kind in kinds:
