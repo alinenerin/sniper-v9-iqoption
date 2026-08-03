@@ -14,9 +14,13 @@ for symbol, payload in market.get('symbols',{}).items():
     shield=DartsAnomalyShield()
     if not shield.darts_available:
         results[symbol]={'status':'blocked','reason':'DARTS_LIBRARY_UNAVAILABLE','samples':len(frame)}; continue
-    train=shield.train(symbol,frame)
-    current=frame.iloc[-1].to_dict()
-    scan=shield.scan(symbol,current)
-    results[symbol]={'status':'inference_ok' if train.get('status') not in ('INSUFFICIENT_DATA','ERROR') else 'blocked','training':train,'scan':scan,'samples':len(frame)}
+    try:
+        train=shield.train(symbol,frame)
+        current=frame.iloc[-1].to_dict()
+        scan=shield.scan(symbol,current)
+        ok=train.get('darts') == 'trained'
+        results[symbol]={'status':'inference_ok' if ok else 'blocked','reason':None if ok else train.get('darts'),'training':train,'scan':scan,'samples':len(frame)}
+    except Exception as exc:
+        results[symbol]={'status':'blocked','reason':f'{type(exc).__name__}: {exc}','samples':len(frame)}
 Path('reports/darts_inference.json').write_text(json.dumps({'status':'ok','components':results,'read_only':True},ensure_ascii=False,indent=2)+'\n')
 print('darts_inference_complete',len(results))
