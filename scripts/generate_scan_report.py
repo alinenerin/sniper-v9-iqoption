@@ -21,6 +21,8 @@ def main() -> int:
     binary_cmd = [sys.executable, "executor_v16_supreme.py", "--once", "--symbols", *symbols]
     if otc:
         binary_cmd.append("--otc")
+    market_path = Path('reports/market_data.json')
+    market_data = json.loads(market_path.read_text()) if market_path.exists() else {'status': 'not_fetched'}
     result = {
         "schema_version": "1.0",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -30,6 +32,7 @@ def main() -> int:
         "execution_allowed": False,
         "forex": {"status": "not_run", "reason": "FOREX_ENTRYPOINT_ANALYSIS_ONLY"},
         "binary": run_command(binary_cmd),
+        "market_data": market_data,
         "inputs": {"symbols": symbols, "include_otc": otc},
         "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
         "note": "Raw engine output is retained for subsequent parser integration; no order primitive is called.",

@@ -39,6 +39,10 @@ jobs:
         run: |
           python audit_architecture.py
           python audit_readonly_validation.py
+      - name: Fetch live market data from Railway
+        env:
+          RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
+        run: python scripts/fetch_railway_market.py
       - name: Generate unified report
         run: python scripts/generate_scan_report.py
       - name: Validate report contract
