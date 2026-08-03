@@ -21,6 +21,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(SESSION.payout(q.get('symbol',['EURUSD'])[0], q.get('instrument',['binary'])[0])); return
         if self.path.startswith('/api/market/assets'):
             self._send(SESSION.assets(q.get('instrument',['all'])[0])); return
+        if self.path.startswith('/api/market/stream'):
+            self._send(SESSION.realtime_candles(q.get('symbol',['EURUSD'])[0], int(q.get('interval',['60'])[0]), int(q.get('maxdict',['20'])[0]))); return
+        if self.path.startswith('/api/market/digital/strike'):
+            self._send(SESSION.digital_strike(q.get('symbol',['EURUSD'])[0], int(q.get('duration',['60'])[0]))); return
+        if self.path.startswith('/api/market/commission'):
+            self._send(SESSION.commission(q.get('instrument',['binary'])[0])); return
+        if self.path.startswith('/api/market/snapshot'):
+            self._send(SESSION.snapshot(q.get('symbol',['EURUSD'])[0], int(q.get('interval',['60'])[0]))); return
         self._send({'error':'NOT_FOUND','execution_allowed':False},404)
     def log_message(self,*args): pass
 

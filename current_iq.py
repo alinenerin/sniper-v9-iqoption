@@ -93,6 +93,39 @@ class IQOptionReadonly:
             return {'ok': True, 'symbol': symbol, 'instrument': key, 'payout': float(value), 'payout_percent': round(float(value) * 100, 2), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
         except Exception: return {'ok': False, 'reason': 'IQ_OPTION_PAYOUT_UNAVAILABLE', 'read_only': True}
 
+    def realtime_candles(self, symbol, interval=60, maxdict=20):
+        if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
+        try:
+            symbol = str(symbol).upper().replace('/', '')
+            self.api.start_candles_stream(symbol, int(interval), int(maxdict))
+            data = self.api.get_realtime_candles(symbol, int(interval)) or {}
+            candles = []
+            for ts, c in data.items():
+                candles.append({'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)})
+            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': sorted(candles, key=lambda x: x['timestamp']), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+        except Exception: return {'ok': False, 'reason': 'IQ_OPTION_REALTIME_STREAM_UNAVAILABLE', 'read_only': True}
+
+    def digital_strike(self, symbol, duration=60):
+        if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
+        try:
+            symbol = str(symbol).upper().replace('/', '')
+            fn = getattr(self.api, 'get_realtime_strike_list', None)
+            if not callable(fn): return {'ok': False, 'reason': 'DIGITAL_STRIKE_NOT_EXPOSED_BY_SDK', 'read_only': True}
+            return {'ok': True, 'symbol': symbol, 'duration': int(duration), 'strike': fn(symbol, int(duration)), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+        except Exception: return {'ok': False, 'reason': 'DIGITAL_STRIKE_UNAVAILABLE', 'read_only': True}
+
+    def commission(self, instrument='binary'):
+        if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
+        try:
+            sub = getattr(self.api, 'subscribe_commission_changed', None); get = getattr(self.api, 'get_commission_change', None)
+            if callable(sub): sub(instrument)
+            value = get(instrument) if callable(get) else None
+            return {'ok': value is not None, 'instrument': instrument, 'commission': value, 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+        except Exception: return {'ok': False, 'reason': 'COMMISSION_UNAVAILABLE', 'read_only': True}
+
+    def snapshot(self, symbol, interval=60):
+        return {'ok': True, 'symbol': symbol, 'realtime': self.realtime_candles(symbol, interval, 10), 'binary_payout': self.payout(symbol, 'binary'), 'turbo_payout': self.payout(symbol, 'turbo'), 'assets': self.assets('all'), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+
     def assets(self, instrument='all'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
