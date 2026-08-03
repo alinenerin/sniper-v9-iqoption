@@ -32,7 +32,19 @@ class GitHubScanBridge:
             timeout=30,
         )
         response.raise_for_status()
-        return {"dispatched": True, "workflow": WORKFLOW, "repo": self.repo, "ref": ref, "execution_allowed": False}
+        return {"dispatched": True, "workflow": WORKFLOW, "repo": self.repo, "ref": ref, "dispatched_at": time.time(), "execution_allowed": False}
+
+    def run_after(self, dispatched_at: float, timeout_seconds: int = 60) -> Dict[str, Any]:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            run = self.latest_run()
+            created = run.get("created_at", "")
+            # GitHub timestamps are authoritative; the newest run is sufficient
+            # after dispatch, while this short retry handles API propagation lag.
+            if run.get("status") in {"queued", "in_progress", "completed"}:
+                return run
+            time.sleep(2)
+        raise TimeoutError("SCAN_RUN_NOT_FOUND_AFTER_DISPATCH")
 
     def latest_run(self, head_sha: Optional[str] = None) -> Dict[str, Any]:
         response = self.session.get(f"{API}/repos/{self.repo}/actions/workflows/{WORKFLOW}/runs", params={"per_page": 10}, timeout=30)
