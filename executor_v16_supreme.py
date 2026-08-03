@@ -80,6 +80,11 @@ def coletar_candles(api: Any, symbol: str, quantidade: int = 250, timeframe: int
     return frame
 
 
+def coletar_candles_m3(api: Any, symbol: str, quantidade: int = 120):
+    """Obtém candles nativos de 3 minutos para seleção adaptativa."""
+    return coletar_candles(api, symbol, quantidade, timeframe=180)
+
+
 def coletar_candles_m5(api: Any, symbol: str, quantidade: int = 60):
     """Obtém candles nativos de 5 minutos; não deriva M5 do M1."""
     return coletar_candles(api, symbol, quantidade, timeframe=300)
@@ -94,17 +99,37 @@ def analisar_binaria(api: Any, symbol: str) -> Dict[str, Any]:
     if frame is None:
         return {"market": "binary", "symbol": symbol, "veto": True, "reason": "DADOS_INSUFICIENTES", "score": 0, "execution_allowed": False}
     market = "otc" if "-OTC" in symbol.upper() else "binary"
-    consultation = SharedAI(score_minimum=SCORE_MINIMO).consult(MarketRequest(
+    m1_ai = SharedAI(score_minimum=SCORE_MINIMO).consult(MarketRequest(
         market=market, symbol=symbol, timeframe="M1",
         candles=frame.to_dict("records"), account_mode="PRACTICE",
     ))
+    m3_frame = coletar_candles_m3(api, symbol)
+    m3_ai = None
+    if m3_frame is not None:
+        m3_ai = SharedAI(score_minimum=SCORE_MINIMO).consult(MarketRequest(
+            market=market, symbol=symbol, timeframe="M3",
+            candles=m3_frame.to_dict("records"), account_mode="PRACTICE",
+        ))
+    from engines.binary.timeframe_selector import select_timeframe
+    timeframe_decision = select_timeframe(
+        frame.to_dict("records"),
+        m3_frame.to_dict("records") if m3_frame is not None else [],
+        m1_ai, m3_ai, is_otc=(market == "otc"),
+    )
+    if timeframe_decision["selected"] is None:
+        return {"market": market, "symbol": symbol, "veto": True,
+                "reason": timeframe_decision["reason"], "timeframe_decision": timeframe_decision,
+                "execution_allowed": False}
+    selected_ai = m1_ai if timeframe_decision["selected"] == "M1" else m3_ai
+    selected_frame = frame if timeframe_decision["selected"] == "M1" else m3_frame
     m5_frame = coletar_candles_m5(api, symbol)
     if m5_frame is None:
-        return {"market": market, "symbol": symbol, "veto": True, "reason": "M5_DADOS_INSUFICIENTES", "score": consultation.score, "execution_allowed": False}
-    result = BinaryPolicy(PAYOUT_MINIMO / 100, SCORE_MINIMO).evaluate(api, symbol, consultation, frame.to_dict("records"), m5_frame.to_dict("records"))
-    result.update({"timeframe": "M1", "m5_timeframe": "M5", "payout_minimum": PAYOUT_MINIMO,
-                   "anomaly_score": consultation.anomaly_score,
-                   "analysis": consultation.components.get("core_analysis", {}),
+        return {"market": market, "symbol": symbol, "veto": True, "reason": "M5_DADOS_INSUFICIENTES", "score": selected_ai.score, "execution_allowed": False}
+    result = BinaryPolicy(PAYOUT_MINIMO / 100, SCORE_MINIMO).evaluate(api, symbol, selected_ai, selected_frame.to_dict("records"), m5_frame.to_dict("records"))
+    result.update({"timeframe": timeframe_decision["selected"], "timeframe_decision": timeframe_decision,
+                   "m1_timeframe": "M1", "m3_timeframe": "M3", "m5_timeframe": "M5", "payout_minimum": PAYOUT_MINIMO,
+                   "anomaly_score": selected_ai.anomaly_score,
+                   "analysis": selected_ai.components.get("core_analysis", {}),
                    "execution_allowed": False})
     return result
 
