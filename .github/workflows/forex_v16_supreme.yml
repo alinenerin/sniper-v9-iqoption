@@ -1,89 +1,52 @@
-name: 🏛️ V16 SUPREME - FOREX SNIPER
+name: Forex V16 Supreme - Read Only
 
 on:
   workflow_dispatch:
-    inputs:
-      balance_mode:
-        description: 'Modo de operação'
-        required: true
-        default: 'PRACTICE'
-        type: choice
-        options:
-          - PRACTICE
-          - REAL
-      scan_only:
-        description: 'Apenas scan (sem executar)'
-        default: false
-        type: boolean
+  schedule:
+    - cron: '0 7-20 * * 1-5'
+    - cron: '0 0-5 * * 2-6'
 
 env:
   PYTHON_VERSION: '3.11'
 
 jobs:
-  trade:
+  forex-analysis:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 350
     steps:
-      - name: 📥 Clonando Arquitetura V16 Supreme
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: 🐍 Configurando Python ${{ env.PYTHON_VERSION }}
+      - name: Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: ⚙️ Instalando Dependências de Sistema (libgomp)
+      - name: Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgomp1
-
-      - name: 🐍 Instalando Bibliotecas Python
+          python -m pip install --upgrade pip
+          pip install numpy pandas scipy requests pytz websocket-client scikit-learn xgboost
+      - name: Architecture and read-only checks
         run: |
-          pip install --upgrade pip
-          
-          # Core
-          pip install numpy pandas scipy
-          
-          # XGBoost 2.0.3 (Cérebro do Score Diamante)
-          pip install xgboost==2.0.3
-          
-          # Machine Learning auxiliar
-          pip install scikit-learn
-          
-          # TA-Lib bindings Python
-          pip install TA-Lib
-          
-          # Conectividade
-          pip install iqoptionapi requests pytz
-          
-          # Darts (Anomaly Shield - Camada 0)
-          pip install darts
-
-      - name: 🔧 Verificando TA-Lib + XGBoost
-        run: |
-          python3 -c "import talib; print(f'✅ TA-Lib nativa: {talib.__version__}')"
-          python3 -c "import xgboost; print(f'✅ XGBoost: {xgboost.__version__}')"
-          python3 -c "import iqoptionapi; print('✅ IQ Option API')"
-          python3 -c "from darts import TimeSeries; print('✅ Darts (Anomaly Shield)')"
-
-      - name: 🚀 EXECUTANDO MOTOR V16 SUPREME
+          python -m py_compile FOREX_SUPREME_FINAL_V16.py shared_ai/consultation.py config/markets/contracts.py
+          python - <<'PY'
+          from pathlib import Path
+          forex = Path('FOREX_SUPREME_FINAL_V16.py').read_text()
+          assert 'executor_v16_supreme' not in forex
+          assert 'from shared_ai.consultation import SharedAI' in forex
+          print('forex boundary: OK')
+          PY
+      - name: Forex analysis (read-only)
         env:
           IQ_USER: ${{ secrets.IQ_USER }}
           IQ_PASS: ${{ secrets.IQ_PASS }}
-          BALANCE_MODE: ${{ github.event.inputs.balance_mode || 'PRACTICE' }}
-        run: |
-          # Política de segurança: workflows nunca executam ordens automaticamente.
-          ARGS="--scan-only"
-          python3 FOREX_SUPREME_FINAL_V16.py $ARGS
-
-      - name: 📤 Salvando Logs e Resultados
+          BALANCE_MODE: PRACTICE
+        run: timeout 340m python3 FOREX_SUPREME_FINAL_V16.py --scan-only
+      - name: Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v16-supreme-logs
+          name: forex-v16-readonly-logs
           path: |
             *.log
             forex_performance.db
-            core/forex_brain_v1.json
             logs/
           retention-days: 7

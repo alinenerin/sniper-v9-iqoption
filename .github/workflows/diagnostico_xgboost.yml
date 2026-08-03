@@ -1,0 +1,22 @@
+name: Diagnóstico XGBoost V16
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # XGBoost precisa de libomp no Mac, mas no Linux/Ubuntu do GitHub às vezes faltam dependências de C++
+          sudo apt-get update && sudo apt-get install -y libgomp1
+          pip install xgboost
+      - name: Verify
+        run: python -c "import xgboost; print('XGBoost Version:', xgboost.__version__)"

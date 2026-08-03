@@ -1,0 +1,39 @@
+name: Architecture Checks - Separate Engines
+
+on:
+  push:
+    paths:
+      - 'executor_v16_supreme.py'
+      - 'FOREX_SUPREME_FINAL_V16.py'
+      - 'shared_ai/**'
+      - 'engines/**'
+      - 'config/markets/**'
+      - 'tests/**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install pandas numpy
+      - name: Compile and boundary tests
+        run: |
+          python -m py_compile executor_v16_supreme.py FOREX_SUPREME_FINAL_V16.py shared_ai/consultation.py engines/binary/operational.py config/markets/contracts.py
+          python - <<'PY'
+          from pathlib import Path
+          b = Path('executor_v16_supreme.py').read_text()
+          f = Path('FOREX_SUPREME_FINAL_V16.py').read_text()
+          assert 'FOREX_SUPREME_FINAL_V16' not in b
+          assert 'executor_v16_supreme' not in f
+          assert 'from shared_ai.consultation import SharedAI' in b
+          assert 'from shared_ai.consultation import SharedAI' in f
+          assert 'buy(' not in b
+          assert 'buy(' not in Path('engines/binary/operational.py').read_text()
+          print('engine boundaries: OK')
+          PY

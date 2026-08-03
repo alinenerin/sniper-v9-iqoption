@@ -93,14 +93,14 @@ def load_modules():
         modules['anomaly_shield'] = None
         logger.warning(f"⚠️ [CAMADA 0] Darts Shield não carregado: {e}")
     
-    # Camada 1 — Supreme Intelligence (SMC + VSA + Sentiment + Score)
+    # Núcleo consultivo compartilhado — único caminho de IA para Forex e Binárias
     try:
-        from core.supreme_intelligence import SupremeIntelligence
-        modules['supreme'] = SupremeIntelligence()
-        logger.info("✅ [CAMADA 1] Supreme Intelligence (SMC+VSA+Score) — ATIVO")
+        from shared_ai.consultation import SharedAI
+        modules['shared_ai'] = SharedAI(score_minimum=TRADING_CONFIG.diamond_threshold)
+        logger.info("✅ [SHARED AI] Consulta compartilhada — ATIVA")
     except Exception as e:
-        modules['supreme'] = None
-        logger.warning(f"⚠️ [CAMADA 1] Supreme Intelligence não carregado: {e}")
+        modules['shared_ai'] = None
+        logger.warning(f"⚠️ [SHARED AI] não carregada: {e}")
     
     # Camada 2 — News Shield (ForexFactory)
     try:
@@ -468,19 +468,26 @@ def analyze_full_pipeline(iq_api, modules, symbol):
             
             HAS_ANOMALY = False
         
-        # --- 3. CAMADA 1 — SUPREME INTELLIGENCE (SMC + VSA + Score) ---
-        if modules.get('supreme'):
-            analysis = modules['supreme'].get_full_analysis(df)
-            result["score"] = analysis.get("score", 0)
-            result["smc"] = analysis.get("smc", {})
-            result["vsa"] = analysis.get("vsa", {})
-            result["sentiment"] = analysis.get("sentiment", {})
-            
-            supreme_approved, reason = modules['supreme'].is_supreme_approved(analysis)
-            if not supreme_approved:
-                result["veto"] = True
-                result["veto_reason"] = reason
-                return result
+        # --- 3. NÚCLEO COMPARTILHADO — consulta consultiva sem execução ---
+        if not modules.get('shared_ai'):
+            result["veto"] = True
+            result["veto_reason"] = "SHARED_AI_UNAVAILABLE"
+            return result
+        from config.markets.contracts import MarketRequest
+        consultation = modules['shared_ai'].consult(MarketRequest(
+            market="forex", symbol=symbol, timeframe="M1",
+            candles=df.to_dict("records"), account_mode="PRACTICE",
+        ))
+        analysis = consultation.components.get("core_analysis", {})
+        result["score"] = consultation.score
+        result["anomaly_score"] = consultation.anomaly_score
+        result["smc"] = analysis.get("smc", {})
+        result["vsa"] = analysis.get("vsa", {})
+        result["sentiment"] = analysis.get("sentiment", {})
+        if not consultation.approved:
+            result["veto"] = True
+            result["veto_reason"] = consultation.explanation or ";".join(consultation.vetoes)
+            return result
         
         # --- 4. CAMADA 4 — SNIPER ALINE (EMAs + Força + Rejeição) ---
         force, m5_confirm = calculate_force_ema(df)
@@ -570,80 +577,12 @@ def analyze_full_pipeline(iq_api, modules, symbol):
 # =============================================================================
 
 def execute_sniper(iq_api, signal, manual_authorized=False):
-    """
-    🎯 EXECUÇÃO SNIPER V8/V16
-    Aplica o delay de 2-5s e executa a ordem
-    """
-    global TRADES_TODAY
-    from execution_guard import require_manual_authorization
-    require_manual_authorization(manual_authorized)
+    """Ponto de compatibilidade deliberadamente bloqueado no entrypoint Forex.
 
-    if not iq_api or signal.get("veto"):
-        return False, "SINAL_INVALIDO"
-    
-    symbol = signal["symbol"]
-    direction = signal["direction"].upper()
-    score = signal["score"]
-    
-    # Delay Sniper (2s fixado)
-    sniper_delay = TRADING_CONFIG.sniper_delay
-    logger.info(f"⏱️ Aguardando delay Sniper de {sniper_delay}s para {symbol}...")
-    time.sleep(sniper_delay)
-    
-    # Valor da entrada (fixo em $2 para binárias)
-    amount = 2.0
-    
-    try:
-        check, order_id = iq_api.buy(amount, symbol, direction, 1)
-        
-        if check:
-            TRADES_TODAY += 1
-            logger.info(f"🚀 ORDEM EXECUTADA | {symbol} {direction} | "
-                       f"Valor: ${amount} | Score: {score:.1f} | ID: {order_id}")
-            
-            # Registrar no XGBoost
-            try:
-                from core.self_improvement_engine import ForexSelfImprovement
-                fsi = ForexSelfImprovement(db_path=TRADING_CONFIG.db_path)
-                fsi.record_trade({
-                    "pair": symbol,
-                    "direction": direction,
-                    "entry_price": amount,
-                    "score": score,
-                    "probability": score / 100.0,
-                    "volatility": 0,
-                    "hour": datetime.now(TRADING_CONFIG.tz_br).hour,
-                    "day_of_week": datetime.now(TRADING_CONFIG.tz_br).weekday(),
-                    "result": 0  # Pendente
-                })
-            except:
-                    pass
-            
-            # Registrar no MEM0 (Memoria de Longo Prazo)
-            now_h = datetime.now(TRADING_CONFIG.tz_br).hour
-            now_d = datetime.now(TRADING_CONFIG.tz_br).weekday()
-            if modules.get('mem0'):
-                try:
-                    modules['mem0'].record_trade(
-                        pair=symbol,
-                        direction=direction,
-                        session=session_name,
-                        score=score,
-                        result="PENDENTE",
-                        profit=0.0,
-                        hour=now_h
-                    )
-                except:
-                    pass
-            
-            return True, order_id
-        else:
-            logger.error(f"❌ Falha na ordem: {order_id}")
-            return False, order_id
-            
-    except Exception as e:
-        logger.error(f"❌ Erro na execução: {e}")
-        return False, str(e)
+    O entrypoint oficial é analysis-only. A execução manual, se autorizada em
+    uma etapa futura, deverá passar por um executor separado e auditado.
+    """
+    return False, "EXECUCAO_BLOQUEADA_NO_ENTRYPOINT_ANALYSIS_ONLY"
 
 
 # =============================================================================

@@ -1,0 +1,50 @@
+name: Binary V16 Supreme - Read Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_otc:
+        description: 'Incluir pares OTC'
+        required: true
+        default: true
+        type: boolean
+      max_runtime:
+        description: 'Duração máxima em segundos'
+        required: true
+        default: '300'
+        type: string
+
+jobs:
+  binary-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pandas scipy requests pytz websocket-client
+      - name: Architecture and read-only checks
+        run: |
+          python -m py_compile executor_v16_supreme.py engines/binary/operational.py shared_ai/consultation.py config/markets/contracts.py
+          python - <<'PY'
+          from pathlib import Path
+          for p in ('executor_v16_supreme.py', 'engines/binary/operational.py'):
+              text = Path(p).read_text()
+              assert 'buy(' not in text
+          assert 'FOREX_SUPREME_FINAL_V16' not in Path('executor_v16_supreme.py').read_text()
+          print('read-only architecture: OK')
+          PY
+      - name: Binary analysis (no orders)
+        env:
+          IQ_USER: ${{ secrets.IQ_USER }}
+          IQ_PASS: ${{ secrets.IQ_PASS }}
+        run: |
+          FLAGS="--max-runtime ${{ inputs.max_runtime }}"
+          if [ "${{ inputs.include_otc }}" = "true" ]; then FLAGS="$FLAGS --otc"; fi
+          python executor_v16_supreme.py $FLAGS
