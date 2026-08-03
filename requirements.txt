@@ -23,8 +23,8 @@ iqoptionapi>=0.5
 requests>=2.31
 pytz>=2023.3
 
-# Anomaly Detection (Camada 0)
-darts>=0.9
+# Anomaly Detection (Camada 0) fica em requirements-heavy.txt
+# para não carregar o stack pesado no Railway.
 
 # Persistência de aprendizado
 # sqlite3 is included in Python; do not install it from pip

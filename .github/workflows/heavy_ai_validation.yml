@@ -1,0 +1,76 @@
+name: Heavy AI Stack - Read Only Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      validate_models:
+        description: 'Validar importações e bridges; não executar ordens'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  heavy-ai:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ANALYSIS_ONLY: '1'
+      EXECUTION_ALLOWED: 'false'
+      EXECUTOR_ENABLED: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-heavy.txt
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgomp1 libsndfile1
+      - name: Install heavy stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-heavy.txt
+      - name: Validate imports and capability contract
+        run: |
+          python - <<'PY'
+          import importlib
+          packages = ('numpy', 'pandas', 'scipy', 'sklearn', 'xgboost', 'darts', 'torch', 'transformers', 'timesfm')
+          for name in packages:
+              module = importlib.import_module(name)
+              print(name, getattr(module, '__version__', 'imported'))
+          PY
+          python audit_ai_capabilities.py
+      - name: Validate bridges are advisory and read-only
+        run: |
+          python -m py_compile shared_ai/consultation.py shared_ai/memory.py shared_ai/memory_service.py
+          python - <<'PY'
+          from pathlib import Path
+          for path in ('executor_v16_supreme.py', 'engines/binary/operational.py'):
+              text = Path(path).read_text()
+              assert 'buy(' not in text, path
+          assert 'EXECUTION_ALLOWED' in Path('execution_guard.py').read_text()
+          print('heavy AI read-only guard: OK')
+      - name: Publish capability evidence
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json, os
+          report = {
+              'workflow': 'heavy_ai_validation',
+              'execution_allowed': False,
+              'analysis_only': True,
+              'commit': os.environ.get('GITHUB_SHA'),
+              'models': ['darts', 'timesfm', 'finbert-transformers', 'xgboost'],
+              'purpose': 'import_and_contract_validation_only',
+          }
+          json.dump(report, open('reports/heavy_ai_capabilities.json', 'w'), indent=2)
+          PY
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: heavy-ai-capabilities-${{ github.run_id }}
+          path: reports/heavy_ai_capabilities.json
