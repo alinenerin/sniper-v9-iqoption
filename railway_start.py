@@ -13,8 +13,8 @@ def start_supreme() -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{lib_path}:{env.get('PYTHONPATH', '')}"
     env["ANALYSIS_ONLY"] = "1"
-    print("[V16 SUPREME] Railway: análise contínua; execução automática bloqueada.", flush=True)
-    subprocess.run([sys.executable, "executor_v16_supreme.py"], env=env, check=False)
+    print("[V16 SUPREME] Railway: gateway IQ read-only via Webshare; execução automática bloqueada.", flush=True)
+    subprocess.run([sys.executable, "market_gateway.py"], env=env, check=False)
 
 
 if __name__ == "__main__":
