@@ -2,12 +2,24 @@
 import os
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 _client = None
 _state = {'status': 'starting', 'reason': None, 'connected_at': None}
 _lock = threading.RLock()
 _start_once = False
 _patched = False
+
+
+def _bounded_call(fn, *args, timeout=8):
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(fn, *args)
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeout:
+        return None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 class IQOptionReadonly:
     def __init__(self):
@@ -82,7 +94,9 @@ class IQOptionReadonly:
         try:
             symbol = str(symbol).upper().replace('/', '')
             # This SDK exposes binary/turbo payout through the init snapshot.
-            profits = self.api.get_all_profit()
+            profits = _bounded_call(self.api.get_all_profit, timeout=8)
+            if not isinstance(profits, dict):
+                return {'ok': False, 'symbol': symbol, 'reason': 'PAYOUT_SNAPSHOT_TIMEOUT', 'read_only': True}
             row = profits.get(symbol) or profits.get(symbol.replace('-OTC', '_OTC'))
             if not row:
                 return {'ok': False, 'symbol': symbol, 'reason': 'ASSET_NOT_IN_PROFIT_SNAPSHOT', 'read_only': True}
@@ -129,8 +143,10 @@ class IQOptionReadonly:
     def assets(self, instrument='all'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
-            opened = self.api.get_all_open_time()
-            profits = self.api.get_all_profit()
+            opened = _bounded_call(self.api.get_all_open_time, timeout=8)
+            if not isinstance(opened, dict):
+                return {'ok': False, 'reason': 'OPEN_TIME_SNAPSHOT_TIMEOUT', 'read_only': True}
+            profits = _bounded_call(self.api.get_all_profit, timeout=8) or {}
             kinds = ['forex', 'binary', 'turbo', 'digital'] if instrument == 'all' else [instrument]
             out = []
             for kind in kinds:
