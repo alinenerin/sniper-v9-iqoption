@@ -2,7 +2,13 @@
 import json, os
 from pathlib import Path
 import pandas as pd
-from core.integrations.darts_anomaly_shield import DartsAnomalyShield
+try:
+    from core.integrations.darts_anomaly_shield import DartsAnomalyShield
+except Exception as exc:
+    DartsAnomalyShield = None
+    IMPORT_ERROR = f'{type(exc).__name__}: {exc}'
+else:
+    IMPORT_ERROR = None
 
 market=json.loads(Path('reports/market_data.json').read_text())
 results={}
@@ -10,8 +16,13 @@ for symbol, payload in market.get('symbols',{}).items():
     rows=(payload.get('candles') or {}).get('candles',[])
     if len(rows)<100:
         results[symbol]={'status':'blocked','reason':'INSUFFICIENT_CANDLES','samples':len(rows)}; continue
+    if DartsAnomalyShield is None:
+        results[symbol]={'status':'blocked','reason':f'IMPORT_{IMPORT_ERROR}','samples':len(rows)}; continue
     frame=pd.DataFrame(rows).rename(columns={'timestamp':'time','max':'high','min':'low'})
-    shield=DartsAnomalyShield()
+    try:
+        shield=DartsAnomalyShield()
+    except Exception as exc:
+        results[symbol]={'status':'blocked','reason':f'INIT_{type(exc).__name__}: {exc}','samples':len(frame)}; continue
     if not shield.darts_available:
         results[symbol]={'status':'blocked','reason':'DARTS_LIBRARY_UNAVAILABLE','samples':len(frame)}; continue
     try:
