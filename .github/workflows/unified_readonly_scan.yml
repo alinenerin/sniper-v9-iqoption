@@ -43,8 +43,12 @@ jobs:
         env:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: python scripts/fetch_railway_market.py
+      - name: Install Darts runtime
+        run: pip install 'Darts>=0.30,<1.0'
+      - name: Run Darts anomaly inference
+        run: python scripts/run_darts_inference.py
       - name: Compile read-only analysis modules
-        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py
+        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/run_darts_inference.py
       - name: Generate unified report from Railway candles
         run: python scripts/generate_scan_report.py
       - name: Validate report contract and component evidence

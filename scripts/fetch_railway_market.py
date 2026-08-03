@@ -12,7 +12,7 @@ def get(path):
 try:
     out['health']=get('/health')
     for s in symbols:
-        q=urllib.parse.urlencode({'symbol':s,'interval':60,'count':300})
+        q=urllib.parse.urlencode({'symbol':s,'interval':60,'count':1200})
         out['symbols'][s]={'snapshot':get('/api/market/snapshot?'+urllib.parse.urlencode({'symbol':s,'interval':60})), 'candles':get('/api/market/candles?'+q)}
     out['assets']=out['symbols'][symbols[0]].get('snapshot',{}).get('assets',[]) if symbols else []
 except Exception as e:
