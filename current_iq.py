@@ -89,15 +89,28 @@ class IQOptionReadonly:
         except Exception as exc:
             return {'ok': False, 'reason': f'IQ_OPTION_CANDLES_UNAVAILABLE:{type(exc).__name__}'}
 
+    def _init_snapshot(self):
+        data = _bounded_call(self.api.get_all_init_v2, timeout=35)
+        if isinstance(data, dict): return data.get('result', data)
+        data = _bounded_call(self.api.get_all_init, timeout=35)
+        if isinstance(data, dict): return data.get('result', data)
+        return None
+
     def payout(self, symbol, instrument='binary'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
             symbol = str(symbol).upper().replace('/', '')
             # This SDK exposes binary/turbo payout through the init snapshot.
-            profits = _bounded_call(self.api.get_all_profit, timeout=40)
-            if not isinstance(profits, dict):
+            snap = self._init_snapshot()
+            if not isinstance(snap, dict):
                 return {'ok': False, 'symbol': symbol, 'reason': 'PAYOUT_SNAPSHOT_TIMEOUT', 'read_only': True}
-            row = profits.get(symbol) or profits.get(symbol.replace('-OTC', '_OTC'))
+            row = {}
+            for kind in ('binary', 'turbo'):
+                for _, active in (snap.get(kind, {}).get('actives', {}) or {}).items():
+                    name = str(active.get('name','')).split('.')[-1]
+                    if name == symbol or name == symbol.replace('-OTC', '_OTC'):
+                        option = active.get('option', {}).get('profit', {})
+                        if 'commission' in option: row[kind] = (100.0 - float(option['commission'])) / 100.0
             if not row:
                 return {'ok': False, 'symbol': symbol, 'reason': 'ASSET_NOT_IN_PROFIT_SNAPSHOT', 'read_only': True}
             key = 'turbo' if instrument in ('turbo', 'turbo-option') else 'binary'
@@ -157,7 +170,7 @@ class IQOptionReadonly:
                     if kind in ('binary', 'turbo'): item['payout'] = pr.get(kind)
                     out.append(item)
             return {'ok': True, 'instrument': instrument, 'assets': out, 'count': len(out), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
-        except Exception: return {'ok': False, 'reason': 'IQ_OPTION_ASSETS_UNAVAILABLE', 'read_only': True}
+        except Exception as exc: return {'ok': False, 'reason': f'IQ_OPTION_ASSETS_UNAVAILABLE:{type(exc).__name__}', 'read_only': True}
 
 def connection_status():
     return dict(_state)
