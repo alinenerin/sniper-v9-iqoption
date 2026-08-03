@@ -27,9 +27,17 @@ class TimesFMBridge:
         try:
             import timesfm
             print("[TIMESFM] Carregando 2.5 200M...")
+            import torch
+            torch.set_float32_matmul_precision("high")
             self.model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
                 "google/timesfm-2.5-200m-pytorch"
             )
+            self.model.compile(timesfm.ForecastConfig(
+                max_context=1024, max_horizon=256,
+                normalize_inputs=True, use_continuous_quantile_head=True,
+                force_flip_invariance=True, infer_is_positive=True,
+                fix_quantile_crossing=True,
+            ))
             self._model_loaded = True
             print("[TIMESFM] Modelo carregado!")
             return True
