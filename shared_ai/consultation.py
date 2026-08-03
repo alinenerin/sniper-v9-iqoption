@@ -55,6 +55,12 @@ class SharedAI:
             analysis = engine.get_full_analysis(frame)
             approved, reason = engine.is_supreme_approved(analysis)
             advisory: Dict[str, Any] = {}
+            # Memória fornece apenas contexto; nunca altera score, veto ou aprovação.
+            try:
+                from shared_ai.memory_service import ZapiaMemoryService
+                advisory["memory_context"] = ZapiaMemoryService().context_for(request.symbol, request.market, limit=5)
+            except Exception as exc:
+                advisory["memory_context"] = {"active": False, "error": type(exc).__name__}
             # Regime é determinístico e consultivo; não altera aprovação sozinho.
             try:
                 from core.market_regime_detection import MarketRegimeDetection

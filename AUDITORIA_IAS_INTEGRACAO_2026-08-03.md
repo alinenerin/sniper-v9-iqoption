@@ -43,3 +43,13 @@ Integração segura em camadas:
 5. Provedores LLM, FinBERT e agentes não entram no núcleo até deixarem de ser placeholders e passarem por teste/revisão.
 
 Não houve conexão live, deploy, alteração de conta ou ordem.
+
+## Evolução da memória — 09:29
+
+- Criado `shared_ai/memory_service.py` como fachada oficial.
+- Escrita exige `user_confirmed=True`.
+- Exclusão exige `user_confirmed=True`.
+- Leitura contextual foi ligada ao SharedAI em `shared_advisory.memory_context`.
+- Memória não altera score, veto, aprovação, direção, lote, payout ou expiração.
+- Fingerprint é gerado para auditoria sem expor conteúdo.
+- `test_memory_service.py` e auditorias de arquitetura/read-only passaram.
