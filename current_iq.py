@@ -153,15 +153,14 @@ class IQOptionReadonly:
     def snapshot_batch(self, symbols):
         """Single batch gateway call: one IQ init/payout snapshot plus requested M1/M5 candles."""
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
-        snap=self._init_snapshot()
-        if not isinstance(snap, dict): return {'ok': False, 'reason': 'INIT_SNAPSHOT_TIMEOUT', 'read_only': True}
-        assets=[]; payouts={}
-        for kind in ('binary','turbo'):
-            for _, active in (snap.get(kind,{}).get('actives',{}) or {}).items():
-                name=str(active.get('name','')).split('.')[-1]; option=active.get('option',{}).get('profit',{}); commission=option.get('commission')
-                item={'symbol':name,'instrument':kind,'open':bool(active.get('enabled')) and not bool(active.get('is_suspended')),'source':'IQ_OPTION_WEBSHARE','read_only':True}
-                if commission is not None: item['payout']=(100.0-float(commission))/100.0; payouts.setdefault(name,{})[kind]=item['payout']
-                assets.append(item)
+        # Use the SDK's supported open-time/profit batch calls instead of
+        # get_all_init_v2, whose websocket response can stall behind Webshare.
+        asset_response=self.assets('all')
+        if not asset_response.get('ok'): return {'ok': False, 'reason': asset_response.get('reason','ASSET_SNAPSHOT_UNAVAILABLE'), 'read_only': True}
+        assets=asset_response.get('assets',[]); payouts={}
+        for item in assets:
+            if item.get('payout') is not None:
+                payouts.setdefault(item.get('symbol'),{})[item.get('instrument')]=item.get('payout')
         # iqoptionapi's websocket client is not thread-safe: process small batches
         # sequentially to avoid deadlocks, while keeping one external gateway call.
         data={}
