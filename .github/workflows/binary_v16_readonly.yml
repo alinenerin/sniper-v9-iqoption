@@ -29,6 +29,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install numpy pandas scipy requests pytz websocket-client
+          pip install git+https://github.com/iqoptionapi/iqoptionapi.git
       - name: Architecture and read-only checks
         run: |
           python -m py_compile executor_v16_supreme.py engines/binary/operational.py shared_ai/consultation.py config/markets/contracts.py
