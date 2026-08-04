@@ -162,14 +162,12 @@ class IQOptionReadonly:
                 item={'symbol':name,'instrument':kind,'open':bool(active.get('enabled')) and not bool(active.get('is_suspended')),'source':'IQ_OPTION_WEBSHARE','read_only':True}
                 if commission is not None: item['payout']=(100.0-float(commission))/100.0; payouts.setdefault(name,{})[kind]=item['payout']
                 assets.append(item)
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        def fetch(symbol):
-            return symbol, {'m1':self.candles(symbol,60,300),'m5':self.candles(symbol,300,60)}
+        # iqoptionapi's websocket client is not thread-safe: process small batches
+        # sequentially to avoid deadlocks, while keeping one external gateway call.
         data={}
-        with ThreadPoolExecutor(max_workers=min(8,max(1,len(symbols)))) as pool:
-            futures=[pool.submit(fetch,s) for s in symbols]
-            for future in as_completed(futures):
-                symbol, payload = future.result(); data[symbol]=payload
+        for start in range(0, len(symbols), 2):
+            for symbol in symbols[start:start+2]:
+                data[symbol]={'m1':self.candles(symbol,60,120),'m5':self.candles(symbol,300,30)}
         return {'ok':True,'assets':assets,'payouts':payouts,'symbols':data,'source':'IQ_OPTION_WEBSHARE','read_only':True}
 
     def snapshot(self, symbol, interval=60):
