@@ -24,6 +24,35 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [BINARY] %(message)s
 logger = logging.getLogger("BINARY_V16_SUPREME")
 
 
+class RailwayGatewayClient:
+    """Read-only adapter: GitHub Actions consumes the Railway IQ gateway."""
+    def __init__(self, base_url: str, symbols):
+        import json, urllib.parse, urllib.request
+        self.base_url = base_url.rstrip("/")
+        query = urllib.parse.urlencode({"symbols": ",".join(symbols)})
+        with urllib.request.urlopen(self.base_url + "/api/market/snapshot_batch?" + query, timeout=180) as r:
+            self.batch = json.load(r)
+        if not self.batch.get("ok", False):
+            raise RuntimeError("Railway gateway returned no market snapshot")
+        self.symbols = self.batch.get("symbols", {})
+        self.payouts = self.batch.get("payouts", {})
+
+    def get_candles(self, symbol, timeframe, quantity, _end):
+        item = self.symbols.get(symbol, {})
+        key = {60: "m1", 180: "m3", 300: "m5"}.get(int(timeframe), "m1")
+        return item.get(key, {}).get("candles", [])[-int(quantity):]
+
+    def get_all_profit(self):
+        result = {}
+        for symbol, values in self.payouts.items():
+            for market, value in values.items():
+                result.setdefault(market, {})[symbol] = {"profit": value}
+        return result
+
+    def get_all_open_time(self):
+        return {"turbo": {s: {"open": True} for s in self.symbols}}
+
+
 def _settings():
     import importlib.util
     path = os.path.join(os.path.dirname(__file__), "config", "settings.py")
@@ -158,10 +187,14 @@ def executa_gatilho_sniper(iq_client: Any, ativo: str, dados_mercado: Dict[str, 
 
 
 def main(once: bool = False, symbols: Optional[Iterable[str]] = None, otc: bool = False, max_runtime: Optional[int] = None):
-    api = inicializar_api_blindada()
     selected = list(symbols) if symbols else list(DEFAULT_SYMBOLS)
     if otc:
         selected.extend(DEFAULT_OTC_SYMBOLS)
+    if os.getenv("RAILWAY_GATEWAY_URL"):
+        api = RailwayGatewayClient(os.getenv("RAILWAY_GATEWAY_URL"), selected)
+        logger.info("Railway gateway conectado para análise somente leitura")
+    else:
+        api = inicializar_api_blindada()
     started = time.time()
     while True:
         scan_once(api, selected)
