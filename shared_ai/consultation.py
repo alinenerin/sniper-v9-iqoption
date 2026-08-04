@@ -66,6 +66,8 @@ class SharedAI:
                               "read_only": True},
             "paper_performance": {"status": (advisory.get("paper_performance") or {}).get("status", "blocked"),
                                   "mode": "paper_only", "read_only": True},
+            "lse": {"status": (advisory.get("lse") or {}).get("status", "blocked"),
+                    "data_source": (advisory.get("lse") or {}).get("data_source", "LSE_API"), "read_only": True},
             "smc": {"status": "inference_ok" if "smc" in analysis else "blocked", "reason": None if "smc" in analysis else "SMC_NOT_RUN"},
             "vsa": {"status": "inference_ok" if "vsa" in analysis else "blocked", "reason": None if "vsa" in analysis else "VSA_NOT_RUN"},
         }
@@ -104,6 +106,12 @@ class SharedAI:
                 })
             except Exception as exc:
                 advisory["regime"] = {"active": False, "error": type(exc).__name__}
+            # Fase 4: LSE fornece contexto institucional complementar, read-only.
+            try:
+                from shared_ai.lse_advisor import LSEAdvisor
+                advisory["lse"] = LSEAdvisor().analyze(request.symbol)
+            except Exception as exc:
+                advisory["lse"] = {"status": "blocked", "reason": type(exc).__name__, "read_only": True}
             # Fase 3: estatística e trade memory somente em paper trading.
             try:
                 from shared_ai.performance_service import PaperPerformanceService
