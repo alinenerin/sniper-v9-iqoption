@@ -191,19 +191,52 @@ class IQOptionReadonly:
     def assets(self, instrument='all'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
+            # IQ Option can return a partial/None open-time payload through the
+            # Webshare websocket. Never index that payload blindly. Fall back
+            # to the init snapshot, which is already used by payout/snapshot.
             opened = _bounded_call(self.api.get_all_open_time, timeout=40)
-            if not isinstance(opened, dict):
-                return {'ok': False, 'reason': 'OPEN_TIME_SNAPSHOT_TIMEOUT', 'read_only': True}
             profits = _bounded_call(self.api.get_all_profit, timeout=40) or {}
             kinds = ['forex', 'binary', 'turbo', 'digital'] if instrument == 'all' else [instrument]
             out = []
-            for kind in kinds:
-                for symbol, row in (opened.get(kind) or {}).items():
-                    if not isinstance(row, dict): continue
-                    item = {'symbol': symbol, 'instrument': kind, 'open': bool(row.get('open')), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
-                    pr = (profits.get(symbol) or {})
-                    if kind in ('binary', 'turbo'): item['payout'] = pr.get(kind)
-                    out.append(item)
+            if isinstance(opened, dict):
+                for kind in kinds:
+                    rows = opened.get(kind) or {}
+                    if not isinstance(rows, dict):
+                        continue
+                    for symbol, row in rows.items():
+                        if not isinstance(row, dict):
+                            continue
+                        item = {'symbol': symbol, 'instrument': kind, 'open': bool(row.get('open')), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+                        pr = profits.get(symbol) if isinstance(profits, dict) else None
+                        pr = pr if isinstance(pr, dict) else {}
+                        if kind in ('binary', 'turbo'):
+                            item['payout'] = pr.get(kind)
+                        out.append(item)
+            # Fallback parser for SDK responses where get_all_open_time() is
+            # unavailable but get_all_init(_v2) contains the active catalogue.
+            if not out:
+                snap = self._init_snapshot()
+                if isinstance(snap, dict):
+                    for kind in kinds:
+                        section = snap.get(kind) or {}
+                        active_map = section.get('actives') if isinstance(section, dict) else {}
+                        if not isinstance(active_map, dict):
+                            continue
+                        for active in active_map.values():
+                            if not isinstance(active, dict):
+                                continue
+                            symbol = str(active.get('name', '')).split('.')[-1]
+                            if not symbol:
+                                continue
+                            option = active.get('option') or {}
+                            profit = option.get('profit') if isinstance(option, dict) else {}
+                            profit = profit if isinstance(profit, dict) else {}
+                            item = {'symbol': symbol, 'instrument': kind, 'open': bool(active.get('enabled')) and not bool(active.get('is_suspended')), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+                            if kind in ('binary', 'turbo') and profit.get('commission') is not None:
+                                item['payout'] = (100.0 - float(profit['commission'])) / 100.0
+                            out.append(item)
+            if not out:
+                return {'ok': False, 'reason': 'IQ_OPTION_ASSET_CATALOG_EMPTY', 'read_only': True}
             return {'ok': True, 'instrument': instrument, 'assets': out, 'count': len(out), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
         except Exception as exc: return {'ok': False, 'reason': f'IQ_OPTION_ASSETS_UNAVAILABLE:{type(exc).__name__}:{str(exc)[:120]}', 'read_only': True}
 
