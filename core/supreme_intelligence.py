@@ -136,7 +136,7 @@ class SupremeIntelligence:
             base = 1.1 if 'EUR' in par or 'GBP' in par else 0.65
             npy = numpy.random.randn(100) * 0.001
             df = pandas.DataFrame({
-                'open': 'open': npy + base,
+                'open': npy + base,
                 'close': npy + base,
                 'high': npy + base + 0.001,
                 'low': npy + base - 0.001,
