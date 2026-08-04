@@ -57,8 +57,12 @@ jobs:
         env:
           MARKETAUX_API_TOKEN: ${{ secrets.MARKETAUX_API_TOKEN }}
         run: python scripts/run_finbert_inference.py
+      - name: Install XGBoost runtime
+        run: pip install 'xgboost>=2.0' scikit-learn
+      - name: Train and run XGBoost inference
+        run: python scripts/train_xgboost_inference.py
       - name: Compile read-only analysis modules
-        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py
+        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
       - name: Generate unified report from Railway candles
         run: python scripts/generate_scan_report.py
       - name: Validate report contract and component evidence
