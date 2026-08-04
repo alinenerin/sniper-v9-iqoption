@@ -4,7 +4,7 @@ from pathlib import Path
 base=os.getenv('RAILWAY_GATEWAY_URL','https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
 symbols=os.getenv('SYMBOLS','EURUSD GBPUSD USDJPY AUDUSD').split();
 if os.getenv('INCLUDE_OTC','false').lower()=='true': symbols += [s+'-OTC' for s in symbols]
-def get(path, timeout=180):
+def get(path, timeout=600):
     with urllib.request.urlopen(base+path, timeout=timeout) as r: return json.load(r)
 health=get('/health'); batch=get('/api/market/snapshot_batch?'+urllib.parse.urlencode({'pairs':','.join(symbols)}))
 out={'source':base,'read_only':True,'health':health,'snapshot':batch,'assets':batch.get('assets',[]),'symbols':{}}
