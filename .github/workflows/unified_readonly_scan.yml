@@ -43,6 +43,8 @@ jobs:
         env:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: python scripts/fetch_railway_market.py
+      - name: Run research-only strategy optimizer
+        run: python research/strategy_optimizer.py
       - name: Install Darts runtime
         run: pip install 'Darts>=0.30,<1.0'
       - name: Run Darts anomaly inference
