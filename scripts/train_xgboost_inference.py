@@ -10,7 +10,7 @@ all_rows=[]
 market=json.loads(Path('reports/market_data.json').read_text())
 for symbol,payload in market.get('symbols',{}).items():
     rows=(payload.get('candles') or {}).get('candles',[])
-    if len(rows)<200: continue
+    if len(rows)<60: continue
     df=pd.DataFrame(rows); close=pd.to_numeric(df['close']); high=pd.to_numeric(df['high']); low=pd.to_numeric(df['low']); op=pd.to_numeric(df['open'])
     f=pd.DataFrame(index=df.index); f['ret1']=close.pct_change(); f['range']=(high-low)/close; f['body']=(close-op)/op; f['volatility']=close.pct_change().rolling(20).std(); f['ema_fast_gap']=close/close.ewm(span=9).mean()-1; f['ema_slow_gap']=close/close.ewm(span=50).mean()-1
     f['target']=(close.shift(-1)>close).astype(int); f=f.dropna(); f['symbol']=symbol; all_rows.append(f)
