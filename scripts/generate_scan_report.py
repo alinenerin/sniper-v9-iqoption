@@ -37,6 +37,7 @@ def _blocked_components(reason: str) -> dict[str, dict[str, str]]:
 
 def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[str, Any]:
     from config.markets.contracts import MarketRequest
+    from engines.forex.operational import ForexV16ReadOnly
     from shared_ai.consultation import SharedAI
 
     if not candles:
@@ -44,11 +45,15 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
                 "reason": "NO_RAILWAY_CANDLES", "components": _blocked_components("NO_RAILWAY_CANDLES"),
                 "execution_allowed": False}
     try:
+        if market == "forex":
+            result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
+            result["market"] = market
+            return result
         consultation = SharedAI(score_minimum=95).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         ))
-        result = {
+        return {
             "market": market, "symbol": symbol, "status": "inference_ok",
             "approved": consultation.approved, "score": consultation.score,
             "probability": consultation.probability,
@@ -57,7 +62,6 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
             "components": consultation.components.get("component_status", {}),
             "execution_allowed": False,
         }
-        return result
     except Exception as exc:
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
         return {"market": market, "symbol": symbol, "status": "blocked",
