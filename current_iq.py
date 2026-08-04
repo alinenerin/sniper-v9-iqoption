@@ -16,7 +16,9 @@ def _bounded_call(fn, *args, timeout=8):
     future = pool.submit(fn, *args)
     try:
         return future.result(timeout=timeout)
-    except FutureTimeout:
+    except (FutureTimeout, Exception):
+        # SDK websocket calls may raise on partial/None IQ responses; callers
+        # must be able to use their fallback parser instead of aborting.
         return None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
