@@ -68,6 +68,8 @@ class SharedAI:
                                   "mode": "paper_only", "read_only": True},
             "lse": {"status": (advisory.get("lse") or {}).get("status", "blocked"),
                     "data_source": (advisory.get("lse") or {}).get("data_source", "LSE_API"), "read_only": True},
+            "cycle_catalog": {"status": (advisory.get("cycle_catalog") or {}).get("status", "blocked"),
+                             "data_source": "Railway candles", "read_only": True},
             "smc": {"status": "inference_ok" if "smc" in analysis else "blocked", "reason": None if "smc" in analysis else "SMC_NOT_RUN"},
             "vsa": {"status": "inference_ok" if "vsa" in analysis else "blocked", "reason": None if "vsa" in analysis else "VSA_NOT_RUN"},
         }
@@ -106,6 +108,12 @@ class SharedAI:
                 })
             except Exception as exc:
                 advisory["regime"] = {"active": False, "error": type(exc).__name__}
+            # Fase 5: catálogo de ciclos por sessão, apenas contexto descritivo.
+            try:
+                from shared_ai.cycle_catalog import CycleCatalog
+                advisory["cycle_catalog"] = CycleCatalog().analyze(request.symbol, request.candles)
+            except Exception as exc:
+                advisory["cycle_catalog"] = {"status": "blocked", "reason": type(exc).__name__, "read_only": True}
             # Fase 4: LSE fornece contexto institucional complementar, read-only.
             try:
                 from shared_ai.lse_advisor import LSEAdvisor
