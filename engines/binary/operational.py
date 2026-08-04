@@ -21,10 +21,13 @@ class BinaryPolicy:
     def payout(self, api: Any, symbol: str) -> Optional[float]:
         try:
             target = symbol.upper().replace('/', '')
-            for name in ('get_digital_payout', 'get_binary_payout'):
-                fn = getattr(api, name, None)
-                if callable(fn):
-                    value = float(fn(target))
+            profits = api.get_all_profit() if callable(getattr(api, 'get_all_profit', None)) else {}
+            for market in ('turbo', 'binary', 'digital'):
+                value = (profits.get(market, {}) if isinstance(profits, dict) else {}).get(target)
+                if isinstance(value, dict):
+                    value = value.get('profit') or value.get('value')
+                if value is not None:
+                    value = float(value)
                     return value / 100 if value > 1 else value
             assets = api.get_all_open_time().get('turbo', {})
             is_otc = '-OTC' in target
