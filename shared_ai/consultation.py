@@ -64,6 +64,8 @@ class SharedAI:
             "probability_engine": {"status": (advisory.get("probability_engine") or {}).get("status", "blocked")},
             "mem0_semantic": {"status": (advisory.get("memory_context", {}).get("mem0_semantic", {}) or {}).get("status", "blocked"),
                               "read_only": True},
+            "paper_performance": {"status": (advisory.get("paper_performance") or {}).get("status", "blocked"),
+                                  "mode": "paper_only", "read_only": True},
             "smc": {"status": "inference_ok" if "smc" in analysis else "blocked", "reason": None if "smc" in analysis else "SMC_NOT_RUN"},
             "vsa": {"status": "inference_ok" if "vsa" in analysis else "blocked", "reason": None if "vsa" in analysis else "VSA_NOT_RUN"},
         }
@@ -102,6 +104,14 @@ class SharedAI:
                 })
             except Exception as exc:
                 advisory["regime"] = {"active": False, "error": type(exc).__name__}
+            # Fase 3: estatística e trade memory somente em paper trading.
+            try:
+                from shared_ai.performance_service import PaperPerformanceService
+                perf = PaperPerformanceService()
+                advisory["paper_performance"] = perf.summary(request.symbol)
+                perf.close()
+            except Exception as exc:
+                advisory["paper_performance"] = {"status": "blocked", "reason": type(exc).__name__, "mode": "paper_only", "read_only": True}
             # Fase 1: Liquidity Scanner é consultivo e fail-closed.
             try:
                 from core.liquidity_scanner import LiquidityScanner
