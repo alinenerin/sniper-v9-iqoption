@@ -60,6 +60,8 @@ class SharedAI:
             "news_api": {"status": "inference_ok" if news_ok else "blocked",
                          "reason": None if news_ok else "NEWS_API_UNAVAILABLE_OR_UNVERIFIED"},
             "xgboost": {"status": "blocked", "reason": "XGBOOST_MODEL_WEIGHTS_MISSING_OR_NOT_WIRED" if not model_path.exists() else "XGBOOST_INFERENCE_NOT_WIRED"},
+            "liquidity": {"status": (advisory.get("liquidity") or {}).get("status", "blocked")},
+            "probability_engine": {"status": (advisory.get("probability_engine") or {}).get("status", "blocked")},
             "smc": {"status": "inference_ok" if "smc" in analysis else "blocked", "reason": None if "smc" in analysis else "SMC_NOT_RUN"},
             "vsa": {"status": "inference_ok" if "vsa" in analysis else "blocked", "reason": None if "vsa" in analysis else "VSA_NOT_RUN"},
         }
@@ -98,6 +100,26 @@ class SharedAI:
                 })
             except Exception as exc:
                 advisory["regime"] = {"active": False, "error": type(exc).__name__}
+            # Fase 1: Liquidity Scanner é consultivo e fail-closed.
+            try:
+                from core.liquidity_scanner import LiquidityScanner
+                advisory["liquidity"] = LiquidityScanner().analyze_smc(frame)
+            except Exception as exc:
+                advisory["liquidity"] = {"status": "blocked", "veto": True, "reason": type(exc).__name__}
+            # Fase 1: Probability Engine combina contexto, mas nunca libera execução.
+            try:
+                from core.probability_engine import ProbabilityEngine
+                regime_score = 50.0
+                if advisory.get("regime", {}).get("regime") in ("TRENDING_UP", "TRENDING_DOWN"): regime_score = 75.0
+                liq = advisory.get("liquidity", {})
+                adaptive = 70.0 if liq.get("liquidity_state") == "HEALTHY" else 40.0
+                advisory["probability_engine"] = ProbabilityEngine().calculate(
+                    technical_score=float(analysis.get("score", 0) or 0),
+                    asset_winrate=50.0, hour_winrate=50.0,
+                    regime_score=regime_score, adaptive_score=adaptive)
+                advisory["probability_engine"]["status"] = "inference_ok"
+            except Exception as exc:
+                advisory["probability_engine"] = {"status": "blocked", "reason": type(exc).__name__}
             # TimesFM é opcional e advisory-only: ausência/fallback nunca aprova.
             try:
                 from core.forecasting.google_timesfm_bridge import TimesFMBridge
