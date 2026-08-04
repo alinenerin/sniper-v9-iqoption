@@ -64,6 +64,9 @@ jobs:
       - name: Compile read-only analysis modules
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
       - name: Generate unified report from Railway candles
+        env:
+          LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
+          MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
         run: python scripts/generate_scan_report.py
       - name: Validate report contract and component evidence
         run: |
