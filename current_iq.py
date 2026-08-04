@@ -205,7 +205,7 @@ class IQOptionReadonly:
                     if kind in ('binary', 'turbo'): item['payout'] = pr.get(kind)
                     out.append(item)
             return {'ok': True, 'instrument': instrument, 'assets': out, 'count': len(out), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
-        except Exception as exc: return {'ok': False, 'reason': f'IQ_OPTION_ASSETS_UNAVAILABLE:{type(exc).__name__}', 'read_only': True}
+        except Exception as exc: return {'ok': False, 'reason': f'IQ_OPTION_ASSETS_UNAVAILABLE:{type(exc).__name__}:{str(exc)[:120]}', 'read_only': True}
 
 def connection_status():
     return dict(_state)
