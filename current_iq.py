@@ -150,6 +150,23 @@ class IQOptionReadonly:
             return {'ok': value is not None, 'instrument': instrument, 'commission': value, 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
         except Exception: return {'ok': False, 'reason': 'COMMISSION_UNAVAILABLE', 'read_only': True}
 
+    def snapshot_batch(self, symbols):
+        """Single batch gateway call: one IQ init/payout snapshot plus requested M1/M5 candles."""
+        if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
+        snap=self._init_snapshot()
+        if not isinstance(snap, dict): return {'ok': False, 'reason': 'INIT_SNAPSHOT_TIMEOUT', 'read_only': True}
+        assets=[]; payouts={}
+        for kind in ('binary','turbo'):
+            for _, active in (snap.get(kind,{}).get('actives',{}) or {}).items():
+                name=str(active.get('name','')).split('.')[-1]; option=active.get('option',{}).get('profit',{}); commission=option.get('commission')
+                item={'symbol':name,'instrument':kind,'open':bool(active.get('enabled')) and not bool(active.get('is_suspended')),'source':'IQ_OPTION_WEBSHARE','read_only':True}
+                if commission is not None: item['payout']=(100.0-float(commission))/100.0; payouts.setdefault(name,{})[kind]=item['payout']
+                assets.append(item)
+        data={}
+        for symbol in symbols:
+            data[symbol]={'m1':self.candles(symbol,60,1200),'m5':self.candles(symbol,300,120)}
+        return {'ok':True,'assets':assets,'payouts':payouts,'symbols':data,'source':'IQ_OPTION_WEBSHARE','read_only':True}
+
     def snapshot(self, symbol, interval=60):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
