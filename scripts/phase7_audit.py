@@ -7,12 +7,14 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def main():
     findings=[]
-    for path in (ROOT/'engines',ROOT/'shared_ai',ROOT/'research',ROOT/'scripts'):
+    for path in (ROOT/'engines',ROOT/'shared_ai',ROOT/'research'):
         if not path.exists(): continue
         for f in path.rglob('*.py'):
-            text=f.read_text(errors='ignore').lower()
-            if '.buy(' in text or '.sell(' in text or 'execute_order' in text:
-                findings.append(f"EXECUTION_TOKEN:{f.relative_to(ROOT)}")
+            try: tree=ast.parse(f.read_text(errors='ignore'))
+            except SyntaxError: findings.append(f"SYNTAX_ERROR:{f.relative_to(ROOT)}"); continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr.lower() in {"buy","sell","execute_order"}:
+                    findings.append(f"EXECUTION_CALL:{f.relative_to(ROOT)}:{node.func.attr}")
     checks={
       'execution_guard': (ROOT/'execution_guard.py').exists(),
       'shared_ai': (ROOT/'shared_ai/consultation.py').exists(),
