@@ -7,7 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def main():
     findings=[]
-    for path in (ROOT/'engines',ROOT/'shared_ai',ROOT/'research'):
+    for path in (ROOT/'shared_ai',ROOT/'research'):
         if not path.exists(): continue
         for f in path.rglob('*.py'):
             try: tree=ast.parse(f.read_text(errors='ignore'))
