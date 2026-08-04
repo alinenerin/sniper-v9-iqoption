@@ -6,7 +6,7 @@ symbols=os.getenv('SYMBOLS','EURUSD GBPUSD USDJPY AUDUSD').split();
 if os.getenv('INCLUDE_OTC','false').lower()=='true': symbols += [s+'-OTC' for s in symbols]
 def get(path, timeout=180):
     with urllib.request.urlopen(base+path, timeout=timeout) as r: return json.load(r)
-health=get('/health'); batch=get('/api/market/snapshot_batch?'+urllib.parse.urlencode({'symbols':','.join(symbols)}))
+health=get('/health'); batch=get('/api/market/snapshot_batch?'+urllib.parse.urlencode({'pairs':','.join(symbols)}))
 out={'source':base,'read_only':True,'health':health,'snapshot':batch,'assets':batch.get('assets',[]),'symbols':{}}
 for s in symbols:
     item=batch.get('symbols',{}).get(s,{})
