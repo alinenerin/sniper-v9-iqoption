@@ -62,6 +62,8 @@ class SharedAI:
             "xgboost": {"status": "blocked", "reason": "XGBOOST_MODEL_WEIGHTS_MISSING_OR_NOT_WIRED" if not model_path.exists() else "XGBOOST_INFERENCE_NOT_WIRED"},
             "liquidity": {"status": (advisory.get("liquidity") or {}).get("status", "blocked")},
             "probability_engine": {"status": (advisory.get("probability_engine") or {}).get("status", "blocked")},
+            "mem0_semantic": {"status": (advisory.get("memory_context", {}).get("mem0_semantic", {}) or {}).get("status", "blocked"),
+                              "read_only": True},
             "smc": {"status": "inference_ok" if "smc" in analysis else "blocked", "reason": None if "smc" in analysis else "SMC_NOT_RUN"},
             "vsa": {"status": "inference_ok" if "vsa" in analysis else "blocked", "reason": None if "vsa" in analysis else "VSA_NOT_RUN"},
         }
