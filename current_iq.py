@@ -164,7 +164,7 @@ class IQOptionReadonly:
                 assets.append(item)
         data={}
         for symbol in symbols:
-            data[symbol]={'m1':self.candles(symbol,60,1200),'m5':self.candles(symbol,300,120)}
+            data[symbol]={'m1':self.candles(symbol,60,300),'m5':self.candles(symbol,300,60)}
         return {'ok':True,'assets':assets,'payouts':payouts,'symbols':data,'source':'IQ_OPTION_WEBSHARE','read_only':True}
 
     def snapshot(self, symbol, interval=60):
