@@ -43,8 +43,7 @@ jobs:
           PY
       - name: Binary analysis (no orders)
         env:
-          IQ_USER: ${{ secrets.IQ_USER }}
-          IQ_PASS: ${{ secrets.IQ_PASS }}
+          RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: |
           FLAGS="--max-runtime ${{ inputs.max_runtime }}"
           if [ "${{ inputs.include_otc }}" = "true" ]; then FLAGS="$FLAGS --otc"; fi
