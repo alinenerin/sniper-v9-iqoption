@@ -98,6 +98,7 @@ jobs:
           print('unified_report=OK; mem0_lse=INFERENCE_OK; component_statuses=OK; execution=BLOCKED')
           PY
       - name: Upload latest scan
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: latest-scan-${{ github.run_id }}
