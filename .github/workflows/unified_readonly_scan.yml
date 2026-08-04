@@ -39,6 +39,8 @@ jobs:
         run: |
           python audit_architecture.py
           python audit_readonly_validation.py
+      - name: Phase 7 safety audit
+        run: python scripts/phase7_audit.py
       - name: Fetch live market data from Railway
         env:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
