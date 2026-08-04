@@ -33,7 +33,15 @@ class ZapiaMemoryService:
     def context_for(self, *terms: str, limit: int = 10) -> Dict[str, Any]:
         query = " ".join(t for t in terms if t)
         memories = self.recall(query, limit=limit) if query else self.recall(limit=limit)
-        return {"memory_backend": "sqlite", "memory_count": len(memories), "memories": memories}
+        semantic = {"status": "blocked", "reason": "NOT_QUERIED", "memories": []}
+        # Mem0 Cloud is read-only advisory context; it never changes decisions.
+        try:
+            from core.mem0_semantic import Mem0Semantic
+            semantic = Mem0Semantic().search(query, limit=min(limit, 5))
+        except Exception as exc:
+            semantic = {"status": "blocked", "reason": type(exc).__name__, "memories": []}
+        return {"memory_backend": "sqlite+mem0_semantic", "memory_count": len(memories),
+                "memories": memories, "mem0_semantic": semantic, "read_only": True}
 
     def close(self) -> None:
         self.db.close()
