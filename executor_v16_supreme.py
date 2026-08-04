@@ -29,16 +29,11 @@ class RailwayGatewayClient:
     def __init__(self, base_url: str, symbols):
         import json, urllib.parse, urllib.request
         self.base_url = base_url.rstrip("/")
-        self.batch = {"ok": True, "symbols": {}, "payouts": {}}
-        for start in range(0, len(symbols), 2):
-            chunk = symbols[start:start + 2]
-            query = urllib.parse.urlencode({"pairs": ",".join(chunk)})
-            with urllib.request.urlopen(self.base_url + "/api/market/snapshot_batch?" + query, timeout=180) as r:
-                part = json.load(r)
-            if not part.get("ok", False):
-                raise RuntimeError("Railway gateway returned no market snapshot")
-            self.batch["symbols"].update(part.get("symbols", {}))
-            self.batch["payouts"].update(part.get("payouts", {}))
+        query = urllib.parse.urlencode({"pairs": ",".join(symbols)})
+        with urllib.request.urlopen(self.base_url + "/api/market/snapshot_batch?" + query, timeout=300) as r:
+            self.batch = json.load(r)
+        if not self.batch.get("ok", False):
+            raise RuntimeError("Railway gateway returned no market snapshot")
         self.symbols = self.batch["symbols"]
         self.payouts = self.batch["payouts"]
 
