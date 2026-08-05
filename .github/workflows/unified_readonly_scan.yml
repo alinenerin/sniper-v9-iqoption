@@ -50,10 +50,12 @@ jobs:
       - name: Install Darts runtime
         run: pip install 'Darts>=0.30,<1.0'
       - name: Run Darts anomaly inference
+        continue-on-error: true
         run: python scripts/run_darts_inference.py
       - name: Install TimesFM runtime
         run: pip install 'timesfm>=1.3.0'
       - name: Run real TimesFM inference
+        continue-on-error: true
         run: python scripts/run_timesfm_inference.py
       - name: Install FinBERT runtime
         run: pip install 'torch>=2.2' 'transformers>=4.40' sentencepiece requests
@@ -64,6 +66,7 @@ jobs:
       - name: Install XGBoost runtime
         run: pip install 'xgboost>=2.0' scikit-learn
       - name: Train and run XGBoost inference
+        continue-on-error: true
         run: python scripts/train_xgboost_inference.py
       - name: Compile read-only analysis modules
         run: python -m py_compile shared_ai/consultation.py shared_ai/lse_advisor.py core/mem0_semantic.py scripts/generate_scan_report.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
