@@ -14,7 +14,7 @@ market=json.loads(Path('reports/market_data.json').read_text())
 results={}
 for symbol, payload in market.get('symbols',{}).items():
     rows=(payload.get('candles') or {}).get('candles',[])
-    if len(rows)<100:
+    if len(rows)<50:
         results[symbol]={'status':'blocked','reason':'INSUFFICIENT_CANDLES','samples':len(rows)}; continue
     if DartsAnomalyShield is None:
         results[symbol]={'status':'blocked','reason':f'IMPORT_{IMPORT_ERROR}','samples':len(rows)}; continue
