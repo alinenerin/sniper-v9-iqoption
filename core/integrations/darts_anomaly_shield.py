@@ -245,7 +245,7 @@ class DartsAnomalyShield:
         features = FeatureExtractor.extract_features(historical_data)
         features = features.dropna()
         
-        if len(features) < 100:
+        if len(features) < 50:
             return {"status": "INSUFFICIENT_FEATURES"}
         
         # Calcula estatísticas baseline para cada feature
