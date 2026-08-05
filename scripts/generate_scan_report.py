@@ -35,6 +35,26 @@ def _blocked_components(reason: str) -> dict[str, dict[str, str]]:
             ("darts", "timesfm", "finbert", "news_api", "xgboost", "smc", "vsa")}
 
 
+def _file_evidence(symbol: str) -> dict[str, dict[str, Any]]:
+    """Load per-symbol evidence directly, independent of engine adapters."""
+    out = {}
+    for filename, name, fallback in (
+        ("darts_inference.json", "darts", "DARTS_INFERENCE_UNAVAILABLE"),
+        ("timesfm_inference.json", "timesfm", "TIMESFM_INFERENCE_UNAVAILABLE"),
+        ("finbert_inference.json", "finbert", "FINBERT_INFERENCE_UNAVAILABLE"),
+        ("xgboost_inference.json", "xgboost", "XGBOOST_INFERENCE_UNAVAILABLE"),
+    ):
+        try:
+            data = json.loads(Path("reports").joinpath(filename).read_text())
+            item = (data.get("components") or {}).get(symbol) or {}
+            status = item.get("status") if isinstance(item, dict) else None
+            out[name] = {"status": status if status in ("inference_ok", "blocked") else "blocked",
+                         "reason": item.get("reason") or (None if status == "inference_ok" else fallback)}
+        except Exception:
+            out[name] = {"status": "blocked", "reason": fallback}
+    return out
+
+
 def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[str, Any]:
     from config.markets.contracts import MarketRequest
     from engines.forex.operational import ForexV16ReadOnly
@@ -48,6 +68,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
         if market == "forex":
             result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
+            result.setdefault("components", {}).update(_file_evidence(symbol))
             # A numerical core score is not valid when required AI evidence is absent.
             # Keep the exact component reasons, but fail closed instead of publishing
             # a misleading low/partial score as if it were a Supreme result.
@@ -73,7 +94,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
             "probability": consultation.probability,
             "anomaly_score": consultation.anomaly_score,
             "vetoes": consultation.vetoes, "explanation": consultation.explanation,
-            "components": consultation.components.get("component_status", {}),
+            "components": {**consultation.components.get("component_status", {}), **_file_evidence(symbol)},
             "execution_allowed": False,
         }
     except Exception as exc:
