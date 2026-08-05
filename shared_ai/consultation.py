@@ -63,6 +63,7 @@ class SharedAI:
         times_report=report_status("timesfm_inference.json", symbol)
         finbert_report=report_status("finbert_inference.json", symbol)
         xgb_report=report_status("xgboost_inference.json", symbol)
+        return {
             "darts": {"status": darts_report.get("status", "inference_ok" if darts_available else "blocked"),
                       "reason": darts_report.get("reason") if darts_report.get("status") != "inference_ok" else None},
             "timesfm": {"status": times_report.get("status", "inference_ok" if "TIMESFM" in times_source and "FALLBACK" not in times_source else "blocked"),
