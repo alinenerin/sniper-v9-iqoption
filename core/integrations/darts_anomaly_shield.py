@@ -205,7 +205,12 @@ class DartsAnomalyShield:
     def _check_darts(self):
         """Verifica se a biblioteca Darts está instalada."""
         try:
-            from darts.ad import QuantileDetector, NormScorer
+            from darts import TimeSeries
+            try:
+                from darts.ad import QuantileDetector, NormScorer
+            except ImportError:
+                from darts.ad.detectors import QuantileDetector
+                from darts.ad.scorers import NormScorer
             self.darts_available = True
             logger.info("   ✅ Darts library detected — full anomaly detection available.")
         except ImportError:
@@ -298,7 +303,11 @@ class DartsAnomalyShield:
         Usa apenas se a biblioteca estiver disponível.
         """
         from darts import TimeSeries
-        from darts.ad import QuantileDetector, NormScorer
+        try:
+            from darts.ad import QuantileDetector, NormScorer
+        except ImportError:
+            from darts.ad.detectors import QuantileDetector
+            from darts.ad.scorers import NormScorer
         
         # Converte para TimeSeries do Darts
         # Usa a primeira feature como referência (returns)
