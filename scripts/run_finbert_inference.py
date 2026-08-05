@@ -24,9 +24,9 @@ def fetch(symbol):
             for a in data.get('data',[]) if isinstance(data,dict) else []: add(rows,'marketaux',a.get('title'),a.get('description'),a.get('url',''))
         except Exception: pass
     try:
-        q=f'({symbol[:3]} OR {symbol[3:]}) forex OR central bank OR inflation'
-        data=session.get('https://api.gdeltproject.org/api/v2/doc/doc',params={'query':q,'mode':'artlist','format':'json','maxrecords':10,'sort':'datedesc'},timeout=15).json()
-        for a in data.get('articles',[]) if isinstance(data,dict) else []: add(rows,'gdelt',a.get('title'),'',a.get('url',''))
+        q=f'({symbol[:3]} OR {symbol[3:]} OR forex) (central bank OR inflation OR interest rates OR jobs)'
+        data=session.get('https://api.gdeltproject.org/api/v2/doc/doc',params={'query':q,'mode':'artlist','format':'json','maxrecords':25,'sort':'datedesc'},timeout=20).json()
+        for a in data.get('articles',[]) if isinstance(data,dict) else []: add(rows,'gdelt',a.get('title'),a.get('seendate',''),a.get('url',''))
     except Exception: pass
     seen=set(); out=[]
     for x in rows:
