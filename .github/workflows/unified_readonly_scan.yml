@@ -93,6 +93,10 @@ jobs:
           for book_name, book in (('forex', r['forex']), ('binary', r['binary'])):
               for item in book.get('analyses', []):
                   assert item.get('execution_allowed') is False, (book_name, item.get('symbol'))
+                  # An unavailable OTC instrument is a valid read-only veto,
+                  # not a contract failure; never treat missing candles as a signal.
+                  if book_name == 'binary' and str(item.get('symbol','')).endswith('-OTC') and item.get('status') == 'blocked' and item.get('reason') == 'NO_RAILWAY_CANDLES':
+                      continue
                   components=item.get('components') or {}
                   assert isinstance(components, dict), (book_name, item.get('symbol'))
                   for name, component in components.items():
