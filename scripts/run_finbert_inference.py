@@ -28,6 +28,17 @@ def fetch(symbol):
             data=session.get('https://api.gdeltproject.org/api/v2/doc/doc',params={'query':q,'mode':'artlist','format':'json','maxrecords':25,'sort':'datedesc'},timeout=20).json()
             for a in data.get('articles',[]) if isinstance(data,dict) else []: add(rows,'gdelt',a.get('title'),a.get('seendate',''),a.get('url',''))
     except Exception: pass
+    # Verified economic-calendar fallback when news APIs are rate-limited.
+    try:
+        cal=session.get('https://nfs.faireconomy.media/ff_calendar_thisweek.json',timeout=15).json()
+        country_map={'EUR':'euro','USD':'united states','GBP':'united kingdom','JPY':'japan','AUD':'australia'}
+        for e in cal if isinstance(cal,list) else []:
+            country=str(e.get('country','')).upper()
+            if country in (symbol[:3], symbol[3:]):
+                title=e.get('title') or e.get('event') or ''
+                add(rows,'forexfactory',f'{country_map.get(country,country)} {title} ({e.get("impact","")} impact)',str(e.get('date','')),e.get('url',''))
+    except Exception: pass
+
     seen=set(); out=[]
     for x in rows:
         key=re.sub(r'[^a-z0-9]+',' ',x['text'].lower()).strip()
