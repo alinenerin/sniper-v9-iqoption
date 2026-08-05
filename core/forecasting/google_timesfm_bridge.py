@@ -29,9 +29,14 @@ class TimesFMBridge:
             print("[TIMESFM] Carregando 2.5 200M...")
             import torch
             torch.set_float32_matmul_precision("high")
-            self.model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
-                "google/timesfm-2.5-200m-pytorch"
-            )
+            model_cls = getattr(timesfm, "TimesFM_2p5_200M_torch", None)
+            model_id = "google/timesfm-2.5-200m-pytorch"
+            if model_cls is None:
+                model_cls = getattr(timesfm, "TimesFM_2p0_200M_torch", None)
+                model_id = "google/timesfm-2.0-200m-pytorch"
+            if model_cls is None:
+                raise RuntimeError("TIMESFM_TORCH_MODEL_CLASS_UNAVAILABLE")
+            self.model = model_cls.from_pretrained(model_id)
             self.model.compile(timesfm.ForecastConfig(
                 max_context=1024, max_horizon=256,
                 normalize_inputs=True, use_continuous_quantile_head=True,
