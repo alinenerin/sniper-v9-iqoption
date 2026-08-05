@@ -1,6 +1,10 @@
 """Run the real Darts anomaly shield against Railway candles; fail closed."""
 import json, os
 from pathlib import Path
+import sys
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 import pandas as pd
 try:
     from core.integrations.darts_anomaly_shield import DartsAnomalyShield, DartsShieldConfig
