@@ -85,7 +85,11 @@ class IQOptionReadonly:
             return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
             symbol = str(symbol).upper().replace('/', '')
-            raw = self.api.get_candles(symbol, int(interval), max(1, min(int(count), 3000)), time.time())
+            # The Webshare websocket can stall on unsupported/OTC symbols.
+            # Bound each SDK call so one symbol cannot hang the whole batch.
+            raw = _bounded_call(self.api.get_candles, symbol, int(interval), max(1, min(int(count), 3000)), time.time(), timeout=25)
+            if raw is None:
+                return {'ok': False, 'symbol': symbol, 'reason': 'IQ_OPTION_CANDLES_TIMEOUT', 'read_only': True}
             out = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in raw or []]
             return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': out, 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
         except Exception as exc:
