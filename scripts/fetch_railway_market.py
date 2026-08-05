@@ -27,6 +27,13 @@ except Exception:
         batch['assets'] += part.get('assets',[])
         batch['payouts'].update(part.get('payouts',{}))
         batch['symbols'].update(part.get('symbols',{}))
+# Batch responses can be partially populated under live IQ latency. Requery only missing symbols.
+missing=[s for s in symbols if not (batch.get('symbols',{}).get(s,{}).get('m1') or batch.get('symbols',{}).get(s,{}).get('m5'))]
+for i in range(0,len(missing),2):
+    part=get('/api/market/snapshot_batch?'+urllib.parse.urlencode({'pairs':','.join(missing[i:i+2])}))
+    batch['assets'] += part.get('assets',[])
+    batch['payouts'].update(part.get('payouts',{}))
+    batch['symbols'].update(part.get('symbols',{}))
 out={'source':base,'read_only':True,'health':health,'snapshot':batch,'assets':batch.get('assets',[]),'symbols':{}}
 for s in symbols:
     item=batch.get('symbols',{}).get(s,{})
