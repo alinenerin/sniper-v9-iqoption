@@ -167,6 +167,7 @@ class SharedAI:
             except Exception as exc:
                 advisory["timesfm"] = {"active": False, "error": type(exc).__name__}
             analysis["shared_advisory"] = advisory
+            analysis["symbol"] = request.symbol
             component_status = self._component_status(analysis, advisory)
             approved, reason = engine.is_supreme_approved(analysis)
             score = float(analysis.get("score", 0) or 0)
