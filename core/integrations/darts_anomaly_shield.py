@@ -313,17 +313,16 @@ class DartsAnomalyShield:
         # Usa a primeira feature como referência (returns)
         train_series = TimeSeries.from_values(features['returns'].values)
         
-        # Cria e treina o scorer
+        # NormScorer is non-trainable in Darts 0.46+: score one-step
+        # lagged predictions, then fit the detector on those scores.
         self._darts_scorer = NormScorer()
-        self._darts_scorer.fit(train_series)
-        
-        # Cria o detector baseado em quantil
-        self._darts_detector = QuantileDetector(
-            high_quantile=self.config.anomaly_quantile
-        )
-        train_scores = self._darts_scorer.score(train_series)
+        values = features['returns'].values.astype(float)
+        lagged = np.concatenate(([values[0]], values[:-1]))
+        predicted_series = TimeSeries.from_values(lagged)
+        train_scores = self._darts_scorer.score_from_prediction(train_series, predicted_series)
+        self._darts_detector = QuantileDetector(high_quantile=self.config.anomaly_quantile)
         self._darts_detector.fit(train_scores)
-    
+
     # -------------------------------------------------------------------------
     # DETECÇÃO DE ANOMALIA EM TEMPO REAL
     # -------------------------------------------------------------------------
