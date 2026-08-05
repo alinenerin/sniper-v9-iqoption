@@ -11,8 +11,14 @@ class LSEAdvisor:
         lse_symbol={"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY","AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP"}.get(clean, clean)
         if lse_symbol.startswith("EUR/"): pass
         try:
-            r=requests.get(f"{self.BASE}/candles",headers={"x-api-key":key},params={"symbol":lse_symbol,"timeframe":"1m","limit":min(limit,100)},timeout=12)
-            if r.status_code>=400: return {"status":"blocked","reason":f"LSE_HTTP_{r.status_code}","read_only":True}
+            r=None
+            for attempt in range(3):
+                try:
+                    r=requests.get(f"{self.BASE}/candles",headers={"x-api-key":key},params={"symbol":lse_symbol,"timeframe":"1m","limit":min(limit,100)},timeout=15)
+                    if r.status_code < 500: break
+                except requests.RequestException:
+                    if attempt == 2: raise
+            if r is None or r.status_code>=400: return {"status":"blocked","reason":f"LSE_HTTP_{r.status_code if r is not None else 'NO_RESPONSE'}","read_only":True}
             data=r.json(); rows=data if isinstance(data,list) else data.get("data",data.get("rows",[]))
             if len(rows)<5: return {"status":"blocked","reason":"LSE_INSUFFICIENT_ROWS","read_only":True}
             rows=sorted(rows,key=lambda x:x.get("timestamp",x.get("time",x.get("t",0))))
