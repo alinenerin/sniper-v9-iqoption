@@ -20,7 +20,8 @@ class TradingCrewV16:
                     for name in self.REQUIRED}
         unavailable = [name for name, status in statuses.items() if status != "inference_ok"]
         return {
-            "status": "shadow_ok",
+            "status": "inference_ok",
+            "inference_type": "shadow_consensus",
             "symbol": symbol,
             "mode": self.mode,
             "decision_impact": "none",
