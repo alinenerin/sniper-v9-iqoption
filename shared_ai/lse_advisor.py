@@ -8,7 +8,7 @@ class LSEAdvisor:
         key=os.getenv("LSE_API_KEY")
         if not key: return {"status":"blocked","reason":"LSE_API_KEY_UNAVAILABLE","read_only":True}
         clean=symbol.replace("-OTC", "")
-            lse_symbol={"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY","AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP"}.get(clean, clean)
+        lse_symbol={"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY","AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP"}.get(clean, clean)
         if lse_symbol.startswith("EUR/"): pass
         try:
             r=requests.get(f"{self.BASE}/candles",headers={"x-api-key":key},params={"symbol":lse_symbol,"timeframe":"1m","limit":min(limit,100)},timeout=12)
