@@ -82,7 +82,10 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
         if market == "forex":
             result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
-            result.setdefault("components", {}).update(_file_evidence(symbol))
+            evidence = _file_evidence(symbol)
+            crew_evidence = evidence.pop("crew_v16", None)
+            result.setdefault("components", {}).update(evidence)
+            result["crew_v16"] = crew_evidence
             # A numerical core score is not valid when required AI evidence is absent.
             # Keep the exact component reasons, but fail closed instead of publishing
             # a misleading low/partial score as if it were a Supreme result.
