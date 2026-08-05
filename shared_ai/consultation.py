@@ -51,15 +51,26 @@ class SharedAI:
         news = analysis.get("sentiment") or {}
         news_ok = bool(news.get("api_success") or news.get("status") in ("ok", "success"))
         model_path = Path("models/xgboost_supreme.model")
-        return {
-            "darts": {"status": "inference_ok" if darts_available else "blocked",
-                      "reason": None if darts_available else "DARTS_LIBRARY_OR_MODEL_UNAVAILABLE"},
-            "timesfm": {"status": "inference_ok" if "TIMESFM" in times_source and "FALLBACK" not in times_source else "blocked",
-                        "reason": None if "TIMESFM" in times_source and "FALLBACK" not in times_source else "TIMESFM_WEIGHTS_OR_LIBRARY_UNAVAILABLE"},
-            "finbert": {"status": "blocked", "reason": "FINBERT_NOT_IMPLEMENTED; sentiment is not FinBERT"},
+        def report_status(filename: str, symbol: str):
+            try:
+                report=json.loads(Path("reports") .joinpath(filename).read_text())
+                item=(report.get("components") or {}).get(symbol,{})
+                return item if isinstance(item, dict) else {}
+            except Exception:
+                return {}
+        symbol=str(analysis.get("symbol") or "")
+        darts_report=report_status("darts_inference.json", symbol)
+        times_report=report_status("timesfm_inference.json", symbol)
+        finbert_report=report_status("finbert_inference.json", symbol)
+        xgb_report=report_status("xgboost_inference.json", symbol)
+            "darts": {"status": darts_report.get("status", "inference_ok" if darts_available else "blocked"),
+                      "reason": darts_report.get("reason") if darts_report.get("status") != "inference_ok" else None},
+            "timesfm": {"status": times_report.get("status", "inference_ok" if "TIMESFM" in times_source and "FALLBACK" not in times_source else "blocked"),
+                        "reason": times_report.get("reason") if times_report.get("status") != "inference_ok" else None},
+            "finbert": {"status": finbert_report.get("status", "blocked"), "reason": finbert_report.get("reason") if finbert_report.get("status") != "inference_ok" else None},
             "news_api": {"status": "inference_ok" if news_ok else "blocked",
                          "reason": None if news_ok else "NEWS_API_UNAVAILABLE_OR_UNVERIFIED"},
-            "xgboost": {"status": "blocked", "reason": "XGBOOST_MODEL_WEIGHTS_MISSING_OR_NOT_WIRED" if not model_path.exists() else "XGBOOST_INFERENCE_NOT_WIRED"},
+            "xgboost": {"status": xgb_report.get("status", "blocked"), "reason": xgb_report.get("reason") if xgb_report.get("status") != "inference_ok" else None},
             "liquidity": {"status": (advisory.get("liquidity") or {}).get("status", "blocked")},
             "probability_engine": {"status": (advisory.get("probability_engine") or {}).get("status", "blocked")},
             "mem0_semantic": {"status": (advisory.get("memory_context", {}).get("mem0_semantic", {}) or {}).get("status", "blocked"),
