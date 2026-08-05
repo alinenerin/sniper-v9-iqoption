@@ -1,43 +1,40 @@
-import os
-from core.zapia_memory import zapia_brain
+"""Read-only Crew V16 consensus layer.
 
-class TradingAgent:
-    def __init__(self, role, goal, backstory):
-        self.role = role
-        self.goal = goal
-        self.backstory = backstory
+This module orchestrates evidence already produced by the advisory engines. It
+never predicts, changes scores, removes vetoes, learns, or executes orders.
+"""
+from __future__ import annotations
+from typing import Any
 
-    def execute(self, task):
-        return f"Agent {self.role} executing task: {task}"
 
 class TradingCrewV16:
-    """
-    EQUIPE DE AGENTES V16 SUPREME
-    Estrutura de agentes especializados para análise, segurança e execução.
-    """
-    def __init__(self):
-        self.agents = {
-            "analyst": TradingAgent(
-                role="SMC Analyst",
-                goal="Detectar Smart Money Concepts e FVG",
-                backstory="Especialista em liquidez institucional e Order Blocks."
-            ),
-            "risk_manager": TradingAgent(
-                role="Safety Officer",
-                goal="Veto de notícias e proteção de capital",
-                backstory="Ex-auditor de risco de Hedge Fund, focado em Zero Gale."
-            ),
-            "sniper_executor": TradingAgent(
-                role="Sniper V8",
-                goal="Execução com delay zero e taxa de elite",
-                backstory="Algoritmo de alta frequência otimizado para o Render."
-            )
+    """Shadow-mode consensus/audit layer for one symbol."""
+
+    REQUIRED = ("darts", "timesfm", "finbert", "xgboost")
+
+    def __init__(self) -> None:
+        self.mode = "shadow_read_only"
+
+    def evaluate(self, symbol: str, components: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        statuses = {name: (components.get(name) or {}).get("status", "missing")
+                    for name in self.REQUIRED}
+        unavailable = [name for name, status in statuses.items() if status != "inference_ok"]
+        return {
+            "status": "shadow_ok",
+            "symbol": symbol,
+            "mode": self.mode,
+            "decision_impact": "none",
+            "execution_allowed": False,
+            "consensus": "incomplete" if unavailable else "ready_for_audit",
+            "agents": {
+                "analyst": "evidence_aggregator",
+                "risk_manager": "fail_closed_auditor",
+                "sniper_executor": "disabled_read_only",
+            },
+            "required_status": statuses,
+            "unavailable": unavailable,
+            "veto_policy": "may_record_conflict_or_veto; never removes an existing veto",
         }
 
-    def run_synergy(self, par):
-        """Coordena a ação da equipe para um par específico."""
-        zapia_brain.learn(f"Iniciando operação conjunta no {par}")
-        return f"🏛️ Equipe V16 Supreme em posição para {par}. Analistas, Risco e Sniper sincronizados."
 
-# Instância da Equipe
 crew_v16 = TradingCrewV16()
