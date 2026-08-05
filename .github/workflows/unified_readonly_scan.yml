@@ -67,6 +67,7 @@ jobs:
       - name: Run real FinBERT inference
         env:
           MARKETAUX_API_TOKEN: ${{ secrets.MARKETAUX_API_TOKEN }}
+          FINNHUB_API_TOKEN: ${{ secrets.FINNHUB_API_TOKEN }}
         run: python scripts/run_finbert_inference.py
       - name: Install XGBoost runtime
         run: pip install 'xgboost>=2.0' scikit-learn
