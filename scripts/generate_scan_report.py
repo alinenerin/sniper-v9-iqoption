@@ -52,6 +52,20 @@ def _file_evidence(symbol: str) -> dict[str, dict[str, Any]]:
                          "reason": item.get("reason") or (None if status == "inference_ok" else fallback)}
         except Exception:
             out[name] = {"status": "blocked", "reason": fallback}
+    # Crew V16 is advisory shadow mode: it aggregates evidence only and
+    # cannot change the required-AI gate or execution state.
+    try:
+        from core.trading_crew import crew_v16
+        out["crew_v16"] = crew_v16.evaluate(symbol, out)
+    except Exception as exc:
+        out["crew_v16"] = {
+            "status": "shadow_blocked",
+            "symbol": symbol,
+            "mode": "shadow_read_only",
+            "decision_impact": "none",
+            "execution_allowed": False,
+            "reason": f"CREW_IMPORT_OR_EVALUATION_ERROR:{type(exc).__name__}",
+        }
     return out
 
 
