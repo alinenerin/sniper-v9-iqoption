@@ -3,7 +3,7 @@ import json, os
 from pathlib import Path
 import pandas as pd
 try:
-    from core.integrations.darts_anomaly_shield import DartsAnomalyShield
+    from core.integrations.darts_anomaly_shield import DartsAnomalyShield, DartsShieldConfig
 except Exception as exc:
     DartsAnomalyShield = None
     IMPORT_ERROR = f'{type(exc).__name__}: {exc}'
@@ -20,7 +20,7 @@ for symbol, payload in market.get('symbols',{}).items():
         results[symbol]={'status':'blocked','reason':f'IMPORT_{IMPORT_ERROR}','samples':len(rows)}; continue
     frame=pd.DataFrame(rows).rename(columns={'timestamp':'time','max':'high','min':'low'})
     try:
-        shield=DartsAnomalyShield()
+        shield=DartsAnomalyShield(DartsShieldConfig(training_window=min(1000, len(frame))))
     except Exception as exc:
         results[symbol]={'status':'blocked','reason':f'INIT_{type(exc).__name__}: {exc}','samples':len(frame)}; continue
     if not shield.darts_available:
