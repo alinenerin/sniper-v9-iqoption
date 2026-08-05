@@ -24,7 +24,9 @@ def fetch(symbol):
             for a in data.get('data',[]) if isinstance(data,dict) else []: add(rows,'marketaux',a.get('title'),a.get('description'),a.get('url',''))
         except Exception: pass
     try:
-        for q in (f'{symbol[:3]} forex', f'{symbol[3:]} currency', 'forex central bank'):
+        currency_names={'EUR':'eurozone ECB','USD':'US Federal Reserve dollar','GBP':'UK Bank of England pound','JPY':'Japan Bank of Japan yen','AUD':'Australia RBA Australian dollar'}
+        queries=(f'{currency_names.get(symbol[:3],symbol[:3])} forex', f'{currency_names.get(symbol[3:],symbol[3:])} currency', f'{symbol[:3]} {symbol[3:]} exchange rate', 'forex central bank')
+        for q in queries:
             data=session.get('https://api.gdeltproject.org/api/v2/doc/doc',params={'query':q,'mode':'artlist','format':'json','maxrecords':25,'sort':'datedesc'},timeout=20).json()
             for a in data.get('articles',[]) if isinstance(data,dict) else []: add(rows,'gdelt',a.get('title'),a.get('seendate',''),a.get('url',''))
     except Exception: pass
