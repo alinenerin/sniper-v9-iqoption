@@ -48,6 +48,20 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
         if market == "forex":
             result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
+            # A numerical core score is not valid when required AI evidence is absent.
+            # Keep the exact component reasons, but fail closed instead of publishing
+            # a misleading low/partial score as if it were a Supreme result.
+            components = result.get("components") or {}
+            required = ("darts", "timesfm", "finbert", "xgboost")
+            unavailable = [name for name in required if (components.get(name) or {}).get("status") != "inference_ok"]
+            if unavailable:
+                result["status"] = "blocked"
+                result["approved"] = False
+                result["score"] = None
+                result["probability"] = None
+                result["reason"] = "REQUIRED_AI_COMPONENTS_UNAVAILABLE:" + ",".join(unavailable)
+                result["vetoes"] = list(dict.fromkeys((result.get("vetoes") or []) + [result["reason"]]))
+                result["execution_allowed"] = False
             return result
         consultation = SharedAI(score_minimum=95).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
