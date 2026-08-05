@@ -105,9 +105,10 @@ class TimesFMBridge:
                 try:
                     inp = np.array(price_history[-512:], dtype=np.float32)
                     out = self.model.forecast(horizon=4, inputs=[inp])
-                    pred = out[0]
-                    ult = price_history[-1]
-                    var = (pred[-1] - ult) / ult * 100
+                    pred = np.asarray(out[0])
+                    pred = pred.reshape(-1)
+                    ult = float(price_history[-1])
+                    var = float((float(pred[-1]) - ult) / ult * 100)
                     direction = "NEUTRAL"
                     if var > 0.05:
                         direction = "UP"
