@@ -3,6 +3,7 @@ import json, os, re
 from pathlib import Path
 from datetime import date, timedelta, datetime, timezone
 import requests
+import xml.etree.ElementTree as ET
 from transformers import pipeline
 symbols=os.getenv('SYMBOLS','EURUSD GBPUSD USDJPY AUDUSD').split(); marketaux=os.getenv('MARKETAUX_API_TOKEN'); finnhub=os.getenv('FINNHUB_API_TOKEN'); session=requests.Session()
 def add(rows, source, title, description='', url=''):
@@ -40,6 +41,25 @@ def fetch(symbol):
                 title=e.get('title') or e.get('event') or ''
                 add(rows,'forexfactory',f'{country_map.get(country,country)} {title} ({e.get("impact","")} impact)',str(e.get('date','')),e.get('url',''))
     except Exception: pass
+
+    # Stable RSS fallback: retrieve dated, externally published headlines when
+    # APIs return an empty result or are rate-limited.
+    if len(rows) < 3:
+        rss_terms={
+            'EUR':'euro ECB forex', 'USD':'US dollar Federal Reserve forex',
+            'GBP':'British pound Bank of England forex', 'JPY':'Japanese yen BOJ forex',
+            'AUD':'Australian dollar RBA forex'}
+        try:
+            term=f"{rss_terms.get(symbol[:3], symbol[:3])} {rss_terms.get(symbol[3:], symbol[3:])}"
+            url='https://news.google.com/rss/search'
+            resp=session.get(url,params={'q':term,'hl':'en-US','gl':'US','ceid':'US:en'},timeout=20)
+            root=ET.fromstring(resp.text)
+            for item in root.findall('.//item')[:20]:
+                title=item.findtext('title','').strip()
+                pub=item.findtext('pubDate','').strip()
+                link=item.findtext('link','').strip()
+                add(rows,'google_news_rss',title,pub,link)
+        except Exception: pass
 
     seen=set(); out=[]
     for x in rows:
