@@ -9,8 +9,10 @@ def get(path, timeout=600, attempts=3):
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(base+path, timeout=timeout) as r: data=json.load(r)
-            if isinstance(data, dict) and data.get("ok", True) is False: raise RuntimeError("GATEWAY_NOT_OK")
-            return data
+            # Preserve partial live snapshots; block only the affected symbol.
+            if isinstance(data, dict):
+                return data
+            raise RuntimeError("GATEWAY_INVALID_RESPONSE")
         except Exception as exc:
             last=exc
             if attempt + 1 < attempts: time.sleep(5 * (attempt + 1))
