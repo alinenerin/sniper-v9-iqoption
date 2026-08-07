@@ -90,8 +90,14 @@ jobs:
               otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
               assert len(otc) == 4, len(otc)
               for item in otc:
-                  assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
                   assert item.get('execution_allowed') is False
+                  # A missing/invalid OTC candle set is a safe blocked outcome;
+                  # chart authority is required whenever the chart analysis runs.
+                  if item.get('status') == 'blocked':
+                      assert item.get('reason')
+                      assert item.get('decision_basis') == 'MISSING_INVALID_CANDLES'
+                      continue
+                  assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
                   assert set(('darts', 'finbert')).issubset(item.get('components', {}))
                   darts = item['components']['darts']
                   # Darts is auxiliary for OTC: adaptive tiers are evidence metadata,
