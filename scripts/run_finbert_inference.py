@@ -23,12 +23,15 @@ def _av_tickers(symbol: str) -> str:
 def _items_av(symbol: str) -> list[dict[str, Any]]:
     if not AV_KEY:
         return []
-    data = SESSION.get(BASE_URL, params={"function": "NEWS_SENTIMENT", "tickers": _av_tickers(symbol),
-        "topics": "financial_markets", "limit": 10, "apikey": AV_KEY}, timeout=20).json()
-    if isinstance(data, dict) and (data.get("Information") or data.get("Note") or data.get("Error Message")):
+    try:
+        data = SESSION.get(BASE_URL, params={"function": "NEWS_SENTIMENT", "tickers": _av_tickers(symbol),
+            "topics": "financial_markets", "limit": 10, "apikey": AV_KEY}, timeout=20).json()
+        if isinstance(data, dict) and (data.get("Information") or data.get("Note") or data.get("Error Message")):
+            return []
+        return [{"title": x.get("title"), "description": x.get("summary"), "url": x.get("url"),
+                 "source": x.get("source", "Alpha Vantage"), "provider": "alpha_vantage"} for x in (data.get("feed", []) if isinstance(data, dict) else [])]
+    except (requests.RequestException, ValueError):
         return []
-    return [{"title": x.get("title"), "description": x.get("summary"), "url": x.get("url"),
-             "source": x.get("source", "Alpha Vantage"), "provider": "alpha_vantage"} for x in (data.get("feed", []) if isinstance(data, dict) else [])]
 
 def _items_fallback(symbol: str) -> tuple[list[dict[str, Any]], list[str]]:
     base, quote = symbol[:3], symbol[3:]
