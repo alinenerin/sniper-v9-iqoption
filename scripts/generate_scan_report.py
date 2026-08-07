@@ -116,27 +116,25 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
             "execution_allowed": False,
         }
         if market == "otc":
-            # OTC follows the broker algorithmic cycle; Darts is the hard
-            # anomaly guard, while FinBERT/news remains auxiliary context.
+            # OTC follows the broker algorithmic cycle. Darts and FinBERT
+            # are advisory layers only: neither may override the direct
+            # chart analysis (EMA cascade, wick rejection, candle quality,
+            # VSA, M5 confirmation and OTC cycle). Missing candles/core chart
+            # evidence still produces NO_TRADE through the normal path.
             darts = evidence.get("darts") or {}
             finbert = evidence.get("finbert") or {}
             result["otc_protocol"] = {
-                "darts_role": "required_anomaly_guard",
+                "darts_role": "auxiliary_anomaly_advisory",
                 "finbert_role": "auxiliary_news_context",
+                "core_chart_analysis": "authoritative",
                 "zero_gale": True,
                 "execution_allowed": False,
             }
             if darts.get("status") != "inference_ok":
-                reason = "OTC_REQUIRED_DARTS_UNAVAILABLE"
-                result.update({
-                    "status": "blocked", "approved": False, "score": None,
-                    "probability": None, "reason": reason,
-                    "vetoes": list(dict.fromkeys((result.get("vetoes") or []) + [reason])),
-                })
-            elif finbert.get("status") != "inference_ok":
-                result["vetoes"] = [v for v in (result.get("vetoes") or [])
-                                     if "FINBERT" not in str(v).upper()]
+                result["darts_note"] = "AUXILIARY_UNAVAILABLE_CHART_ANALYSIS_RETAINED"
+            if finbert.get("status") != "inference_ok":
                 result["finbert_note"] = "AUXILIARY_UNAVAILABLE_NOT_OTC_HARD_BLOCK"
+            result["execution_allowed"] = False
         return result
     except Exception as exc:
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
