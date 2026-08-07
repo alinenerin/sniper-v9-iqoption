@@ -105,15 +105,39 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         ))
-        return {
+        evidence = {**consultation.components.get("component_status", {}), **_file_evidence(symbol)}
+        result = {
             "market": market, "symbol": symbol, "status": "inference_ok",
             "approved": consultation.approved, "score": consultation.score,
             "probability": consultation.probability,
             "anomaly_score": consultation.anomaly_score,
             "vetoes": consultation.vetoes, "explanation": consultation.explanation,
-            "components": {**consultation.components.get("component_status", {}), **_file_evidence(symbol)},
+            "components": evidence,
             "execution_allowed": False,
         }
+        if market == "otc":
+            # OTC follows the broker algorithmic cycle; Darts is the hard
+            # anomaly guard, while FinBERT/news remains auxiliary context.
+            darts = evidence.get("darts") or {}
+            finbert = evidence.get("finbert") or {}
+            result["otc_protocol"] = {
+                "darts_role": "required_anomaly_guard",
+                "finbert_role": "auxiliary_news_context",
+                "zero_gale": True,
+                "execution_allowed": False,
+            }
+            if darts.get("status") != "inference_ok":
+                reason = "OTC_REQUIRED_DARTS_UNAVAILABLE"
+                result.update({
+                    "status": "blocked", "approved": False, "score": None,
+                    "probability": None, "reason": reason,
+                    "vetoes": list(dict.fromkeys((result.get("vetoes") or []) + [reason])),
+                })
+            elif finbert.get("status") != "inference_ok":
+                result["vetoes"] = [v for v in (result.get("vetoes") or [])
+                                     if "FINBERT" not in str(v).upper()]
+                result["finbert_note"] = "AUXILIARY_UNAVAILABLE_NOT_OTC_HARD_BLOCK"
+        return result
     except Exception as exc:
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
         return {"market": market, "symbol": symbol, "status": "blocked",
