@@ -50,6 +50,8 @@ jobs:
         env:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: python scripts/fetch_railway_market.py
+      - name: Fetch DXY and VIX from TradingView
+        run: python scripts/fetch_tradingview_macro.py
       - name: Run research-only strategy optimizer
         run: python research/strategy_optimizer.py
       - name: Install Darts runtime
