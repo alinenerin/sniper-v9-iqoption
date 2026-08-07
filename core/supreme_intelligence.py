@@ -167,4 +167,4 @@ class SupremeIntelligence:
         elif score >= 90:
             return True, "DIAMOND_CONFLUENCE_MAJORITY"
         else:
-            return False, f"RUÍDO_MARKET_LIQUIDITY_LOW (Score: {score:.1f})"
+            return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: 95)"
