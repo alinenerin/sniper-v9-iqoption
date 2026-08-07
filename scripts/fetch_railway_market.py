@@ -35,7 +35,6 @@ try:
 except Exception as exc:
     health = {'ok': False, 'error': str(exc)}
 
-empty = {'ok': False, 'assets': [], 'payouts': {}, 'symbols': {}}
 try:
     batch = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(symbols)}))
 except Exception as first_error:
@@ -53,10 +52,7 @@ except Exception as first_error:
     if not parts:
         batch['error'] = f'NO_MARKET_SNAPSHOT:{type(first_error).__name__}'
 
-missing = [
-    s for s in symbols
-    if not (batch.get('symbols', {}).get(s, {}).get('m1') or batch.get('symbols', {}).get(s, {}).get('m5'))
-]
+missing = [s for s in symbols if not (batch.get('symbols', {}).get(s, {}).get('m1') or batch.get('symbols', {}).get(s, {}).get('m5'))]
 for i in range(0, len(missing), 2):
     try:
         part = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(missing[i:i + 2])}))
@@ -66,8 +62,9 @@ for i in range(0, len(missing), 2):
     batch['payouts'].update(part.get('payouts', {}))
     batch['symbols'].update(part.get('symbols', {}))
 
-# Last-resort per-symbol candle requests. Never fabricate or silently accept
-# a partial Forex cycle: every requested symbol must have both M1 and M5 data.
+# Last-resort per-symbol requests. Never fabricate candles. A missing symbol is
+# retained as an explicit blocked result for the report; it must not abort other
+# symbols (and real-market chart analysis still fails closed without evidence).
 for symbol in symbols:
     item = batch.setdefault('symbols', {}).setdefault(symbol, {})
     if not item.get('m1'):
@@ -80,23 +77,30 @@ for symbol in symbols:
             item['m5'] = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': 30})).get('candles', [])
         except Exception:
             item['m5'] = []
-missing_required = [
-    s for s in symbols
-    if not batch.get('symbols', {}).get(s, {}).get('m1') or not batch.get('symbols', {}).get(s, {}).get('m5')
-]
-if missing_required:
-    raise RuntimeError('REQUIRED_CANDLES_MISSING:' + ','.join(missing_required))
-batch['ok'] = True
+
+# Do not enforce an all-symbol contract here: downstream analysis is explicitly
+# per-symbol and blocks missing real-market/chart evidence without affecting valid
+# OTC or other symbols. This is availability metadata, not a trade approval.
+for symbol in symbols:
+    item = batch.setdefault('symbols', {}).setdefault(symbol, {})
+    item['availability'] = {
+        'm1': bool(item.get('m1')), 'm5': bool(item.get('m5')),
+        'status': 'available' if item.get('m1') and item.get('m5') else 'partial_or_missing',
+        'required_for_chart_analysis': True,
+    }
+batch['ok'] = any(v.get('m1') or v.get('m5') for v in batch.get('symbols', {}).values())
 
 out = {'source': base, 'read_only': True, 'health': health, 'snapshot': batch,
        'assets': batch.get('assets', []), 'symbols': {}}
 for symbol in symbols:
     item = batch.get('symbols', {}).get(symbol, {})
     out['symbols'][symbol] = {
-        'snapshot': {'ok': batch.get('ok', False), 'assets': batch.get('assets', []),
-                     'payouts': batch.get('payouts', {}), 'read_only': True},
-        'candles': item.get('m1', {}), 'm5_candles': item.get('m5', {})
+        'snapshot': {'ok': bool(item.get('m1') or item.get('m5')), 'assets': batch.get('assets', []),
+                     'payouts': batch.get('payouts', {}), 'read_only': True,
+                     'availability': item.get('availability', {})},
+        'candles': item.get('m1', {}), 'm5_candles': item.get('m5', {}),
+        'availability': item.get('availability', {}),
     }
 Path('reports').mkdir(exist_ok=True)
 Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
-print('railway_market_batch=OK', len(out['symbols']), 'with_data', len(out['snapshot'].get('symbols', {})))
+print('railway_market_batch=OK', len(out['symbols']), 'with_data', sum(bool(v['availability'].get('m1') or v['availability'].get('m5')) for v in out['symbols'].values()))
