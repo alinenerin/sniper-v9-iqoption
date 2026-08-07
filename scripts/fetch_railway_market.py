@@ -66,6 +66,28 @@ for i in range(0, len(missing), 2):
     batch['payouts'].update(part.get('payouts', {}))
     batch['symbols'].update(part.get('symbols', {}))
 
+# Last-resort per-symbol candle requests. Never fabricate or silently accept
+# a partial Forex cycle: every requested symbol must have both M1 and M5 data.
+for symbol in symbols:
+    item = batch.setdefault('symbols', {}).setdefault(symbol, {})
+    if not item.get('m1'):
+        try:
+            item['m1'] = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 60, 'count': 120})).get('candles', [])
+        except Exception:
+            item['m1'] = []
+    if not item.get('m5'):
+        try:
+            item['m5'] = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': 30})).get('candles', [])
+        except Exception:
+            item['m5'] = []
+missing_required = [
+    s for s in symbols
+    if not batch.get('symbols', {}).get(s, {}).get('m1') or not batch.get('symbols', {}).get(s, {}).get('m5')
+]
+if missing_required:
+    raise RuntimeError('REQUIRED_CANDLES_MISSING:' + ','.join(missing_required))
+batch['ok'] = True
+
 out = {'source': base, 'read_only': True, 'health': health, 'snapshot': batch,
        'assets': batch.get('assets', []), 'symbols': {}}
 for symbol in symbols:
