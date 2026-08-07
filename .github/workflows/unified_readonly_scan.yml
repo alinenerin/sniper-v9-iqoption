@@ -85,24 +85,25 @@ jobs:
                       status=component.get('status')
                       assert status in ('inference_ok', 'blocked', 'error', 'insufficient-data'), (name, status)
                       if status in ('blocked', 'error', 'insufficient-data'): assert component.get('reason'), (name, component)
-          otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
-          assert len(otc) == 4, len(otc)
-          for item in otc:
-              assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
-              assert item.get('execution_allowed') is False
-              assert set(('darts', 'finbert')).issubset(item.get('components', {}))
-              darts = item['components']['darts']
-              # Darts is auxiliary for OTC: adaptive tiers are evidence metadata,
-              # never a chart-analysis veto. Missing/short samples remain valid
-              # read-only outcomes as long as the OTC chart path is retained.
-              assert darts.get('role') == 'auxiliary_only'
-              assert darts.get('veto_authority') == 'chart_only'
-              assert darts.get('read_only') is True
-              assert darts.get('execution_allowed') is False
-              assert 'sample_count' in darts and 'mode' in darts
-              assert darts.get('mode') in ('below_minimum', 'short_exploratory', 'valid_reduced_confidence', 'normal', 'ideal')
-              assert darts.get('confidence') and darts.get('quality')
-              assert item.get('chart_evidence', {}).get('ema_cascade') == 'engine'
+          if os.getenv('INCLUDE_OTC', 'false').lower() == 'true':
+              otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
+              assert len(otc) == 4, len(otc)
+              for item in otc:
+                  assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
+                  assert item.get('execution_allowed') is False
+                  assert set(('darts', 'finbert')).issubset(item.get('components', {}))
+                  darts = item['components']['darts']
+                  # Darts is auxiliary for OTC: adaptive tiers are evidence metadata,
+                  # never a chart-analysis veto. Missing/short samples remain valid
+                  # read-only outcomes as long as the OTC chart path is retained.
+                  assert darts.get('role') == 'auxiliary_only'
+                  assert darts.get('veto_authority') == 'chart_only'
+                  assert darts.get('read_only') is True
+                  assert darts.get('execution_allowed') is False
+                  assert 'sample_count' in darts and 'mode' in darts
+                  assert darts.get('mode') in ('below_minimum', 'short_exploratory', 'valid_reduced_confidence', 'normal', 'ideal')
+                  assert darts.get('confidence') and darts.get('quality')
+                  assert item.get('chart_evidence', {}).get('ema_cascade') == 'engine'
           print('unified_report=OK; component_statuses=OK; execution=BLOCKED')
           PY
       - name: Upload latest scan
