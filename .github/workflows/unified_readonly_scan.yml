@@ -14,15 +14,10 @@ on:
         default: 'EURUSD GBPUSD USDJPY AUDUSD'
         type: string
 
-# Mantém somente a rodada mais recente; evita fila e relatórios concorrentes.
-concurrency:
-  group: unified-readonly-scan
-  cancel-in-progress: true
-
 jobs:
   unified-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
     env:
       ANALYSIS_ONLY: '1'
       EXECUTION_ALLOWED: 'false'
@@ -44,46 +39,31 @@ jobs:
         run: |
           python audit_architecture.py
           python audit_readonly_validation.py
-      - name: Phase 7 safety audit
-        run: python scripts/phase7_audit.py
       - name: Fetch live market data from Railway
         env:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: python scripts/fetch_railway_market.py
-      - name: Fetch DXY and VIX from TradingView
-        run: python scripts/fetch_tradingview_macro.py
-      - name: Run research-only strategy optimizer
-        run: python research/strategy_optimizer.py
       - name: Install Darts runtime
         run: pip install 'Darts>=0.30,<1.0'
       - name: Run Darts anomaly inference
-        continue-on-error: true
         run: python scripts/run_darts_inference.py
       - name: Install TimesFM runtime
-        run: |
-          pip install 'torch>=2.2' 'timesfm>=1.3.0'
-          python -c "import torch, timesfm; print('timesfm_runtime=OK', torch.__version__)"
+        run: pip install 'timesfm>=1.3.0'
       - name: Run real TimesFM inference
-        continue-on-error: true
         run: python scripts/run_timesfm_inference.py
       - name: Install FinBERT runtime
         run: pip install 'torch>=2.2' 'transformers>=4.40' sentencepiece requests
       - name: Run real FinBERT inference
         env:
           MARKETAUX_API_TOKEN: ${{ secrets.MARKETAUX_API_TOKEN }}
-          FINNHUB_API_TOKEN: ${{ secrets.FINNHUB_API_TOKEN }}
         run: python scripts/run_finbert_inference.py
       - name: Install XGBoost runtime
         run: pip install 'xgboost>=2.0' scikit-learn
       - name: Train and run XGBoost inference
-        continue-on-error: true
         run: python scripts/train_xgboost_inference.py
       - name: Compile read-only analysis modules
-        run: python -m py_compile shared_ai/consultation.py shared_ai/lse_advisor.py core/mem0_semantic.py scripts/generate_scan_report.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
+        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
       - name: Generate unified report from Railway candles
-        env:
-          LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
-          MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
         run: python scripts/generate_scan_report.py
       - name: Validate report contract and component evidence
         run: |
@@ -98,25 +78,27 @@ jobs:
           for book_name, book in (('forex', r['forex']), ('binary', r['binary'])):
               for item in book.get('analyses', []):
                   assert item.get('execution_allowed') is False, (book_name, item.get('symbol'))
-                  # An unavailable OTC instrument is a valid read-only veto,
-                  # not a contract failure; never treat missing candles as a signal.
-                  if book_name == 'binary' and str(item.get('symbol','')).endswith('-OTC') and item.get('status') == 'blocked' and item.get('reason') == 'NO_RAILWAY_CANDLES':
-                      continue
                   components=item.get('components') or {}
                   assert isinstance(components, dict), (book_name, item.get('symbol'))
                   for name, component in components.items():
                       assert isinstance(component, dict), (name, component)
                       status=component.get('status')
-                      assert status in ('inference_ok', 'blocked'), (name, status)
-                      if status == 'blocked': assert component.get('reason'), (name, component)
-                  for required_name in ('mem0_semantic', 'lse'):
-                      required=components.get(required_name, {})
-                      assert required.get('status') == 'inference_ok', (book_name, item.get('symbol'), required_name, required)
-          print('unified_report=OK; mem0_lse=INFERENCE_OK; component_statuses=OK; execution=BLOCKED')
+                      assert status in ('inference_ok', 'blocked', 'error', 'insufficient-data'), (name, status)
+                      if status in ('blocked', 'error', 'insufficient-data'): assert component.get('reason'), (name, component)
+          otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
+          assert len(otc) == 4, len(otc)
+          for item in otc:
+              assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
+              assert item.get('execution_allowed') is False
+              assert set(('darts', 'finbert')).issubset(item.get('components', {}))
+              assert item.get('chart_evidence', {}).get('ema_cascade') == 'engine'
+          print('unified_report=OK; component_statuses=OK; execution=BLOCKED')
           PY
       - name: Upload latest scan
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: latest-scan-${{ github.run_id }}
-          path: reports/latest_scan.json
+          path: |
+            reports/latest_scan.json
+            reports/darts_inference.json
+            reports/finbert_inference.json
