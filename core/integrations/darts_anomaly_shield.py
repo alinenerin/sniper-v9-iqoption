@@ -115,17 +115,33 @@ class FeatureExtractor:
     """
     
     @staticmethod
-    def extract_features(df: pd.DataFrame) -> pd.DataFrame:
+    def extract_features(df: pd.DataFrame, symbol: Optional[str] = None) -> pd.DataFrame:
         """
-        Recebe um DataFrame OHLCV e retorna um DataFrame de features.
-        
+        Recebe OHLCV e retorna features, preservando OHLC quando OTC não
+        disponibiliza volume.  Volume ausente nunca é inventado: a feature
+        fica neutra apenas para não invalidar as demais features e o motivo é
+        registrado em ``DataFrame.attrs['quality_flags']``.
+
         Args:
             df: DataFrame com colunas ['open', 'high', 'low', 'close', 'volume']
-        
-        Returns:
-            DataFrame com features calculadas
+            symbol: símbolo opcional; símbolos ``-OTC`` usam a política segura.
         """
         features = pd.DataFrame(index=df.index)
+        is_otc = bool(symbol and str(symbol).upper().endswith('-OTC'))
+        quality_flags = {}
+
+        volume = pd.to_numeric(df.get('volume', pd.Series(index=df.index, dtype=float)), errors='coerce')
+        volume_available = bool(volume.notna().any() and (volume > 0).any())
+        if is_otc and not volume_available:
+            quality_flags.update({
+                'volume_available': False,
+                'volume_feature': 'unavailable_neutral',
+                'volume_policy': 'OTC zero/unavailable volume; no volume fabricated',
+            })
+        elif not volume_available:
+            quality_flags.update({'volume_available': False, 'volume_feature': 'unavailable'})
+        else:
+            quality_flags.update({'volume_available': True, 'volume_feature': 'observed'})
         
         # 1. Retornos logarítmicos (estacionaridade)
         features['returns'] = np.log(df['close'] / df['close'].shift(1))
@@ -133,9 +149,15 @@ class FeatureExtractor:
         # 2. Range da vela como % do close
         features['range_pct'] = (df['high'] - df['low']) / df['close'] * 100
         
-        # 3. Volume ratio (volume atual vs média móvel de 20 períodos)
-        vol_ma20 = df['volume'].rolling(window=20).mean()
-        features['volume_ratio'] = df['volume'] / vol_ma20.replace(0, np.nan)
+        # 3. Volume ratio. OTC often returns zero volume; keep OHLC features
+        # valid and use a neutral sentinel only for this unavailable feature.
+        vol_ma20 = volume.rolling(window=20).mean()
+        features['volume_ratio'] = volume / vol_ma20.replace(0, np.nan)
+        if not volume_available and is_otc:
+            features['volume_ratio'] = 1.0
+        elif not volume_available:
+            # Preserve historical Forex behavior (missing volume remains NaN).
+            features['volume_ratio'] = np.nan
         
         # 4. Body ratio (corpo da vela / range total)
         body = np.abs(df['close'] - df['open'])
@@ -152,7 +174,11 @@ class FeatureExtractor:
         # Trata infinitos e NaNs
         features = features.replace([np.inf, -np.inf], np.nan)
         features = features.bfill().ffill()
-        
+        # Do not let all-zero OTC volume turn into a fabricated observation.
+        # The neutral value is explicitly marked and excluded from quality claims.
+        if not volume_available and is_otc:
+            features['volume_ratio'] = 1.0
+        features.attrs['quality_flags'] = quality_flags
         return features
 
 
@@ -242,7 +268,8 @@ class DartsAnomalyShield:
             return {"status": "INSUFFICIENT_DATA", "samples": len(historical_data)}
         
         # Extrai features
-        features = FeatureExtractor.extract_features(historical_data)
+        features = FeatureExtractor.extract_features(historical_data, symbol=symbol)
+        quality_flags = dict(features.attrs.get('quality_flags', {}))
         features = features.dropna()
         
         if len(features) < 50:
@@ -291,7 +318,8 @@ class DartsAnomalyShield:
             "samples": len(features),
             "features_trained": list(baseline.keys()),
             "darts": darts_status,
-            "threshold_p": self.config.anomaly_quantile
+            "threshold_p": self.config.anomaly_quantile,
+            "quality_flags": quality_flags
         }
         
         logger.info(f"   ✅ {symbol}: Escudo treinado com {len(features)} candles.")
@@ -379,7 +407,7 @@ class DartsAnomalyShield:
         
         # Converte candle em DataFrame para extração de features
         df_candle = pd.DataFrame([current_candle])
-        features = FeatureExtractor.extract_features(df_candle)
+        features = FeatureExtractor.extract_features(df_candle, symbol=symbol)
         
         # Atualiza o buffer de features
         if symbol not in self.feature_buffers:
