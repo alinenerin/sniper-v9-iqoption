@@ -126,11 +126,24 @@ def main() -> int:
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
+    macro_path = Path("reports/macro_data.json")
+    macro_data = json.loads(macro_path.read_text()) if macro_path.exists() else {"ok": False, "reason": "TRADINGVIEW_MACRO_REPORT_MISSING", "symbols": {}}
     by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
     forex, binary = [], []
     for symbol in symbols:
         forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
         binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
+        for analysis in (forex[-1], binary[-1]):
+            analysis.setdefault("components", {})["macro_tradingview"] = {
+                "status": "inference_ok" if macro_data.get("ok") else "blocked",
+                "reason": None if macro_data.get("ok") else macro_data.get("reason", "TRADINGVIEW_MACRO_UNAVAILABLE"),
+                "source": "TradingView",
+                "read_only": True,
+            }
+            if not macro_data.get("ok"):
+                analysis["approved"] = False
+                analysis["execution_allowed"] = False
+                analysis["vetoes"] = list(dict.fromkeys((analysis.get("vetoes") or []) + ["MACRO_DXY_VIX_UNAVAILABLE"]))
         if include_otc:
             otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
             binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles"))))
@@ -142,7 +155,8 @@ def main() -> int:
         "forex": {"status": "completed", "analyses": forex},
         "binary": {"status": "completed", "analyses": binary},
         "market_data": market_data,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "source": "Railway"},
+        "macro_data": macro_data,
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "source": "Railway + TradingView macro"},
         "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
     }
