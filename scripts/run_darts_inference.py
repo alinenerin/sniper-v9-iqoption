@@ -37,5 +37,9 @@ for symbol, payload in market.get('symbols',{}).items():
         results[symbol]={'status':'inference_ok' if ok else 'blocked','reason':None if ok else train.get('darts'),'training':train,'scan':scan,'samples':len(frame)}
     except Exception as exc:
         results[symbol]={'status':'blocked','reason':f'{type(exc).__name__}: {exc}','samples':len(frame)}
-Path('reports/darts_inference.json').write_text(json.dumps({'status':'ok','components':results,'read_only':True},ensure_ascii=False,indent=2)+'\n')
-print('darts_inference_complete',len(results))
+report = {'status': 'ok', 'components': results, 'read_only': True, 'library': 'darts'}
+Path('reports/darts_inference.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+for symbol, item in results.items():
+    print('darts_component', symbol, item.get('status'), item.get('reason'),
+          'train_darts=', (item.get('training') or {}).get('darts'))
+print('darts_inference_complete', len(results))
