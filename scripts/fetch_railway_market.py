@@ -4,6 +4,8 @@ from pathlib import Path
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
 symbols = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').split()
+M1_TARGET = int(os.getenv('M1_CANDLE_COUNT', '500'))
+M5_TARGET = int(os.getenv('M5_CANDLE_COUNT', '100'))
 if os.getenv('INCLUDE_OTC', 'false').lower() == 'true':
     symbols += [s + '-OTC' for s in symbols]
 
@@ -67,16 +69,20 @@ for i in range(0, len(missing), 2):
 # symbols (and real-market chart analysis still fails closed without evidence).
 for symbol in symbols:
     item = batch.setdefault('symbols', {}).setdefault(symbol, {})
-    if not item.get('m1'):
+    # The batch endpoint may return a short snapshot (currently ~120 M1).
+    # Top up per symbol and keep the longer response; never fabricate candles.
+    if len(item.get('m1') or []) < M1_TARGET:
         try:
-            item['m1'] = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 60, 'count': 120})).get('candles', [])
+            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 60, 'count': M1_TARGET})).get('candles', [])
+            if len(candidate) > len(item.get('m1') or []): item['m1'] = candidate
         except Exception:
-            item['m1'] = []
-    if not item.get('m5'):
+            pass
+    if len(item.get('m5') or []) < M5_TARGET:
         try:
-            item['m5'] = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': 30})).get('candles', [])
+            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': M5_TARGET})).get('candles', [])
+            if len(candidate) > len(item.get('m5') or []): item['m5'] = candidate
         except Exception:
-            item['m5'] = []
+            pass
 
 # Do not enforce an all-symbol contract here: downstream analysis is explicitly
 # per-symbol and blocks missing real-market/chart evidence without affecting valid
@@ -86,6 +92,8 @@ for symbol in symbols:
     item['availability'] = {
         'm1': bool(item.get('m1')), 'm5': bool(item.get('m5')),
         'status': 'available' if item.get('m1') and item.get('m5') else 'partial_or_missing',
+        'm1_count': len(item.get('m1') or []), 'm5_count': len(item.get('m5') or []),
+        'm1_target': M1_TARGET, 'm5_target': M5_TARGET,
         'required_for_chart_analysis': True,
     }
 batch['ok'] = any(v.get('m1') or v.get('m5') for v in batch.get('symbols', {}).values())
