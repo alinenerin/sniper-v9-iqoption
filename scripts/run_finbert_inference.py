@@ -1,75 +1,45 @@
-"""Multi-source Forex news retrieval followed by FinBERT sentiment inference."""
-import json, os, re
+"""FinBERT news context. OTC symbols inherit base-pair sentiment as auxiliary only."""
+import json, os
 from pathlib import Path
-from datetime import date, timedelta, datetime, timezone
 import requests
-import xml.etree.ElementTree as ET
 from transformers import pipeline
-symbols=os.getenv('SYMBOLS','EURUSD GBPUSD USDJPY AUDUSD').split(); marketaux=os.getenv('MARKETAUX_API_TOKEN'); finnhub=os.getenv('FINNHUB_API_TOKEN'); session=requests.Session()
-def add(rows, source, title, description='', url=''):
-    text=(title or description or '').strip()
-    if text: rows.append({'source':source,'text':text[:2000],'url':url})
-def fetch(symbol):
-    rows=[]
-    if finnhub:
-        try:
-            end=date.today(); start=end-timedelta(days=2)
-            data=session.get('https://finnhub.io/api/v1/news',params={'category':'forex','from':start.isoformat(),'to':end.isoformat(),'token':finnhub},timeout=15).json()
-            for a in data if isinstance(data,list) else []:
-                text=(a.get('headline','')+' '+a.get('summary','')).lower()
-                if symbol[:3].lower() in text or symbol[3:].lower() in text or any(k in text for k in ('fed','ecb','boe','boj','rba','inflation','interest rate','jobs')): add(rows,'finnhub',a.get('headline'),a.get('summary'),a.get('url',''))
-        except Exception: pass
-    if marketaux:
-        try:
-            data=session.get('https://api.marketaux.com/v1/news/all',params={'symbols':symbol,'filter_entities':'true','language':'en','limit':10,'api_token':marketaux},timeout=15).json()
-            for a in data.get('data',[]) if isinstance(data,dict) else []: add(rows,'marketaux',a.get('title'),a.get('description'),a.get('url',''))
-        except Exception: pass
-    try:
-        currency_names={'EUR':'eurozone ECB','USD':'US Federal Reserve dollar','GBP':'UK Bank of England pound','JPY':'Japan Bank of Japan yen','AUD':'Australia RBA Australian dollar'}
-        queries=(f'{currency_names.get(symbol[:3],symbol[:3])} forex', f'{currency_names.get(symbol[3:],symbol[3:])} currency', f'{symbol[:3]} {symbol[3:]} exchange rate', 'forex central bank')
-        for q in queries:
-            data=session.get('https://api.gdeltproject.org/api/v2/doc/doc',params={'query':q,'mode':'artlist','format':'json','maxrecords':25,'sort':'datedesc'},timeout=20).json()
-            for a in data.get('articles',[]) if isinstance(data,dict) else []: add(rows,'gdelt',a.get('title'),a.get('seendate',''),a.get('url',''))
-    except Exception: pass
-    # Verified economic-calendar fallback when news APIs are rate-limited.
-    try:
-        cal=session.get('https://nfs.faireconomy.media/ff_calendar_thisweek.json',timeout=15).json()
-        country_map={'EUR':'euro','USD':'united states','GBP':'united kingdom','JPY':'japan','AUD':'australia'}
-        for e in cal if isinstance(cal,list) else []:
-            country=str(e.get('country','')).upper()
-            if country in (symbol[:3], symbol[3:]):
-                title=e.get('title') or e.get('event') or ''
-                add(rows,'forexfactory',f'{country_map.get(country,country)} {title} ({e.get("impact","")} impact)',str(e.get('date','')),e.get('url',''))
-    except Exception: pass
 
-    # Stable RSS fallback: retrieve dated, externally published headlines when
-    # APIs return an empty result or are rate-limited.
-    if len(rows) < 3:
-        rss_terms={
-            'EUR':'euro ECB forex', 'USD':'US dollar Federal Reserve forex',
-            'GBP':'British pound Bank of England forex', 'JPY':'Japanese yen BOJ forex',
-            'AUD':'Australian dollar RBA forex'}
-        try:
-            term=f"{rss_terms.get(symbol[:3], symbol[:3])} {rss_terms.get(symbol[3:], symbol[3:])}"
-            url='https://news.google.com/rss/search'
-            resp=session.get(url,params={'q':term,'hl':'en-US','gl':'US','ceid':'US:en'},timeout=20)
-            root=ET.fromstring(resp.text)
-            for item in root.findall('.//item')[:20]:
-                title=item.findtext('title','').strip()
-                pub=item.findtext('pubDate','').strip()
-                link=item.findtext('link','').strip()
-                add(rows,'google_news_rss',title,pub,link)
-        except Exception: pass
-
-    seen=set(); out=[]
-    for x in rows:
-        key=re.sub(r'[^a-z0-9]+',' ',x['text'].lower()).strip()
-        if key and key not in seen: seen.add(key); out.append(x)
-    return out[:30]
-clf=pipeline('text-classification',model='ProsusAI/finbert',tokenizer='ProsusAI/finbert',top_k=None); results={}
-for symbol in symbols:
-    articles=fetch(symbol); labels=[]
-    for a in articles:
-        pred=clf(a['text'])[0]; best=max(pred,key=lambda x:x['score']); labels.append({'source':a['source'],'label':best['label'],'score':round(float(best['score']),6),'text':a['text'],'url':a['url']})
-    results[symbol]={'status':'inference_ok' if labels else 'inconclusive','model':'ProsusAI/finbert','articles':len(labels),'labels':labels,'sources':sorted({a['source'] for a in articles})}
-Path('reports/finbert_inference.json').write_text(json.dumps({'status':'ok','provider_mode':'multi_source','components':results,'read_only':True,'generated_at':datetime.now(timezone.utc).isoformat()},ensure_ascii=False,indent=2)+'\n'); print('finbert_multisource_complete',len(results))
+base_symbols = os.getenv('SYMBOLS','EURUSD GBPUSD USDJPY AUDUSD').split()
+base_symbols = [s.upper().replace('-OTC','') for s in base_symbols]
+include_otc = os.getenv('INCLUDE_OTC','false').lower() == 'true'
+token = os.getenv('MARKETAUX_API_TOKEN')
+results = {}
+if not token:
+    raise RuntimeError('MARKETAUX_API_TOKEN_NOT_CONFIGURED')
+clf = pipeline('text-classification', model='ProsusAI/finbert', tokenizer='ProsusAI/finbert', top_k=None)
+for symbol in base_symbols:
+    try:
+        r = requests.get('https://api.marketaux.com/v1/news/all', params={
+            'symbols': symbol, 'filter_entities':'true', 'language':'en', 'limit':10,
+            'api_token':token}, timeout=20)
+        r.raise_for_status()
+        articles = r.json().get('data', [])
+        labels=[]
+        for article in articles:
+            text=(article.get('title') or article.get('description') or '').strip()
+            if text:
+                pred=clf(text[:2000])[0]; best=max(pred,key=lambda x:x['score'])
+                labels.append({'label':best['label'],'score':round(float(best['score']),6),'text':text})
+        results[symbol]={'symbol':symbol,'status':'inference_ok','model':'ProsusAI/finbert','articles':len(labels), 'labels':labels,
+                         'role':'auxiliary_only','veto_authority':'chart_only'}
+    except Exception as exc:
+        results[symbol]={'symbol':symbol,'status':'error','reason':f'{type(exc).__name__}: {exc}', 'role':'auxiliary_only','veto_authority':'chart_only'}
+if include_otc:
+    for base in base_symbols:
+        otc=base+'-OTC'
+        source=results[base]
+        results[otc]={'symbol':otc,'base_symbol':base,'status':source['status'],
+                      'reason':source.get('reason'),'model':source.get('model','ProsusAI/finbert'),
+                      'articles':source.get('articles',0),'labels':source.get('labels',[]),
+                      'role':'auxiliary_only','mapping':'base_pair_sentiment_context_only',
+                      'direct_otc_causation':False,'hard_blocker':False,'veto_authority':'chart_only'}
+Path('reports/finbert_inference.json').write_text(json.dumps({
+    'status':'ok','purpose':'Base-pair sentiment mapped to OTC as context only',
+    'components':results,'read_only':True,'execution_allowed':False
+},ensure_ascii=False,indent=2)+'\n')
+print('finbert_inference_complete',len(results))
