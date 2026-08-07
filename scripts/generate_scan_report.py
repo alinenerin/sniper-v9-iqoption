@@ -35,37 +35,20 @@ def _blocked_components(reason: str) -> dict[str, dict[str, str]]:
             ("darts", "timesfm", "finbert", "news_api", "xgboost", "smc", "vsa")}
 
 
-def _file_evidence(symbol: str) -> dict[str, dict[str, Any]]:
-    """Load per-symbol evidence directly, independent of engine adapters."""
+def _auxiliary(symbol: str) -> dict[str, Any]:
+    """Load model evidence without allowing it to veto the chart decision."""
     out = {}
-    for filename, name, fallback in (
-        ("darts_inference.json", "darts", "DARTS_INFERENCE_UNAVAILABLE"),
-        ("timesfm_inference.json", "timesfm", "TIMESFM_INFERENCE_UNAVAILABLE"),
-        ("finbert_inference.json", "finbert", "FINBERT_INFERENCE_UNAVAILABLE"),
-        ("xgboost_inference.json", "xgboost", "XGBOOST_INFERENCE_UNAVAILABLE"),
-    ):
+    for filename, key in (("reports/darts_inference.json", "darts"), ("reports/finbert_inference.json", "finbert")):
+        path = Path(filename)
         try:
-            data = json.loads(Path("reports").joinpath(filename).read_text())
-            item = (data.get("components") or {}).get(symbol) or {}
-            status = item.get("status") if isinstance(item, dict) else None
-            out[name] = {"status": status if status in ("inference_ok", "blocked") else "blocked",
-                         "reason": item.get("reason") or (None if status == "inference_ok" else fallback)}
-        except Exception:
-            out[name] = {"status": "blocked", "reason": fallback}
-    # Crew V16 is advisory shadow mode: it aggregates evidence only and
-    # cannot change the required-AI gate or execution state.
-    try:
-        from core.trading_crew import crew_v16
-        out["crew_v16"] = crew_v16.evaluate(symbol, out)
-    except Exception as exc:
-        out["crew_v16"] = {
-            "status": "shadow_blocked",
-            "symbol": symbol,
-            "mode": "shadow_read_only",
-            "decision_impact": "none",
-            "execution_allowed": False,
-            "reason": f"CREW_IMPORT_OR_EVALUATION_ERROR:{type(exc).__name__}",
-        }
+            payload = json.loads(path.read_text())
+            item = (payload.get("components") or {}).get(symbol)
+            if item:
+                item = dict(item)
+                item.update(role="auxiliary_only", veto_authority="chart_only")
+                out[key] = item
+        except (OSError, json.JSONDecodeError):
+            out[key] = {"status": "error", "reason": "EVIDENCE_ARTIFACT_UNAVAILABLE", "role": "auxiliary_only", "veto_authority": "chart_only"}
     return out
 
 
@@ -75,67 +58,38 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
     from shared_ai.consultation import SharedAI
 
     if not candles:
+        components = _blocked_components("NO_RAILWAY_CANDLES")
+        if market == "otc":
+            components.update(_auxiliary(symbol))
         return {"market": market, "symbol": symbol, "status": "blocked",
-                "reason": "NO_RAILWAY_CANDLES", "components": _blocked_components("NO_RAILWAY_CANDLES"),
-                "execution_allowed": False}
+                "reason": "NO_RAILWAY_CANDLES", "decision_basis": "MISSING_INVALID_CANDLES",
+                "components": components, "execution_allowed": False}
     try:
         if market == "forex":
             result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
-            evidence = _file_evidence(symbol)
-            crew_evidence = evidence.pop("crew_v16", None)
-            result.setdefault("components", {}).update(evidence)
-            result["crew_v16"] = crew_evidence
-            # A numerical core score is not valid when required AI evidence is absent.
-            # Keep the exact component reasons, but fail closed instead of publishing
-            # a misleading low/partial score as if it were a Supreme result.
-            components = result.get("components") or {}
-            required = ("darts", "timesfm", "finbert", "xgboost")
-            unavailable = [name for name in required if (components.get(name) or {}).get("status") != "inference_ok"]
-            if unavailable:
-                result["status"] = "blocked"
-                result["approved"] = False
-                result["score"] = None
-                result["probability"] = None
-                result["reason"] = "REQUIRED_AI_COMPONENTS_UNAVAILABLE:" + ",".join(unavailable)
-                result["vetoes"] = list(dict.fromkeys((result.get("vetoes") or []) + [result["reason"]]))
-                result["execution_allowed"] = False
             return result
         consultation = SharedAI(score_minimum=95).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         ))
-        evidence = {**consultation.components.get("component_status", {}), **_file_evidence(symbol)}
-        result = {
+        chart_components = consultation.components.get("component_status", {})
+        if market == "otc":
+            # OTC IQ chart is authoritative; Darts/FinBERT are context only.
+            chart_components.update(_auxiliary(symbol))
+        return {
             "market": market, "symbol": symbol, "status": "inference_ok",
             "approved": consultation.approved, "score": consultation.score,
             "probability": consultation.probability,
             "anomaly_score": consultation.anomaly_score,
             "vetoes": consultation.vetoes, "explanation": consultation.explanation,
-            "components": evidence,
+            "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "CORE_ENGINE",
+            "chart_evidence": {"ema_cascade": "engine", "algorithmic_cycle": "engine",
+                               "wick_rejection": "engine", "previous_candle": "engine",
+                               "vsa": "engine", "m5_confirmation": "engine"} if market == "otc" else {},
+            "components": chart_components,
             "execution_allowed": False,
         }
-        if market == "otc":
-            # OTC follows the broker algorithmic cycle. Darts and FinBERT
-            # are advisory layers only: neither may override the direct
-            # chart analysis (EMA cascade, wick rejection, candle quality,
-            # VSA, M5 confirmation and OTC cycle). Missing candles/core chart
-            # evidence still produces NO_TRADE through the normal path.
-            darts = evidence.get("darts") or {}
-            finbert = evidence.get("finbert") or {}
-            result["otc_protocol"] = {
-                "darts_role": "auxiliary_anomaly_advisory",
-                "finbert_role": "auxiliary_news_context",
-                "core_chart_analysis": "authoritative",
-                "zero_gale": True,
-                "execution_allowed": False,
-            }
-            if darts.get("status") != "inference_ok":
-                result["darts_note"] = "AUXILIARY_UNAVAILABLE_CHART_ANALYSIS_RETAINED"
-            if finbert.get("status") != "inference_ok":
-                result["finbert_note"] = "AUXILIARY_UNAVAILABLE_NOT_OTC_HARD_BLOCK"
-            result["execution_allowed"] = False
-        return result
     except Exception as exc:
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
         return {"market": market, "symbol": symbol, "status": "blocked",
@@ -148,24 +102,11 @@ def main() -> int:
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
-    macro_path = Path("reports/macro_data.json")
-    macro_data = json.loads(macro_path.read_text()) if macro_path.exists() else {"ok": False, "reason": "TRADINGVIEW_MACRO_REPORT_MISSING", "symbols": {}}
     by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
     forex, binary = [], []
     for symbol in symbols:
         forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
         binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
-        for analysis in (forex[-1], binary[-1]):
-            analysis.setdefault("components", {})["macro_tradingview"] = {
-                "status": "inference_ok" if macro_data.get("ok") else "blocked",
-                "reason": None if macro_data.get("ok") else macro_data.get("reason", "TRADINGVIEW_MACRO_UNAVAILABLE"),
-                "source": "TradingView",
-                "read_only": True,
-            }
-            if not macro_data.get("ok"):
-                analysis["approved"] = False
-                analysis["execution_allowed"] = False
-                analysis["vetoes"] = list(dict.fromkeys((analysis.get("vetoes") or []) + ["MACRO_DXY_VIX_UNAVAILABLE"]))
         if include_otc:
             otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
             binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles"))))
@@ -177,8 +118,7 @@ def main() -> int:
         "forex": {"status": "completed", "analyses": forex},
         "binary": {"status": "completed", "analyses": binary},
         "market_data": market_data,
-        "macro_data": macro_data,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "source": "Railway + TradingView macro"},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "source": "Railway"},
         "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
     }
