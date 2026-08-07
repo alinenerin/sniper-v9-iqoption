@@ -69,6 +69,7 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import os
           r=json.load(open('reports/latest_scan.json'))
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
@@ -114,3 +115,4 @@ jobs:
             reports/latest_scan.json
             reports/darts_inference.json
             reports/finbert_inference.json
+
