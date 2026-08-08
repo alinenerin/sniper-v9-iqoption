@@ -66,7 +66,12 @@ class IQOptionReadonly:
             # Force the REST login through the same verified Webshare endpoint.
             if hasattr(api, 'session'):
                 api.session.proxies.update({'http': proxy_url, 'https': proxy_url})
-            ok, reason = api.connect()
+            # IQ SDK login can hang behind a degraded proxy; never let it
+            # leave the Railway process permanently stuck in "connecting".
+            result = _bounded_call(api.connect, timeout=30)
+            if not isinstance(result, tuple):
+                _state.update(status='error', reason='IQ_OPTION_CONNECT_TIMEOUT'); _start_once=False; return
+            ok, reason = result
             if not ok:
                 _state.update(status='error', reason=str(reason or 'IQ_OPTION_LOGIN_FAILED')[:180]); _start_once=False; return
             try: api.change_balance(self.balance_mode)
