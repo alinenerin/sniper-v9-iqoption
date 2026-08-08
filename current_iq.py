@@ -235,7 +235,7 @@ class IQOptionReadonly:
         for start in range(0, len(symbols), 2):
             for symbol in symbols[start:start+2]:
                 data[symbol]={'m1':self.candles(symbol,60,120),'m5':self.candles(symbol,300,30)}
-        return {'ok':True,'assets':assets,'payouts':payouts,'symbols':data,'source':'IQ_OPTION_WEBSHARE','read_only':True}
+        return {'ok':True,'assets':assets,'payouts':payouts,'symbols':data,'source':'IQ_OPTION_DIRECT','read_only':True}
 
     def snapshot(self, symbol, interval=60):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
@@ -249,7 +249,7 @@ class IQOptionReadonly:
                     name=str(active.get('name','')).split('.')[-1]
                     option=active.get('option',{}).get('profit',{})
                     commission=option.get('commission')
-                    item={'symbol':name,'instrument':kind,'open':bool(active.get('enabled')) and not bool(active.get('is_suspended')),'source':'IQ_OPTION_WEBSHARE','read_only':True}
+                    item={'symbol':name,'instrument':kind,'open':bool(active.get('enabled')) and not bool(active.get('is_suspended')),'source':'IQ_OPTION_DIRECT','read_only':True}
                     if commission is not None:
                         item['payout']=(100.0-float(commission))/100.0; payouts.setdefault(name,{})[kind]=item['payout']
                     assets.append(item)
