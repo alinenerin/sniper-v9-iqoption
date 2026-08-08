@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from urllib.request import Request, urlopen
 
 TRADINGVIEW_URL = 'https://scanner.tradingview.com/america/scan'
-TICKERS = {'dxy': 'TVC:DXY', 'vix': 'TVC:VIX'}
+# TradingView's canonical VIX index is listed on CBOE; TVC:VIX is rejected.
+TICKERS = {'dxy': 'TVC:DXY', 'vix': 'CBOE:VIX'}
 
 def fetch_macro(timeout=30):
     out = {'source': 'TradingView', 'provider': 'TradingView Scanner',
