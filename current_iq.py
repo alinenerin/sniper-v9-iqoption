@@ -9,6 +9,7 @@ _state = {'status': 'starting', 'reason': None, 'connected_at': None}
 _lock = threading.RLock()
 _start_once = False
 _patched = False
+_reconnect_lock = threading.Lock()
 
 
 def _bounded_call(fn, *args, timeout=8):
@@ -43,7 +44,7 @@ class IQOptionReadonly:
         with _lock:
             if self.api and self.connected: return
             if not self.email or not self.password:
-                _state.update(status='error', reason='IQ_OPTION_CREDENTIALS_NOT_CONFIGURED'); return
+                _state.update(status='error', reason='IQ_OPTION_CREDENTIALS_NOT_CONFIGURED'); _start_once=False; return
             _state.update(status='connecting', reason=None)
         try:
             from iqoptionapi.stable_api import IQ_Option
@@ -53,7 +54,7 @@ class IQOptionReadonly:
             user = os.getenv('WEBSHARE_USERNAME') or os.getenv('WEBSHARE_SOCKS_USERNAME', '')
             pwd = os.getenv('WEBSHARE_PASSWORD') or os.getenv('WEBSHARE_SOCKS_PASSWORD', '')
             if not host or not port or not user or not pwd:
-                _state.update(status='error', reason='WEBSHARE_PROXY_NOT_CONFIGURED'); return
+                _state.update(status='error', reason='WEBSHARE_PROXY_NOT_CONFIGURED'); _start_once=False; return
             proxy_url = f'http://{user}:{pwd}@{host}:{port}'
             # Webshare direct endpoints are HTTP CONNECT proxies; use the
             # same route for REST authentication and the IQ websocket.
@@ -67,7 +68,7 @@ class IQOptionReadonly:
                 api.session.proxies.update({'http': proxy_url, 'https': proxy_url})
             ok, reason = api.connect()
             if not ok:
-                _state.update(status='error', reason=str(reason or 'IQ_OPTION_LOGIN_FAILED')[:180]); return
+                _state.update(status='error', reason=str(reason or 'IQ_OPTION_LOGIN_FAILED')[:180]); _start_once=False; return
             try: api.change_balance(self.balance_mode)
             except Exception: pass
             with _lock:
@@ -75,10 +76,25 @@ class IQOptionReadonly:
                 _state.update(status='connected', reason=None, connected_at=time.time())
         except Exception as exc:
             _state.update(status='error', reason=f'{type(exc).__name__}: {exc}'[:180])
+            _start_once=False
+
+    def _schedule_reconnect(self, reason):
+        global _client, _start_once
+        with _reconnect_lock:
+            with _lock:
+                if _state.get('status') in ('connecting', 'reconnecting') and _start_once:
+                    return
+                self.connected = False
+                self.api = None
+                _client = None
+                _start_once = False
+                _state.update(status='reconnecting', reason=reason)
+            threading.Thread(target=self._connect_worker, daemon=True, name='iqoption-reconnect').start()
 
     def connect(self):
         if self.connected and self.api: return True, 'CONNECTED_READ_ONLY'
-        return False, _state.get('reason') or 'IQ_OPTION_CONNECTING'
+        self._schedule_reconnect(_state.get('reason') or 'IQ_OPTION_RECONNECT_REQUIRED')
+        return False, _state.get('reason') or 'IQ_OPTION_RECONNECTING'
 
     def candles(self, symbol, interval=60, count=1000):
         if not self.connected or not self.api:
@@ -89,7 +105,8 @@ class IQOptionReadonly:
             # Bound each SDK call so one symbol cannot hang the whole batch.
             raw = _bounded_call(self.api.get_candles, symbol, int(interval), max(1, min(int(count), 3000)), time.time(), timeout=25)
             if raw is None:
-                return {'ok': False, 'symbol': symbol, 'reason': 'IQ_OPTION_CANDLES_TIMEOUT', 'read_only': True}
+                self._schedule_reconnect('IQ_OPTION_CANDLES_TIMEOUT')
+                return {'ok': False, 'symbol': symbol, 'reason': 'IQ_OPTION_CANDLES_TIMEOUT_RECONNECTING', 'read_only': True}
             out = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in raw or []]
             return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': out, 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
         except Exception as exc:
