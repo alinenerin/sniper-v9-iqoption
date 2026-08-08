@@ -19,7 +19,7 @@ def normalize(data):
     return data
 
 
-def get(path, timeout=180, attempts=3):
+def get(path, timeout=35, attempts=2):
     last = None
     for attempt in range(attempts):
         try:
@@ -38,12 +38,12 @@ except Exception as exc:
     health = {'ok': False, 'error': str(exc)}
 
 try:
-    batch = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(symbols)}))
+    batch = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(symbols)}), timeout=35, attempts=2)
 except Exception as first_error:
     parts = []
     for i in range(0, len(symbols), 2):
         try:
-            parts.append(get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(symbols[i:i + 2])})))
+            parts.append(get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(symbols[i:i + 2])}), timeout=30, attempts=1))
         except Exception:
             continue
     batch = {'ok': bool(parts), 'assets': [], 'payouts': {}, 'symbols': {}}
@@ -57,7 +57,7 @@ except Exception as first_error:
 missing = [s for s in symbols if not (batch.get('symbols', {}).get(s, {}).get('m1') or batch.get('symbols', {}).get(s, {}).get('m5'))]
 for i in range(0, len(missing), 2):
     try:
-        part = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(missing[i:i + 2])}))
+        part = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(missing[i:i + 2])}), timeout=30, attempts=1)
     except Exception:
         continue
     batch['assets'].extend(part.get('assets', []))
@@ -73,13 +73,13 @@ for symbol in symbols:
     # Top up per symbol and keep the longer response; never fabricate candles.
     if len(item.get('m1') or []) < M1_TARGET:
         try:
-            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 60, 'count': M1_TARGET})).get('candles', [])
+            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 60, 'count': M1_TARGET}), timeout=30, attempts=1).get('candles', [])
             if len(candidate) > len(item.get('m1') or []): item['m1'] = candidate
         except Exception:
             pass
     if len(item.get('m5') or []) < M5_TARGET:
         try:
-            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': M5_TARGET})).get('candles', [])
+            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': M5_TARGET}), timeout=30, attempts=1).get('candles', [])
             if len(candidate) > len(item.get('m5') or []): item['m5'] = candidate
         except Exception:
             pass
