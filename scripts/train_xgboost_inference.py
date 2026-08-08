@@ -11,11 +11,14 @@ market=json.loads(Path('reports/market_data.json').read_text())
 def candle_rows(payload):
     # Railway snapshots use m1/m5; retain compatibility with the legacy
     # candles.candles shape. Prefer M1 for training and inference.
-    if isinstance(payload.get('m1'), list) and payload.get('m1'):
-        return payload['m1']
-    if isinstance(payload.get('m5'), list) and payload.get('m5'):
-        return payload['m5']
-    return (payload.get('candles') or {}).get('candles', [])
+    for key in ('m1', 'm5'):
+        value = payload.get(key)
+        if isinstance(value, list) and value:
+            return value
+        if isinstance(value, dict) and value.get('candles'):
+            return value['candles']
+    legacy = payload.get('candles')
+    return legacy if isinstance(legacy, list) else ((legacy or {}).get('candles', []) if isinstance(legacy, dict) else [])
 for symbol,payload in market.get('symbols',{}).items():
     rows=candle_rows(payload)
     if len(rows)<60: continue
