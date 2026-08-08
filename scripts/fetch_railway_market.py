@@ -20,6 +20,14 @@ def normalize(data):
     data.setdefault('symbols', {})
     return data
 
+def candle_count(value):
+    if isinstance(value, dict):
+        for key in ('candles', 'data', 'result'):
+            if isinstance(value.get(key), list):
+                return len(value[key])
+        return 0
+    return len(value) if isinstance(value, list) else 0
+
 
 def get(path, timeout=35, attempts=2):
     last = None
@@ -73,16 +81,16 @@ for symbol in symbols:
     item = batch.setdefault('symbols', {}).setdefault(symbol, {})
     # The batch endpoint may return a short snapshot (currently ~120 M1).
     # Top up per symbol and keep the longer response; never fabricate candles.
-    if len(item.get('m1') or []) < M1_TARGET:
+    if candle_count(item.get('m1')) < M1_TARGET:
         try:
             candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 60, 'count': M1_TARGET}), timeout=30, attempts=1).get('candles', [])
-            if len(candidate) > len(item.get('m1') or []): item['m1'] = candidate
+            if len(candidate) > candle_count(item.get('m1')): item['m1'] = candidate
         except Exception:
             pass
-    if len(item.get('m5') or []) < M5_TARGET:
+    if candle_count(item.get('m5')) < M5_TARGET:
         try:
             candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': M5_TARGET}), timeout=30, attempts=1).get('candles', [])
-            if len(candidate) > len(item.get('m5') or []): item['m5'] = candidate
+            if len(candidate) > candle_count(item.get('m5')): item['m5'] = candidate
         except Exception:
             pass
 
@@ -94,7 +102,7 @@ for symbol in symbols:
     item['availability'] = {
         'm1': bool(item.get('m1')), 'm5': bool(item.get('m5')),
         'status': 'available' if item.get('m1') and item.get('m5') else 'partial_or_missing',
-        'm1_count': len(item.get('m1') or []), 'm5_count': len(item.get('m5') or []),
+        'm1_count': candle_count(item.get('m1')), 'm5_count': candle_count(item.get('m5')),
         'm1_target': M1_TARGET, 'm5_target': M5_TARGET,
         'required_for_chart_analysis': True,
     }
