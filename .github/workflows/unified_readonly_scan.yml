@@ -93,7 +93,8 @@ jobs:
                       assert status in ('inference_ok', 'blocked', 'error', 'insufficient-data'), (name, status)
                       if status in ('blocked', 'error', 'insufficient-data'): assert component.get('reason'), (name, component)
           otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
-          assert len(otc) == 4, len(otc)
+          expected_otc = 4 if r.get('inputs', {}).get('include_otc') else 0
+          assert len(otc) == expected_otc, (len(otc), expected_otc)
           for item in otc:
               assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
               assert item.get('execution_allowed') is False
