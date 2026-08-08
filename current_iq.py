@@ -10,6 +10,7 @@ _lock = threading.RLock()
 _start_once = False
 _patched = False
 _reconnect_lock = threading.Lock()
+_watchdog_started = False
 
 
 def _bounded_call(fn, *args, timeout=8):
@@ -38,6 +39,25 @@ class IQOptionReadonly:
             if not _start_once:
                 _start_once = True
                 threading.Thread(target=self._connect_worker, daemon=True, name='iqoption-session').start()
+            global _watchdog_started
+            if not _watchdog_started:
+                _watchdog_started = True
+                threading.Thread(target=self._watchdog, daemon=True, name='iqoption-watchdog').start()
+
+    def _watchdog(self):
+        """Detect websocket drops even when no candle request is in flight."""
+        while True:
+            time.sleep(30)
+            with _lock:
+                api = self.api
+                connected = self.connected and _state.get('status') == 'connected'
+            if not connected or api is None:
+                continue
+            check = getattr(api, 'check_connect', None)
+            if callable(check):
+                alive = _bounded_call(check, timeout=8)
+                if alive is False or alive is None:
+                    self._schedule_reconnect('IQ_OPTION_WEBSOCKET_DROPPED')
 
     def _connect_worker(self):
         global _client, _state, _patched
