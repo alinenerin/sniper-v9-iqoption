@@ -9,7 +9,14 @@ from core.forecasting.google_timesfm_bridge import TimesFMBridge
 market=json.loads(Path('reports/market_data.json').read_text())
 results={}
 for symbol,payload in market.get('symbols',{}).items():
-    rows=(payload.get('candles') or {}).get('candles',[])
+    m1 = payload.get('m1')
+    if isinstance(m1, dict):
+        rows = m1.get('candles', [])
+    elif isinstance(m1, list):
+        rows = m1
+    else:
+        legacy = payload.get('candles')
+        rows = legacy if isinstance(legacy, list) else ((legacy or {}).get('candles', []) if isinstance(legacy, dict) else [])
     prices=[float(x['close']) for x in rows if isinstance(x,dict) and x.get('close') is not None]
     if len(prices)<100:
         results[symbol]={'status':'blocked','reason':'INSUFFICIENT_CANDLES','samples':len(prices)}; continue
