@@ -96,7 +96,12 @@ for symbol in symbols:
         'm1_target': M1_TARGET, 'm5_target': M5_TARGET,
         'required_for_chart_analysis': True,
     }
-batch['ok'] = any(v.get('m1') or v.get('m5') for v in batch.get('symbols', {}).values())
+available = [s for s in symbols if batch.get('symbols', {}).get(s, {}).get('m1') and batch.get('symbols', {}).get(s, {}).get('m5')]
+batch['ok'] = bool(available)
+print('railway_market_batch=OK', len(out_symbols := symbols), 'with_data', len(available), 'available', ','.join(available) or 'none')
+if not available:
+    missing = ','.join(symbols)
+    raise RuntimeError('NO_RAILWAY_CANDLES_ALL_SYMBOLS:' + missing)
 
 out = {'source': base, 'read_only': True, 'health': health, 'snapshot': batch,
        'assets': batch.get('assets', []), 'symbols': {}}
