@@ -34,7 +34,15 @@ def otc_tier(samples: int) -> tuple[str, str, str]:
 results = {}
 for symbol in requested:
     payload = market.get('symbols', {}).get(symbol, {})
-    rows = (payload.get('candles') or {}).get('candles', [])
+    # Railway collector now stores explicit m1/m5 payloads. Keep the old
+    # nested candles shape only as a backward-compatible fallback.
+    m1 = payload.get('m1')
+    if isinstance(m1, dict):
+        rows = m1.get('candles', [])
+    elif isinstance(m1, list):
+        rows = m1
+    else:
+        rows = (payload.get('candles') or {}).get('candles', [])
     is_otc = symbol.endswith('-OTC')
     if is_otc:
         mode, confidence, quality = otc_tier(len(rows))
