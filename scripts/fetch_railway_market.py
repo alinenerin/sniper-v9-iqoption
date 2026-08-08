@@ -6,8 +6,8 @@ base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-
 symbols = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').split()
 # Balanced targets: enough context without overloading the IQ/Railway gateway.
 # Darts uses adaptive windows; 500 M1 / 100 M5 is preferred for OTC.
-M1_TARGET = int(os.getenv('M1_CANDLE_COUNT', '500'))
-M5_TARGET = int(os.getenv('M5_CANDLE_COUNT', '100'))
+M1_TARGET = int(os.getenv('M1_CANDLE_COUNT', '1000'))
+M5_TARGET = int(os.getenv('M5_CANDLE_COUNT', '200'))
 if os.getenv('INCLUDE_OTC', 'false').lower() == 'true':
     symbols += [s + '-OTC' for s in symbols]
 
@@ -85,13 +85,13 @@ for symbol in symbols:
     # Top up per symbol and keep the longer response; never fabricate candles.
     if candle_count(item.get('m1')) < M1_TARGET:
         try:
-            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 60, 'count': M1_TARGET}), timeout=30, attempts=1).get('candles', [])
+            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 60, 'count': M1_TARGET}), timeout=45, attempts=2).get('candles', [])
             if len(candidate) > candle_count(item.get('m1')): item['m1'] = candidate
         except Exception:
             pass
     if candle_count(item.get('m5')) < M5_TARGET:
         try:
-            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': M5_TARGET}), timeout=30, attempts=1).get('candles', [])
+            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': M5_TARGET}), timeout=45, attempts=2).get('candles', [])
             if len(candidate) > candle_count(item.get('m5')): item['m5'] = candidate
         except Exception:
             pass
