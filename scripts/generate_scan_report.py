@@ -52,33 +52,56 @@ def _auxiliary(symbol: str) -> dict[str, Any]:
     return out
 
 
-def _shadow_evidence(symbol: str, candles: list[dict[str, Any]], consultation: Any | None = None) -> dict[str, Any]:
-    """Expose advisory-only evidence for hypothetical shadow review."""
-    if not candles:
-        return {"status": "unavailable", "reason": "NO_RAILWAY_CANDLES",
-                "direction": None, "timing": {"decision": "NO_QUOTE"},
-                "execution_allowed": False}
-    closes = [float(c["close"]) for c in candles if isinstance(c, dict) and c.get("close") is not None]
-    direction = None
-    if len(closes) >= 20:
-        delta = closes[-1] - closes[-20]
-        direction = "CALL" if delta > 0 else "PUT" if delta < 0 else "NEUTRAL"
-    timestamps = [c.get("timestamp") for c in candles if isinstance(c, dict) and c.get("timestamp") is not None]
-    if consultation is not None:
-        advisory = ((consultation.components or {}).get("core_analysis") or {}).get("shared_advisory") or {}
-        regime_direction = (advisory.get("regime") or {}).get("direction")
-        direction = {"UP": "CALL", "DOWN": "PUT"}.get(str(regime_direction).upper(), direction)
-    return {"status": "hypothetical_only", "symbol": symbol, "direction": direction,
-            "score": float(getattr(consultation, "score", 0) or 0) if consultation is not None else None,
-            "vetoes": list(getattr(consultation, "vetoes", []) or []) if consultation is not None else [],
-            "candle_count": len(candles),
-            "latest_candle_timestamp": timestamps[-1] if timestamps else None,
-            "timing": {"decision": "MONITOR_DYNAMICALLY", "selected_offset_seconds": None,
-                       "reason": "NO_LIVE_QUOTE_STREAM_IN_REPORT"},
-            "execution_allowed": False}
+def _iso(ts: Any) -> str | None:
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
-def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[str, Any]:
+def _direction(market: str, result: dict[str, Any], candles: list[dict[str, Any]]) -> tuple[str, str]:
+    """Return an explicit calculated direction without inventing a signal."""
+    raw = result.get('direction') or result.get('signal') or result.get('side') or result.get('bias')
+    text = str(raw or '').upper()
+    if any(x in text for x in ('CALL', 'BUY', 'UP', 'COMPRA', 'LONG')):
+        return ('CALL' if market in ('binary', 'otc') else 'BUY'), 'engine'
+    if any(x in text for x in ('PUT', 'SELL', 'DOWN', 'VENDA', 'SHORT')):
+        return ('PUT' if market in ('binary', 'otc') else 'SELL'), 'engine'
+    closes = [x.get('close') for x in candles[-2:] if isinstance(x.get('close'), (int, float))]
+    if len(closes) == 2 and closes[1] != closes[0]:
+        return ('CALL' if closes[1] > closes[0] else 'PUT') if market in ('binary', 'otc') else ('BUY' if closes[1] > closes[0] else 'SELL'), 'last_completed_candle'
+    return 'NEUTRAL', 'insufficient-direction-data'
+
+
+def _timing_fields(candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
+    timestamps = [x.get('timestamp') for x in candles if x.get('timestamp') is not None]
+    last = timestamps[-1] if timestamps else None
+    first = timestamps[0] if timestamps else None
+    age = None
+    if last is not None:
+        try: age = max(0.0, observed_at.timestamp() - float(last))
+        except (TypeError, ValueError): pass
+    return {'candle_count': len(candles), 'first_candle_timestamp_utc': _iso(first),
+            'last_candle_timestamp_utc': _iso(last), 'observed_at_utc': observed_at.isoformat(),
+            'candle_age_seconds': round(age, 3) if age is not None else None}
+
+
+def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
+    direction, source = _direction(market, result, candles)
+    timing = _timing_fields(candles, observed_at)
+    last_ts = candles[-1].get('timestamp') if candles else None
+    expiry_seconds = 60
+    expiry_ts = None
+    try: expiry_ts = float(last_ts) + expiry_seconds if last_ts is not None else None
+    except (TypeError, ValueError): pass
+    return {'direction_calculated': direction, 'direction_source': source, 'candle_timing': timing,
+            'expiration': {'duration_seconds': expiry_seconds, 'expected_timestamp_utc': _iso(expiry_ts),
+                           'status': 'pending_expiration', 'hypothetical_result': None,
+                           'result_reason': 'Future candle required; no outcome fabricated.'}}
+
+
+def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
+    timing = _analysis_timing(market, {}, candles, observed_at)
     from config.markets.contracts import MarketRequest
     from engines.forex.operational import ForexV16ReadOnly
     from shared_ai.consultation import SharedAI
@@ -87,16 +110,14 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
         components = _blocked_components("NO_RAILWAY_CANDLES")
         if market == "otc":
             components.update(_auxiliary(symbol))
-        result = {"market": market, "symbol": symbol, "status": "blocked",
-                  "reason": "NO_RAILWAY_CANDLES", "decision_basis": "MISSING_INVALID_CANDLES",
-                  "components": components, "execution_allowed": False}
-        if market == "otc":
-            result["shadow_evidence"] = _shadow_evidence(symbol, candles)
-        return result
+        return {"market": market, "symbol": symbol, "status": "blocked",
+                "reason": "NO_RAILWAY_CANDLES", "decision_basis": "MISSING_INVALID_CANDLES",
+                "components": components, "execution_allowed": False, **timing}
     try:
         if market == "forex":
             result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
+            result.update(_analysis_timing(market, result, candles, observed_at))
             return result
         consultation = SharedAI(score_minimum=95).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
@@ -106,7 +127,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
         if market == "otc":
             # OTC IQ chart is authoritative; Darts/FinBERT are context only.
             chart_components.update(_auxiliary(symbol))
-        result = {
+        return {
             "market": market, "symbol": symbol, "status": "inference_ok",
             "approved": consultation.approved, "score": consultation.score,
             "probability": consultation.probability,
@@ -118,15 +139,13 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
                                "vsa": "engine", "m5_confirmation": "engine"} if market == "otc" else {},
             "components": chart_components,
             "execution_allowed": False,
+            **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at),
         }
-        if market == "otc":
-            result["shadow_evidence"] = _shadow_evidence(symbol, candles, consultation)
-        return result
     except Exception as exc:
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
         return {"market": market, "symbol": symbol, "status": "blocked",
                 "reason": reason, "components": _blocked_components(reason),
-                "execution_allowed": False}
+                "execution_allowed": False, **timing}
 
 
 def main() -> int:
@@ -136,15 +155,16 @@ def main() -> int:
     market_data = json.loads(path.read_text()) if path.exists() else {}
     by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
     forex, binary = [], []
+    observed_at = datetime.now(timezone.utc)
     for symbol in symbols:
-        forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
-        binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
+        forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+        binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
         if include_otc:
             otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
-            binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles"))))
+            binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
 
     result = {
-        "schema_version": "2.0", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
         "mode": "read_only", "execution_allowed": False,
         "forex": {"status": "completed", "analyses": forex},
