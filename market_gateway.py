@@ -14,7 +14,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         q=parse_qs(urlparse(self.path).query)
         if self.path.startswith('/health'):
-            s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-webshare-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_WEBSHARE','gateway_version':'batch-assets-v3','connection':s}); return
+            s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-direct-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_DIRECT','gateway_version':'batch-assets-v4-direct','connection':s}); return
         if self.path.startswith('/api/market/macro'):
             # Keep macro isolated from candle boot; use the fixed TradingView
             # source directly so this route works even on a minimal gateway image.
