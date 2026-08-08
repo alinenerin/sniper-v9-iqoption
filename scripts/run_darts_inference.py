@@ -42,7 +42,8 @@ for symbol in requested:
     elif isinstance(m1, list):
         rows = m1
     else:
-        rows = (payload.get('candles') or {}).get('candles', [])
+        legacy = payload.get('candles')
+        rows = legacy if isinstance(legacy, list) else ((legacy or {}).get('candles', []) if isinstance(legacy, dict) else [])
     is_otc = symbol.endswith('-OTC')
     if is_otc:
         mode, confidence, quality = otc_tier(len(rows))
