@@ -16,13 +16,23 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/health'):
             s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-webshare-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_WEBSHARE','gateway_version':'batch-assets-v3','connection':s}); return
         if self.path.startswith('/api/market/macro'):
-            # Lazy import keeps candle gateway boot-safe if macro code is unavailable.
+            # Keep macro isolated from candle boot; use the fixed TradingView
+            # source directly so this route works even on a minimal gateway image.
             try:
-                from macro_source import fetch_macro
-                self._send(fetch_macro())
+                import json as _json
+                from datetime import datetime, timezone
+                from urllib.request import Request, urlopen
+                body={'symbols':{'tickers':['TVC:DXY','TVC:VIX'],'query':{'types':[]}},'columns':['close','change']}
+                req=Request('https://scanner.tradingview.com/america/scan', data=_json.dumps(body).encode(), headers={'Content-Type':'application/json','User-Agent':'BinaryQuantX/1.0'})
+                with urlopen(req, timeout=30) as response: payload=_json.load(response)
+                rows={row.get('s'):row.get('d',[]) for row in payload.get('data',[])}
+                symbols={}
+                for name,ticker in (('dxy','TVC:DXY'),('vix','TVC:VIX')):
+                    values=rows.get(ticker,[]); value=values[0] if values else None
+                    symbols[name]={'ticker':ticker,'value':value,'change_pct':values[1] if len(values)>1 else None,'status':'ok' if value is not None else 'blocked'}
+                self._send({'ok':all(x['status']=='ok' for x in symbols.values()),'source':'TradingView','symbols':symbols,'read_only':True,'fetched_at_utc':datetime.now(timezone.utc).isoformat()})
             except Exception as exc:
-                self._send({'ok': False, 'source': 'TradingView', 'read_only': True,
-                            'reason': 'TRADINGVIEW_MACRO_UNAVAILABLE:' + type(exc).__name__})
+                self._send({'ok':False,'source':'TradingView','read_only':True,'reason':'TRADINGVIEW_MACRO_UNAVAILABLE:'+type(exc).__name__})
             return
         if self.path.startswith('/api/market/candles'):
             symbol=q.get('symbol',['EURUSD'])[0]; interval=int(q.get('interval',['60'])[0]); count=int(q.get('count',['300'])[0]); self._send(SESSION.candles(symbol,interval,count)); return
