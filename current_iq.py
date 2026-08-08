@@ -50,8 +50,15 @@ class IQOptionReadonly:
             time.sleep(30)
             with _lock:
                 api = self.api
-                connected = self.connected and _state.get('status') == 'connected'
-            if not connected or api is None:
+                state = _state.get('status')
+                connected = self.connected and state == 'connected'
+            # A failed reconnect must not require a new HTTP request or a
+            # process restart. Keep retrying with bounded backoff forever.
+            if not connected:
+                if state in ('error', 'reconnecting'):
+                    self._schedule_reconnect(_state.get('reason') or 'IQ_OPTION_RECONNECT_REQUIRED')
+                continue
+            if api is None:
                 continue
             check = getattr(api, 'check_connect', None)
             if callable(check):
