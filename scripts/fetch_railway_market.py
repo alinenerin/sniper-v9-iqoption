@@ -1,158 +1,80 @@
-"""Fetch Railway market data without failing on partial or schema-drifted snapshots."""
+"""Fetch read-only Railway candles without using the hanging batch endpoint."""
+from __future__ import annotations
 import json, os, time, urllib.parse, urllib.request
 from pathlib import Path
 
-base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
-symbols = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').split()
-# Balanced targets: enough context without overloading the IQ/Railway gateway.
-# Darts uses adaptive windows; 500 M1 / 100 M5 is preferred for OTC.
-M1_TARGET = int(os.getenv('M1_CANDLE_COUNT', '1000'))
-M5_TARGET = int(os.getenv('M5_CANDLE_COUNT', '200'))
-if os.getenv('INCLUDE_OTC', 'false').lower() == 'true':
-    symbols += [s + '-OTC' for s in symbols]
+BASE = os.getenv("RAILWAY_GATEWAY_URL", "https://trader-analysis-api-production-82ba.up.railway.app").rstrip("/")
+BASE_SYMBOLS = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").split()
+SYMBOLS = BASE_SYMBOLS + ([s + "-OTC" for s in BASE_SYMBOLS] if os.getenv("INCLUDE_OTC", "false").lower() == "true" else [])
+M1_TARGET = int(os.getenv("M1_CANDLE_COUNT", "1000"))
+M5_TARGET = int(os.getenv("M5_CANDLE_COUNT", "200"))
 
 
-def normalize(data):
-    if not isinstance(data, dict):
-        raise RuntimeError('GATEWAY_INVALID_RESPONSE')
-    data.setdefault('assets', [])
-    data.setdefault('payouts', {})
-    data.setdefault('symbols', {})
-    return data
-
-def candle_count(value):
-    if isinstance(value, dict):
-        for key in ('candles', 'data', 'result'):
-            if isinstance(value.get(key), list):
-                return len(value[key])
-        return 0
-    return len(value) if isinstance(value, list) else 0
-
-
-def get(path, timeout=35, attempts=4):
+def get(path: str, timeout: int = 45, attempts: int = 2):
     last = None
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(base + path, timeout=timeout) as response:
-                return normalize(json.load(response))
+            with urllib.request.urlopen(BASE + path, timeout=timeout) as response:
+                return json.load(response)
         except Exception as exc:
             last = exc
             if attempt + 1 < attempts:
-                time.sleep(min(20, 5 * (attempt + 1)))
-    raise RuntimeError(f'RAILWAY_REQUEST_FAILED:{type(last).__name__}') from last
+                time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"RAILWAY_REQUEST_FAILED:{type(last).__name__}") from last
 
 
-try:
-    health = get('/health', timeout=30, attempts=2)
-    # Railway can be HTTP-healthy while the IQ session is still logging in.
-    # Wait for the functional connection before starting candle requests.
-    for _ in range(9):
-        state = (health.get('connection') or {}).get('status', health.get('status'))
-        if state == 'connected':
-            break
-        if state in ('connecting', 'starting', 'reconnecting'):
-            time.sleep(10)
-            health = get('/health', timeout=20, attempts=2)
-        else:
-            break
-except Exception as exc:
-    health = {'ok': False, 'error': str(exc)}
+def candles(payload):
+    if isinstance(payload, dict) and isinstance(payload.get("candles"), list):
+        return payload["candles"]
+    return []
 
-try:
-    batch = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(symbols)}), timeout=35, attempts=2)
-    # A connected session can still need one candle-read cycle to warm up.
-    # Retry empty-but-HTTP-OK snapshots instead of treating them as final.
-    for warmup_attempt in range(8):
-        has_data = any(
-            (batch.get('symbols', {}).get(s, {}).get('m1') or
-             batch.get('symbols', {}).get(s, {}).get('m5'))
-            for s in symbols
-        )
-        if has_data:
-            break
-        time.sleep(15)
-        health = get('/health', timeout=20, attempts=2)
-        state = (health.get('connection') or {}).get('status', health.get('status'))
-        if state != 'connected':
-            continue
-        batch = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(symbols)}), timeout=35, attempts=2)
-except Exception as first_error:
-    parts = []
-    for i in range(0, len(symbols), 2):
+
+health = get("/health", timeout=20, attempts=2)
+result = {
+    "source": BASE,
+    "read_only": True,
+    "health": health,
+    "snapshot": {"ok": False, "source": "per_symbol_candles_endpoint", "assets": [], "payouts": {}, "symbols": {}},
+    "assets": [],
+    "symbols": {},
+}
+
+for symbol in SYMBOLS:
+    item = {"m1": [], "m5": {}, "payout": None}
+    for key, interval, count in (("m1", 60, M1_TARGET), ("m5", 300, M5_TARGET)):
+        query = urllib.parse.urlencode({"symbol": symbol, "interval": interval, "count": count})
         try:
-            parts.append(get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(symbols[i:i + 2])}), timeout=30, attempts=1))
-        except Exception:
-            continue
-    batch = {'ok': bool(parts), 'assets': [], 'payouts': {}, 'symbols': {}}
-    for part in parts:
-        batch['assets'].extend(part.get('assets', []))
-        batch['payouts'].update(part.get('payouts', {}))
-        batch['symbols'].update(part.get('symbols', {}))
-    if not parts:
-        batch['error'] = f'NO_MARKET_SNAPSHOT:{type(first_error).__name__}'
-
-missing = [s for s in symbols if not (batch.get('symbols', {}).get(s, {}).get('m1') or batch.get('symbols', {}).get(s, {}).get('m5'))]
-# Batch can be temporarily empty while the per-symbol endpoint remains healthy.
-# Keep the bounded per-symbol fallback below; it is the recovery path for OTC.
-for i in range(0, len(missing), 2):
+            item[key] = candles(get("/api/market/candles?" + query, timeout=45, attempts=2))
+        except Exception as exc:
+            item[key] = []
+            item.setdefault("errors", {})[key] = str(exc)
     try:
-        part = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(missing[i:i + 2])}), timeout=30, attempts=1)
+        payout = get("/api/market/payout?" + urllib.parse.urlencode({"symbol": symbol}), timeout=20, attempts=1)
+        item["payout"] = payout.get("payout")
+        if item["payout"] is not None:
+            result["snapshot"]["payouts"][symbol] = item["payout"]
     except Exception:
-        continue
-    batch['assets'].extend(part.get('assets', []))
-    batch['payouts'].update(part.get('payouts', {}))
-    batch['symbols'].update(part.get('symbols', {}))
-
-# Last-resort per-symbol requests. Never fabricate candles. A missing symbol is
-# retained as an explicit blocked result for the report; it must not abort other
-# symbols (and real-market chart analysis still fails closed without evidence).
-for symbol in symbols:
-    item = batch.setdefault('symbols', {}).setdefault(symbol, {})
-    # The batch endpoint may return a short snapshot (currently ~120 M1).
-    # Top up per symbol and keep the longer response; never fabricate candles.
-    if candle_count(item.get('m1')) < M1_TARGET:
-        try:
-            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 60, 'count': M1_TARGET}), timeout=45, attempts=2).get('candles', [])
-            if len(candidate) > candle_count(item.get('m1')): item['m1'] = candidate
-        except Exception:
-            pass
-    if candle_count(item.get('m5')) < M5_TARGET:
-        try:
-            candidate = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': 300, 'count': M5_TARGET}), timeout=45, attempts=2).get('candles', [])
-            if len(candidate) > candle_count(item.get('m5')): item['m5'] = candidate
-        except Exception:
-            pass
-
-# Do not enforce an all-symbol contract here: downstream analysis is explicitly
-# per-symbol and blocks missing real-market/chart evidence without affecting valid
-# OTC or other symbols. This is availability metadata, not a trade approval.
-for symbol in symbols:
-    item = batch.setdefault('symbols', {}).setdefault(symbol, {})
-    item['availability'] = {
-        'm1': bool(item.get('m1')), 'm5': bool(item.get('m5')),
-        'status': 'available' if item.get('m1') and item.get('m5') else 'partial_or_missing',
-        'm1_count': candle_count(item.get('m1')), 'm5_count': candle_count(item.get('m5')),
-        'm1_target': M1_TARGET, 'm5_target': M5_TARGET,
-        'required_for_chart_analysis': True,
+        pass
+    item["availability"] = {
+        "m1": bool(item["m1"]), "m5": bool(item["m5"]),
+        "status": "available" if item["m1"] and item["m5"] else "partial_or_missing",
+        "m1_count": len(item["m1"]), "m5_count": len(item["m5"]),
+        "m1_target": M1_TARGET, "m5_target": M5_TARGET,
+        "required_for_chart_analysis": True,
     }
-available = [s for s in symbols if batch.get('symbols', {}).get(s, {}).get('m1') and batch.get('symbols', {}).get(s, {}).get('m5')]
-batch['ok'] = bool(available)
-print('railway_market_batch=OK', len(out_symbols := symbols), 'with_data', len(available), 'available', ','.join(available) or 'none')
+    result["symbols"][symbol] = {
+        "snapshot": {"ok": bool(item["m1"] or item["m5"]), "assets": [],
+                     "payouts": result["snapshot"]["payouts"], "read_only": True,
+                     "availability": item["availability"]},
+        "candles": item["m1"], "m5_candles": item["m5"],
+        "availability": item["availability"],
+    }
+
+available = [s for s, item in result["symbols"].items() if item["candles"] and item["m5_candles"]]
+result["snapshot"]["ok"] = bool(available)
+result["snapshot"]["available_symbols"] = available
+Path("reports").mkdir(exist_ok=True)
+Path("reports/market_data.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+print("railway_market_per_symbol=OK", len(SYMBOLS), "with_data", len(available), "available", ",".join(available) or "none")
 if not available:
-    missing = ','.join(symbols)
-    raise RuntimeError('NO_RAILWAY_CANDLES_ALL_SYMBOLS:' + missing)
-
-out = {'source': base, 'read_only': True, 'health': health, 'snapshot': batch,
-       'assets': batch.get('assets', []), 'symbols': {}}
-for symbol in symbols:
-    item = batch.get('symbols', {}).get(symbol, {})
-    out['symbols'][symbol] = {
-        'snapshot': {'ok': bool(item.get('m1') or item.get('m5')), 'assets': batch.get('assets', []),
-                     'payouts': batch.get('payouts', {}), 'read_only': True,
-                     'availability': item.get('availability', {})},
-        'candles': item.get('m1', {}), 'm5_candles': item.get('m5', {}),
-        'availability': item.get('availability', {}),
-    }
-Path('reports').mkdir(exist_ok=True)
-Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
-print('railway_market_batch=OK', len(out['symbols']), 'with_data', sum(bool(v['availability'].get('m1') or v['availability'].get('m5')) for v in out['symbols'].values()))
+    raise RuntimeError("NO_RAILWAY_CANDLES_ALL_SYMBOLS")
