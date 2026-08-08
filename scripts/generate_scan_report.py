@@ -52,6 +52,32 @@ def _auxiliary(symbol: str) -> dict[str, Any]:
     return out
 
 
+def _shadow_evidence(symbol: str, candles: list[dict[str, Any]], consultation: Any | None = None) -> dict[str, Any]:
+    """Expose advisory-only evidence for hypothetical shadow review."""
+    if not candles:
+        return {"status": "unavailable", "reason": "NO_RAILWAY_CANDLES",
+                "direction": None, "timing": {"decision": "NO_QUOTE"},
+                "execution_allowed": False}
+    closes = [float(c["close"]) for c in candles if isinstance(c, dict) and c.get("close") is not None]
+    direction = None
+    if len(closes) >= 20:
+        delta = closes[-1] - closes[-20]
+        direction = "CALL" if delta > 0 else "PUT" if delta < 0 else "NEUTRAL"
+    timestamps = [c.get("timestamp") for c in candles if isinstance(c, dict) and c.get("timestamp") is not None]
+    if consultation is not None:
+        advisory = ((consultation.components or {}).get("core_analysis") or {}).get("shared_advisory") or {}
+        regime_direction = (advisory.get("regime") or {}).get("direction")
+        direction = {"UP": "CALL", "DOWN": "PUT"}.get(str(regime_direction).upper(), direction)
+    return {"status": "hypothetical_only", "symbol": symbol, "direction": direction,
+            "score": float(getattr(consultation, "score", 0) or 0) if consultation is not None else None,
+            "vetoes": list(getattr(consultation, "vetoes", []) or []) if consultation is not None else [],
+            "candle_count": len(candles),
+            "latest_candle_timestamp": timestamps[-1] if timestamps else None,
+            "timing": {"decision": "MONITOR_DYNAMICALLY", "selected_offset_seconds": None,
+                       "reason": "NO_LIVE_QUOTE_STREAM_IN_REPORT"},
+            "execution_allowed": False}
+
+
 def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[str, Any]:
     from config.markets.contracts import MarketRequest
     from engines.forex.operational import ForexV16ReadOnly
@@ -61,9 +87,12 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
         components = _blocked_components("NO_RAILWAY_CANDLES")
         if market == "otc":
             components.update(_auxiliary(symbol))
-        return {"market": market, "symbol": symbol, "status": "blocked",
-                "reason": "NO_RAILWAY_CANDLES", "decision_basis": "MISSING_INVALID_CANDLES",
-                "components": components, "execution_allowed": False}
+        result = {"market": market, "symbol": symbol, "status": "blocked",
+                  "reason": "NO_RAILWAY_CANDLES", "decision_basis": "MISSING_INVALID_CANDLES",
+                  "components": components, "execution_allowed": False}
+        if market == "otc":
+            result["shadow_evidence"] = _shadow_evidence(symbol, candles)
+        return result
     try:
         if market == "forex":
             result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
@@ -77,7 +106,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
         if market == "otc":
             # OTC IQ chart is authoritative; Darts/FinBERT are context only.
             chart_components.update(_auxiliary(symbol))
-        return {
+        result = {
             "market": market, "symbol": symbol, "status": "inference_ok",
             "approved": consultation.approved, "score": consultation.score,
             "probability": consultation.probability,
@@ -90,6 +119,9 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]]) -> dict[st
             "components": chart_components,
             "execution_allowed": False,
         }
+        if market == "otc":
+            result["shadow_evidence"] = _shadow_evidence(symbol, candles, consultation)
+        return result
     except Exception as exc:
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
         return {"market": market, "symbol": symbol, "status": "blocked",
