@@ -161,9 +161,11 @@ class IQOptionReadonly:
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         # Use the SDK's supported open-time/profit batch calls instead of
         # get_all_init_v2, whose websocket response can stall behind Webshare.
+        # Asset catalog/payouts are advisory. A transient empty catalog must
+        # never prevent the authoritative candle requests from running.
         asset_response=self.assets('all')
-        if not asset_response.get('ok'): return {'ok': False, 'reason': asset_response.get('reason','ASSET_SNAPSHOT_UNAVAILABLE'), 'read_only': True}
-        assets=asset_response.get('assets',[]); payouts={}
+        assets=asset_response.get('assets',[]) if asset_response.get('ok') else []
+        payouts={}
         for item in assets:
             if item.get('payout') is not None:
                 payouts.setdefault(item.get('symbol'),{})[item.get('instrument')]=item.get('payout')
