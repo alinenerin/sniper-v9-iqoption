@@ -4,10 +4,10 @@ from pathlib import Path
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
 symbols = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').split()
-# Use enough history for the AI layers: Darts requires a 1000-candle
-# training window; M5 keeps 200 candles for confirmation/context.
-M1_TARGET = int(os.getenv('M1_CANDLE_COUNT', '1000'))
-M5_TARGET = int(os.getenv('M5_CANDLE_COUNT', '200'))
+# Balanced targets: enough context without overloading the IQ/Railway gateway.
+# Darts uses adaptive windows; 500 M1 / 100 M5 is preferred for OTC.
+M1_TARGET = int(os.getenv('M1_CANDLE_COUNT', '500'))
+M5_TARGET = int(os.getenv('M5_CANDLE_COUNT', '100'))
 if os.getenv('INCLUDE_OTC', 'false').lower() == 'true':
     symbols += [s + '-OTC' for s in symbols]
 
@@ -29,7 +29,7 @@ def candle_count(value):
     return len(value) if isinstance(value, list) else 0
 
 
-def get(path, timeout=35, attempts=2):
+def get(path, timeout=35, attempts=4):
     last = None
     for attempt in range(attempts):
         try:
@@ -38,7 +38,7 @@ def get(path, timeout=35, attempts=2):
         except Exception as exc:
             last = exc
             if attempt + 1 < attempts:
-                time.sleep(5 * (attempt + 1))
+                time.sleep(min(20, 5 * (attempt + 1)))
     raise RuntimeError(f'RAILWAY_REQUEST_FAILED:{type(last).__name__}') from last
 
 
@@ -65,6 +65,10 @@ except Exception as first_error:
         batch['error'] = f'NO_MARKET_SNAPSHOT:{type(first_error).__name__}'
 
 missing = [s for s in symbols if not (batch.get('symbols', {}).get(s, {}).get('m1') or batch.get('symbols', {}).get(s, {}).get('m5'))]
+# If the batch itself is empty, the gateway is unavailable; fail fast rather
+# than amplifying a Railway/IQ outage with a per-symbol request storm.
+if not batch.get('symbols') and not batch.get('ok'):
+    raise RuntimeError('RAILWAY_GATEWAY_UNAVAILABLE_BEFORE_SYMBOL_RETRY')
 for i in range(0, len(missing), 2):
     try:
         part = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(missing[i:i + 2])}), timeout=30, attempts=1)
