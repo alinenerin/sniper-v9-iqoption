@@ -62,7 +62,7 @@ try:
     batch = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(symbols)}), timeout=35, attempts=2)
     # A connected session can still need one candle-read cycle to warm up.
     # Retry empty-but-HTTP-OK snapshots instead of treating them as final.
-    for warmup_attempt in range(3):
+    for warmup_attempt in range(8):
         has_data = any(
             (batch.get('symbols', {}).get(s, {}).get('m1') or
              batch.get('symbols', {}).get(s, {}).get('m5'))
@@ -70,7 +70,7 @@ try:
         )
         if has_data:
             break
-        time.sleep(12)
+        time.sleep(15)
         health = get('/health', timeout=20, attempts=2)
         state = (health.get('connection') or {}).get('status', health.get('status'))
         if state != 'connected':
