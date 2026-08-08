@@ -1,4 +1,4 @@
-"""Persistent read-only IQ Option session using the current Webshare direct proxy."""
+"""Persistent read-only IQ Option session using Railway's direct network route."""
 import os
 import time
 import threading
@@ -76,7 +76,9 @@ class IQOptionReadonly:
         try:
             from iqoptionapi.stable_api import IQ_Option
             import websocket
-            direct = os.getenv('IQ_OPTION_DIRECT', 'false').lower() in ('1', 'true', 'yes')
+            # Direct Railway -> IQ Option is the only supported production route.
+            # Webshare is opt-in for controlled diagnostics and can never be selected silently.
+            direct = os.getenv('ENABLE_WEBSHARE', 'false').lower() not in ('1', 'true', 'yes')
             host = os.getenv('WEBSHARE_HOST') or os.getenv('WEBSHARE_SOCKS_HOST', '')
             port = int(os.getenv('WEBSHARE_PORT') or os.getenv('WEBSHARE_SOCKS_PORT', '0'))
             user = os.getenv('WEBSHARE_USERNAME') or os.getenv('WEBSHARE_SOCKS_USERNAME', '')
@@ -143,7 +145,7 @@ class IQOptionReadonly:
                 self._schedule_reconnect('IQ_OPTION_CANDLES_TIMEOUT')
                 return {'ok': False, 'symbol': symbol, 'reason': 'IQ_OPTION_CANDLES_TIMEOUT_RECONNECTING', 'read_only': True}
             out = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in raw or []]
-            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': out, 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': out, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception as exc:
             reason = str(exc)[:180]
             # Some SDK paths surface a closed websocket as an exception rather
@@ -181,7 +183,7 @@ class IQOptionReadonly:
             value = row.get(key)
             if value is None:
                 return {'ok': False, 'symbol': symbol, 'instrument': key, 'reason': 'PAYOUT_NOT_AVAILABLE', 'read_only': True}
-            return {'ok': True, 'symbol': symbol, 'instrument': key, 'payout': float(value), 'payout_percent': round(float(value) * 100, 2), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+            return {'ok': True, 'symbol': symbol, 'instrument': key, 'payout': float(value), 'payout_percent': round(float(value) * 100, 2), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception: return {'ok': False, 'reason': 'IQ_OPTION_PAYOUT_UNAVAILABLE', 'read_only': True}
 
     def realtime_candles(self, symbol, interval=60, maxdict=20):
@@ -193,7 +195,7 @@ class IQOptionReadonly:
             candles = []
             for ts, c in data.items():
                 candles.append({'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)})
-            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': sorted(candles, key=lambda x: x['timestamp']), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': sorted(candles, key=lambda x: x['timestamp']), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception: return {'ok': False, 'reason': 'IQ_OPTION_REALTIME_STREAM_UNAVAILABLE', 'read_only': True}
 
     def digital_strike(self, symbol, duration=60):
@@ -202,7 +204,7 @@ class IQOptionReadonly:
             symbol = str(symbol).upper().replace('/', '')
             fn = getattr(self.api, 'get_realtime_strike_list', None)
             if not callable(fn): return {'ok': False, 'reason': 'DIGITAL_STRIKE_NOT_EXPOSED_BY_SDK', 'read_only': True}
-            return {'ok': True, 'symbol': symbol, 'duration': int(duration), 'strike': fn(symbol, int(duration)), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+            return {'ok': True, 'symbol': symbol, 'duration': int(duration), 'strike': fn(symbol, int(duration)), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception: return {'ok': False, 'reason': 'DIGITAL_STRIKE_UNAVAILABLE', 'read_only': True}
 
     def commission(self, instrument='binary'):
@@ -211,7 +213,7 @@ class IQOptionReadonly:
             sub = getattr(self.api, 'subscribe_commission_changed', None); get = getattr(self.api, 'get_commission_change', None)
             if callable(sub): sub(instrument)
             value = get(instrument) if callable(get) else None
-            return {'ok': value is not None, 'instrument': instrument, 'commission': value, 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+            return {'ok': value is not None, 'instrument': instrument, 'commission': value, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception: return {'ok': False, 'reason': 'COMMISSION_UNAVAILABLE', 'read_only': True}
 
     def snapshot_batch(self, symbols):
@@ -251,7 +253,7 @@ class IQOptionReadonly:
                     if commission is not None:
                         item['payout']=(100.0-float(commission))/100.0; payouts.setdefault(name,{})[kind]=item['payout']
                     assets.append(item)
-            return {'ok': True, 'symbol': symbol, 'realtime': self.realtime_candles(symbol, interval, 10), 'assets': assets, 'payouts': payouts, 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+            return {'ok': True, 'symbol': symbol, 'realtime': self.realtime_candles(symbol, interval, 10), 'assets': assets, 'payouts': payouts, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception as exc: return {'ok': False, 'reason': f'SNAPSHOT_UNAVAILABLE:{type(exc).__name__}', 'read_only': True}
 
     def assets(self, instrument='all'):
@@ -272,7 +274,7 @@ class IQOptionReadonly:
                     for symbol, row in rows.items():
                         if not isinstance(row, dict):
                             continue
-                        item = {'symbol': symbol, 'instrument': kind, 'open': bool(row.get('open')), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+                        item = {'symbol': symbol, 'instrument': kind, 'open': bool(row.get('open')), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
                         pr = profits.get(symbol) if isinstance(profits, dict) else None
                         pr = pr if isinstance(pr, dict) else {}
                         if kind in ('binary', 'turbo'):
@@ -297,13 +299,13 @@ class IQOptionReadonly:
                             option = active.get('option') or {}
                             profit = option.get('profit') if isinstance(option, dict) else {}
                             profit = profit if isinstance(profit, dict) else {}
-                            item = {'symbol': symbol, 'instrument': kind, 'open': bool(active.get('enabled')) and not bool(active.get('is_suspended')), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+                            item = {'symbol': symbol, 'instrument': kind, 'open': bool(active.get('enabled')) and not bool(active.get('is_suspended')), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
                             if kind in ('binary', 'turbo') and profit.get('commission') is not None:
                                 item['payout'] = (100.0 - float(profit['commission'])) / 100.0
                             out.append(item)
             if not out:
                 return {'ok': False, 'reason': 'IQ_OPTION_ASSET_CATALOG_EMPTY', 'read_only': True}
-            return {'ok': True, 'instrument': instrument, 'assets': out, 'count': len(out), 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
+            return {'ok': True, 'instrument': instrument, 'assets': out, 'count': len(out), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception as exc: return {'ok': False, 'reason': f'IQ_OPTION_ASSETS_UNAVAILABLE:{type(exc).__name__}:{str(exc)[:120]}', 'read_only': True}
 
 def connection_status():
