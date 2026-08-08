@@ -76,22 +76,25 @@ class IQOptionReadonly:
         try:
             from iqoptionapi.stable_api import IQ_Option
             import websocket
+            direct = os.getenv('IQ_OPTION_DIRECT', 'false').lower() in ('1', 'true', 'yes')
             host = os.getenv('WEBSHARE_HOST') or os.getenv('WEBSHARE_SOCKS_HOST', '')
             port = int(os.getenv('WEBSHARE_PORT') or os.getenv('WEBSHARE_SOCKS_PORT', '0'))
             user = os.getenv('WEBSHARE_USERNAME') or os.getenv('WEBSHARE_SOCKS_USERNAME', '')
             pwd = os.getenv('WEBSHARE_PASSWORD') or os.getenv('WEBSHARE_SOCKS_PASSWORD', '')
-            if not host or not port or not user or not pwd:
+            if not direct and (not host or not port or not user or not pwd):
                 _state.update(status='error', reason='WEBSHARE_PROXY_NOT_CONFIGURED'); _start_once=False; return
-            proxy_url = f'http://{user}:{pwd}@{host}:{port}'
+            proxy_url = f'http://{user}:{pwd}@{host}:{port}' if not direct else None
             # Webshare direct endpoints are HTTP CONNECT proxies; use the
-            # same route for REST authentication and the IQ websocket.
-            for key in ('ALL_PROXY','all_proxy','HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy'):
-                os.environ[key] = proxy_url
+            # same route for REST authentication and the IQ websocket. In
+            # controlled read-only tests, IQ_OPTION_DIRECT bypasses Webshare.
+            if not direct:
+                for key in ('ALL_PROXY','all_proxy','HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy'):
+                    os.environ[key] = proxy_url
             # The SDK image is patched at build time; do not monkey-patch
             # WebSocketApp here (that caused recursive callback failures).
             api = IQ_Option(self.email, self.password)
             # Force the REST login through the same verified Webshare endpoint.
-            if hasattr(api, 'session'):
+            if not direct and hasattr(api, 'session'):
                 api.session.proxies.update({'http': proxy_url, 'https': proxy_url})
             # IQ SDK login can hang behind a degraded proxy; never let it
             # leave the Railway process permanently stuck in "connecting".
