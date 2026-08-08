@@ -145,7 +145,13 @@ class IQOptionReadonly:
             out = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in raw or []]
             return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': out, 'source': 'IQ_OPTION_WEBSHARE', 'read_only': True}
         except Exception as exc:
-            return {'ok': False, 'reason': f'IQ_OPTION_CANDLES_UNAVAILABLE:{type(exc).__name__}'}
+            reason = str(exc)[:180]
+            # Some SDK paths surface a closed websocket as an exception rather
+            # than returning None. Invalidate the stale connected state so the
+            # watchdog reconnects instead of serving empty snapshots.
+            if 'websocket' in reason.lower() or 'connection closed' in reason.lower():
+                self._schedule_reconnect(reason or 'IQ_OPTION_WEBSOCKET_DROPPED')
+            return {'ok': False, 'reason': reason or f'IQ_OPTION_CANDLES_UNAVAILABLE:{type(exc).__name__}'}
 
     def _init_snapshot(self):
         data = _bounded_call(self.api.get_all_init_v2, timeout=35)
