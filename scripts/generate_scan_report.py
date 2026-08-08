@@ -111,7 +111,10 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         if market == "otc":
             components.update(_auxiliary(symbol))
         return {"market": market, "symbol": symbol, "status": "blocked",
-                "reason": "NO_RAILWAY_CANDLES", "decision_basis": "MISSING_INVALID_CANDLES",
+                "reason": "NO_RAILWAY_CANDLES", "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "MISSING_INVALID_CANDLES",
+                "chart_evidence": {"ema_cascade": "engine", "algorithmic_cycle": "blocked",
+                                   "wick_rejection": "blocked", "previous_candle": "blocked",
+                                   "vsa": "blocked", "m5_confirmation": "blocked"} if market == "otc" else {},
                 "components": components, "execution_allowed": False, **timing}
     try:
         if market == "forex":
