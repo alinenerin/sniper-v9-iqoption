@@ -4,6 +4,7 @@ import json, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from current_iq import IQOptionReadonly, connection_status
+from macro_source import fetch_macro
 
 SESSION = IQOptionReadonly()
 
@@ -15,6 +16,8 @@ class Handler(BaseHTTPRequestHandler):
         q=parse_qs(urlparse(self.path).query)
         if self.path.startswith('/health'):
             s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-webshare-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_WEBSHARE','gateway_version':'batch-assets-v3','connection':s}); return
+        if self.path.startswith('/api/market/macro'):
+            self._send(fetch_macro()); return
         if self.path.startswith('/api/market/candles'):
             symbol=q.get('symbol',['EURUSD'])[0]; interval=int(q.get('interval',['60'])[0]); count=int(q.get('count',['300'])[0]); self._send(SESSION.candles(symbol,interval,count)); return
         if self.path.startswith('/api/market/payout'):
