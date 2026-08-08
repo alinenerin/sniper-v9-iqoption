@@ -44,6 +44,17 @@ def get(path, timeout=35, attempts=4):
 
 try:
     health = get('/health', timeout=30, attempts=2)
+    # Railway can be HTTP-healthy while the IQ session is still logging in.
+    # Wait for the functional connection before starting candle requests.
+    for _ in range(9):
+        state = (health.get('connection') or {}).get('status', health.get('status'))
+        if state == 'connected':
+            break
+        if state in ('connecting', 'starting', 'reconnecting'):
+            time.sleep(10)
+            health = get('/health', timeout=20, attempts=2)
+        else:
+            break
 except Exception as exc:
     health = {'ok': False, 'error': str(exc)}
 
