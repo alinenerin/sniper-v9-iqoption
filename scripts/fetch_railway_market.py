@@ -65,10 +65,8 @@ except Exception as first_error:
         batch['error'] = f'NO_MARKET_SNAPSHOT:{type(first_error).__name__}'
 
 missing = [s for s in symbols if not (batch.get('symbols', {}).get(s, {}).get('m1') or batch.get('symbols', {}).get(s, {}).get('m5'))]
-# If the batch itself is empty, the gateway is unavailable; fail fast rather
-# than amplifying a Railway/IQ outage with a per-symbol request storm.
-if not batch.get('symbols') and not batch.get('ok'):
-    raise RuntimeError('RAILWAY_GATEWAY_UNAVAILABLE_BEFORE_SYMBOL_RETRY')
+# Batch can be temporarily empty while the per-symbol endpoint remains healthy.
+# Keep the bounded per-symbol fallback below; it is the recovery path for OTC.
 for i in range(0, len(missing), 2):
     try:
         part = get('/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(missing[i:i + 2])}), timeout=30, attempts=1)
