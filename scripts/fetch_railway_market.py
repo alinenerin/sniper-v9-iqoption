@@ -4,8 +4,10 @@ from pathlib import Path
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
 symbols = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').split()
-M1_TARGET = int(os.getenv('M1_CANDLE_COUNT', '500'))
-M5_TARGET = int(os.getenv('M5_CANDLE_COUNT', '100'))
+# Use enough history for the AI layers: Darts requires a 1000-candle
+# training window; M5 keeps 200 candles for confirmation/context.
+M1_TARGET = int(os.getenv('M1_CANDLE_COUNT', '1000'))
+M5_TARGET = int(os.getenv('M5_CANDLE_COUNT', '200'))
 if os.getenv('INCLUDE_OTC', 'false').lower() == 'true':
     symbols += [s + '-OTC' for s in symbols]
 
