@@ -54,7 +54,10 @@ def discover_symbols():
     if otc_only:
         if not normalized:
             raise RuntimeError('NO_AVAILABLE_OTC_SYMBOLS')
-        return normalized
+        # Probe the most liquid FX pairs first so a transient gateway
+        # degradation cannot leave the entire report without fresh candles.
+        priority = {'EURUSD-OTC': 0, 'GBPUSD-OTC': 1, 'USDJPY-OTC': 2, 'AUDUSD-OTC': 3}
+        return sorted(normalized, key=lambda s: (priority.get(s, 10), s))
     bases = [n[:-4] for n in normalized if n.endswith('-OTC')]
     return bases or [n for n in normalized if not n.endswith('-OTC')] or requested
 
