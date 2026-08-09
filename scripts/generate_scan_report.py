@@ -154,14 +154,16 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
 def main() -> int:
     symbols = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
+    otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
     by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
     for symbol in symbols:
-        forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-        binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+        if not otc_only:
+            forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
         if include_otc:
             otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
             binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
@@ -173,7 +175,7 @@ def main() -> int:
         "forex": {"status": "completed", "analyses": forex},
         "binary": {"status": "completed", "analyses": binary},
         "market_data": market_data,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "source": "Railway"},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
     }
