@@ -11,7 +11,7 @@ on:
       symbols:
         description: 'Pares separados por espaço ou vírgula'
         required: true
-        default: 'ALL_AVAILABLE'
+        default: 'EURUSD GBPUSD USDJPY AUDUSD'
         type: string
       otc_only:
         description: 'Analisar somente OTC, sem Forex real ou binárias reais'
@@ -109,8 +109,10 @@ jobs:
                       assert status in ('inference_ok', 'blocked', 'error', 'insufficient-data'), (name, status)
                       if status in ('blocked', 'error', 'insufficient-data'): assert component.get('reason'), (name, component)
           otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
-          expected_otc = len(r.get('inputs', {}).get('symbols', [])) if r.get('inputs', {}).get('include_otc') else 0
+          expected_otc = len((r.get('market_data') or {}).get('otc_symbols') or []) if r.get('inputs', {}).get('include_otc') else 0
           assert len(otc) == expected_otc, (len(otc), expected_otc)
+          if r.get('inputs', {}).get('include_otc'):
+              assert expected_otc >= 1
           for item in otc:
               # A valid OTC inference must identify the authoritative chart.
               # A blocked item may instead be rejected for missing/invalid candles;
