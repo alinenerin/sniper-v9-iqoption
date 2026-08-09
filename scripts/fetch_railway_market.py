@@ -1,4 +1,4 @@
-"""Fetch fresh read-only candles, discovering the available OTC universe when requested."""
+"""Fetch fresh read-only candles from Railway, preferring per-symbol endpoints."""
 import json, os, time, urllib.parse, urllib.request
 from pathlib import Path
 
@@ -9,61 +9,66 @@ otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 
 
+def discover_symbols():
+    if not any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested):
+        return requested
+    payload = get('/api/market/assets?instrument=all', timeout=60)
+    # Assets endpoint also contains stocks/crypto. Keep currency pairs only:
+    # six-letter FX symbols, active and binary, with OTC suffix in OTC mode.
+    import re
+    rows = payload.get('assets', []) if isinstance(payload, dict) else []
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get('open') is False:
+            continue
+        if row.get('instrument') not in (None, 'binary'):
+            continue
+        name = str(row.get('symbol') or row.get('name') or '').upper().split('.')[-1].replace('/', '')
+        if '_OTC' in name: name = name.replace('_OTC', '-OTC')
+        if re.fullmatch(r'[A-Z]{6}(-OTC)?', name) and name not in normalized:
+            normalized.append(name)
+    if otc_only:
+        if not normalized:
+            raise RuntimeError('NO_AVAILABLE_OTC_SYMBOLS')
+        return normalized
+    bases = [n[:-4] for n in normalized if n.endswith('-OTC')]
+    return bases or [n for n in normalized if not n.endswith('-OTC')] or requested
+
+
+# Discovery runs only after the gateway is functionally connected.
+base_symbols = discover_symbols()
+if otc_only:
+    symbols = base_symbols if all(s.endswith('-OTC') for s in base_symbols) else [s + '-OTC' for s in base_symbols]
+elif include_otc:
+    symbols = base_symbols + [s + '-OTC' for s in base_symbols]
+else:
+    symbols = base_symbols
+
+
 def get(path, timeout=60):
     with urllib.request.urlopen(base + path, timeout=timeout) as response:
         return json.load(response)
 
 
-def discover_otc():
-    payload = get('/api/market/assets?instrument=all', timeout=60)
-    names = []
-    def walk(value):
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if key.lower() in ('name', 'symbol', 'active_symbol') and isinstance(item, str):
-                    names.append(item)
-                walk(item)
-        elif isinstance(value, list):
-            for item in value:
-                walk(item)
-    walk(payload)
-    result = []
-    for name in names:
-        symbol = name.upper().split('.')[-1].replace('/', '')
-        symbol = symbol.replace('_OTC', '-OTC')
-        if symbol.endswith('-OTC') and symbol not in result:
-            result.append(symbol)
-    return sorted(result)
-
 health = get('/health')
 if health.get('status') != 'connected':
     raise RuntimeError('RAILWAY_NOT_CONNECTED')
 
-all_requested = any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested)
-discovery_error = None
-if include_otc and all_requested:
-    try:
-        otc_symbols = discover_otc()
-    except Exception as exc:
-        otc_symbols = []
-        discovery_error = type(exc).__name__
-    if not otc_symbols:
-        raise RuntimeError('NO_AVAILABLE_OTC_SYMBOLS')
-    base_symbols = sorted(set(s[:-4] for s in otc_symbols))
-else:
-    base_symbols = [s for s in requested if s.upper() not in ('ALL', 'ALL_AVAILABLE', '*')]
-    otc_symbols = [s if s.endswith('-OTC') else s + '-OTC' for s in base_symbols] if include_otc else []
-
-symbols = otc_symbols if otc_only else base_symbols + (otc_symbols if include_otc else [])
-collected, errors = {}, {}
+# The batch endpoint can remain stale while the direct per-symbol endpoint is live.
+# Fetch each requested asset independently and preserve missing assets as blocked data.
+collected = {}
+errors = {}
 for symbol in symbols:
     item = {}
     for interval, key, count in ((60, 'm1', 1000), (300, 'm5', 300)):
-        path = '/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'count': count})
+        path = '/api/market/candles?' + urllib.parse.urlencode({
+            'symbol': symbol, 'interval': interval, 'count': count})
         try:
             payload = get(path, timeout=60)
-            item[key] = {'candles': payload.get('candles') or [], 'source': payload.get('source'),
-                         'symbol': payload.get('symbol', symbol), 'interval_seconds': payload.get('interval_seconds', interval),
+            rows = payload.get('candles') or []
+            item[key] = {'candles': rows, 'source': payload.get('source'),
+                         'symbol': payload.get('symbol', symbol),
+                         'interval_seconds': payload.get('interval_seconds', interval),
                          'read_only': payload.get('read_only', True)}
         except Exception as exc:
             item[key] = {'candles': [], 'error': type(exc).__name__, 'read_only': True}
@@ -82,15 +87,20 @@ for symbol, item in collected.items():
             item['m1']['freshness_error'] = f'NO_FRESH_CANDLES:age_seconds={round(age, 1)}:max_age_seconds={max_age}'
 
 if not fresh:
-    raise RuntimeError(f'NO_FRESH_RAILWAY_CANDLES:max_age_seconds={max_age}')
+    ages = []
+    for item in collected.values():
+        rows = (item.get('m1') or {}).get('candles') or []
+        if rows and rows[-1].get('timestamp') is not None:
+            ages.append(round(time.time() - float(rows[-1]['timestamp']), 1))
+    raise RuntimeError(f'NO_FRESH_RAILWAY_CANDLES:age_seconds={max(ages) if ages else None}:max_age_seconds={max_age}')
 
-out = {'source': base, 'read_only': True, 'health': health, 'assets': [], 'symbols': {},
-       'fetch_mode': 'per_symbol_direct', 'asset_discovery': 'gateway' if all_requested else 'explicit_universe',
-       'discovered_otc_symbols': otc_symbols if all_requested else [], 'otc_symbols': otc_symbols,
-       'discovery_error': discovery_error, 'fresh_symbols': fresh, 'fetch_errors': errors}
+out = {'source': base, 'read_only': True, 'health': health,
+       'assets': [], 'symbols': {}, 'fetch_mode': 'per_symbol_direct',
+       'fresh_symbols': fresh, 'fetch_errors': errors}
 for symbol, item in collected.items():
-    out['symbols'][symbol] = {'snapshot': {'ok': True, 'assets': [], 'payouts': {}, 'read_only': True},
-                              'candles': item.get('m1', {}), 'm5_candles': item.get('m5', {})}
+    out['symbols'][symbol] = {
+        'snapshot': {'ok': True, 'assets': [], 'payouts': {}, 'read_only': True},
+        'candles': item.get('m1', {}), 'm5_candles': item.get('m5', {})}
 Path('reports').mkdir(exist_ok=True)
 Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
-print('railway_market_per_symbol=OK', len(fresh), 'fresh_of', len(symbols), 'otc_discovered', len(otc_symbols))
+print('railway_market_per_symbol=OK', len(fresh), 'fresh_of', len(symbols))
