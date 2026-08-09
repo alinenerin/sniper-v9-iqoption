@@ -9,7 +9,7 @@ otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 
 
-def get(path, timeout=60, attempts=3):
+def get(path, timeout=60, attempts=5):
     last = None
     for attempt in range(attempts):
         try:
@@ -18,7 +18,7 @@ def get(path, timeout=60, attempts=3):
         except Exception as exc:
             last = exc
             if attempt + 1 < attempts:
-                time.sleep(2)
+                time.sleep(min(8, 2 * (attempt + 1)))
     raise last
 
 
@@ -116,8 +116,10 @@ for start in range(0, len(symbols), 2):
                     rows = rows.get('candles') or []
                 if not isinstance(rows, list):
                     rows = []
+                # Never overwrite a valid direct response with an empty batch response.
+            if rows or not collected[symbol][key]['candles']:
                 collected[symbol][key] = {'candles': rows, 'source': payload.get('source'),
-                    'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+                        'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
             # Some gateway sessions acknowledge the batch but return an empty
             # symbol payload. Fall back per symbol, without fabricating data.
             if not collected[symbol]['m1']['candles']:
@@ -125,7 +127,7 @@ for start in range(0, len(symbols), 2):
                     try:
                         direct = get('/api/market/candles?' + urllib.parse.urlencode({
                             'symbol': symbol, 'interval': interval, 'count': 120}),
-                            timeout=60, attempts=2)
+                            timeout=60, attempts=5)
                         rows = direct.get('candles') or []
                         if isinstance(rows, list):
                             collected[symbol][key] = {'candles': rows,
@@ -136,6 +138,7 @@ for start in range(0, len(symbols), 2):
     except Exception as exc:
         for symbol in chunk:
             errors[symbol] = type(exc).__name__
+    time.sleep(3)
 
 fresh = []
 for symbol, item in collected.items():
