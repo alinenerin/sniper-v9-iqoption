@@ -9,6 +9,10 @@ otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 
 
+def get(path, timeout=60):
+    with urllib.request.urlopen(base + path, timeout=timeout) as response:
+        return json.load(response)
+
 def discover_symbols():
     if not any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested):
         return requested
