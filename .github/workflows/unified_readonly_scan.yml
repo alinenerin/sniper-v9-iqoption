@@ -59,9 +59,16 @@ jobs:
         run: python scripts/run_timesfm_inference.py
       - name: Install FinBERT runtime
         run: pip install 'torch>=2.2' 'transformers>=4.40' sentencepiece requests
+      - name: Cache FinBERT model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: finbert-prosusai-${{ runner.os }}-v1
       - name: Run real FinBERT inference
         env:
           MARKETAUX_API_TOKEN: ${{ secrets.MARKETAUX_API_TOKEN }}
+          HF_HOME: ~/.cache/huggingface
+          TRANSFORMERS_CACHE: ~/.cache/huggingface
         run: python scripts/run_finbert_inference.py
       - name: Install XGBoost runtime
         run: pip install 'xgboost>=2.0' scikit-learn
