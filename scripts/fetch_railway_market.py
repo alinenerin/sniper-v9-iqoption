@@ -3,7 +3,9 @@ import json, os, time, urllib.parse, urllib.request
 from pathlib import Path
 base=os.getenv('RAILWAY_GATEWAY_URL','https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
 symbols=os.getenv('SYMBOLS','EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split();
-if os.getenv('INCLUDE_OTC','false').lower()=='true': symbols += [s+'-OTC' for s in symbols]
+if os.getenv('INCLUDE_OTC','false').lower()=='true':
+    base_symbols=list(symbols)
+    symbols=[s+'-OTC' for s in base_symbols] if os.getenv('OTC_ONLY','false').lower()=='true' else symbols + [s+'-OTC' for s in base_symbols]
 def get(path, timeout=180):
     with urllib.request.urlopen(base+path, timeout=timeout) as r: return json.load(r)
 health=get('/health')
