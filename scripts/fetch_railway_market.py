@@ -3,10 +3,47 @@ import json, os, time, urllib.parse, urllib.request
 from pathlib import Path
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
-base_symbols = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
+requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
 include_otc = os.getenv('INCLUDE_OTC', 'false').lower() == 'true'
-symbols = base_symbols + ([s + '-OTC' for s in base_symbols] if include_otc else [])
+otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
+
+
+def discover_symbols():
+    if not any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested):
+        return requested
+    payload = get('/api/market/assets?instrument=all', timeout=60)
+    names = []
+    def walk(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key.lower() in ('name', 'symbol', 'active_symbol') and isinstance(item, str):
+                    names.append(item)
+                walk(item)
+        elif isinstance(value, list):
+            for item in value: walk(item)
+    walk(payload)
+    normalized = []
+    for name in names:
+        n = name.upper().split('.')[-1].replace('/', '')
+        if '_OTC' in n: n = n.replace('_OTC', '-OTC')
+        if n.endswith('-OTC') and n not in normalized: normalized.append(n)
+    if otc_only:
+        if not normalized:
+            raise RuntimeError('NO_AVAILABLE_OTC_SYMBOLS')
+        return normalized
+    bases = [n[:-4] for n in normalized]
+    return bases or requested
+
+
+# Discovery runs only after the gateway is functionally connected.
+base_symbols = discover_symbols()
+if otc_only:
+    symbols = base_symbols if all(s.endswith('-OTC') for s in base_symbols) else [s + '-OTC' for s in base_symbols]
+elif include_otc:
+    symbols = base_symbols + [s + '-OTC' for s in base_symbols]
+else:
+    symbols = base_symbols
 
 
 def get(path, timeout=60):
