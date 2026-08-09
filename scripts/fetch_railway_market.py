@@ -104,6 +104,21 @@ for start in range(0, len(symbols), 2):
                     rows = []
                 collected[symbol][key] = {'candles': rows, 'source': payload.get('source'),
                     'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+            # Some gateway sessions acknowledge the batch but return an empty
+            # symbol payload. Fall back per symbol, without fabricating data.
+            if not collected[symbol]['m1']['candles']:
+                for interval, key in ((60, 'm1'), (300, 'm5')):
+                    try:
+                        direct = get('/api/market/candles?' + urllib.parse.urlencode({
+                            'symbol': symbol, 'interval': interval, 'count': 120}),
+                            timeout=60, attempts=2)
+                        rows = direct.get('candles') or []
+                        if isinstance(rows, list):
+                            collected[symbol][key] = {'candles': rows,
+                                'source': direct.get('source'), 'symbol': symbol,
+                                'interval_seconds': interval, 'read_only': True}
+                    except Exception as exc:
+                        errors[f'{symbol}:{interval}'] = type(exc).__name__
     except Exception as exc:
         for symbol in chunk:
             errors[symbol] = type(exc).__name__
