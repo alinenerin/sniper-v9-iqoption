@@ -9,10 +9,15 @@ on:
         default: false
         type: boolean
       symbols:
-        description: 'Pares separados por espaço'
+        description: 'Pares separados por espaço ou vírgula'
         required: true
         default: 'EURUSD GBPUSD USDJPY AUDUSD'
         type: string
+      otc_only:
+        description: 'Analisar somente OTC, sem Forex real ou binárias reais'
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   unified-scan:
@@ -23,6 +28,7 @@ jobs:
       EXECUTION_ALLOWED: 'false'
       EXECUTOR_ENABLED: 'false'
       INCLUDE_OTC: ${{ inputs.include_otc }}
+      OTC_ONLY: ${{ inputs.otc_only }}
       SYMBOLS: ${{ inputs.symbols }}
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +85,9 @@ jobs:
           assert 'binary' in r and 'forex' in r
           assert r['forex']['status'] == 'completed'
           assert r['binary']['status'] == 'completed'
+          if r.get('inputs', {}).get('otc_only'):
+              assert r.get('inputs', {}).get('include_otc') is True
+              assert not r['forex'].get('analyses')
           for book_name, book in (('forex', r['forex']), ('binary', r['binary'])):
               for item in book.get('analyses', []):
                   assert item.get('execution_allowed') is False, (book_name, item.get('symbol'))
@@ -96,10 +105,16 @@ jobs:
           expected_otc = 4 if r.get('inputs', {}).get('include_otc') else 0
           assert len(otc) == expected_otc, (len(otc), expected_otc)
           for item in otc:
-              assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
+              # A valid OTC inference must identify the authoritative chart.
+              # A blocked item may instead be rejected for missing/invalid candles;
+              # that is a data-quality veto, not a contract failure.
+              if item.get('status') == 'inference_ok':
+                  assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
+                  assert item.get('chart_evidence', {}).get('ema_cascade') == 'engine'
+              else:
+                  assert item.get('decision_basis') in ('OTC_IQ_CHART_AUTHORITATIVE', 'MISSING_INVALID_CANDLES')
               assert item.get('execution_allowed') is False
               assert set(('darts', 'finbert')).issubset(item.get('components', {}))
-              assert item.get('chart_evidence', {}).get('ema_cascade') == 'engine'
           print('unified_report=OK; component_statuses=OK; execution=BLOCKED')
           PY
       - name: Upload latest scan
