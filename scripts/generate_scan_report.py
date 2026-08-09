@@ -152,7 +152,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
 
 
 def main() -> int:
-    symbols = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").split()
+    symbols = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
