@@ -259,50 +259,34 @@ class IQOptionReadonly:
     def assets(self, instrument='all'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
-            # IQ Option can return a partial/None open-time payload through the
-            # Webshare websocket. Never index that payload blindly. Fall back
-            # to the init snapshot, which is already used by payout/snapshot.
-            opened = _bounded_call(self.api.get_all_open_time, timeout=40)
-            profits = _bounded_call(self.api.get_all_profit, timeout=40) or {}
+            # Do not call get_all_open_time/get_all_profit here: either may
+            # dereference a None websocket payload and close the session.
+            # The init snapshot is the stable, already authenticated catalogue
+            # used by payout() and contains active/open state plus commissions.
             kinds = ['forex', 'binary', 'turbo', 'digital'] if instrument == 'all' else [instrument]
             out = []
-            if isinstance(opened, dict):
+            snap = self._init_snapshot()
+            if isinstance(snap, dict):
                 for kind in kinds:
-                    rows = opened.get(kind) or {}
-                    if not isinstance(rows, dict):
+                    section = snap.get(kind) or {}
+                    active_map = section.get('actives') if isinstance(section, dict) else {}
+                    if not isinstance(active_map, dict):
                         continue
-                    for symbol, row in rows.items():
-                        if not isinstance(row, dict):
+                    for active in active_map.values():
+                        if not isinstance(active, dict):
                             continue
-                        item = {'symbol': symbol, 'instrument': kind, 'open': bool(row.get('open')), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
-                        pr = profits.get(symbol) if isinstance(profits, dict) else None
-                        pr = pr if isinstance(pr, dict) else {}
-                        if kind in ('binary', 'turbo'):
-                            item['payout'] = pr.get(kind)
+                        symbol = str(active.get('name', '')).split('.')[-1]
+                        if not symbol:
+                            continue
+                        option = active.get('option') or {}
+                        profit = option.get('profit') if isinstance(option, dict) else {}
+                        profit = profit if isinstance(profit, dict) else {}
+                        item = {'symbol': symbol, 'instrument': kind,
+                                'open': bool(active.get('enabled')) and not bool(active.get('is_suspended')),
+                                'source': 'IQ_OPTION_DIRECT', 'read_only': True}
+                        if kind in ('binary', 'turbo') and profit.get('commission') is not None:
+                            item['payout'] = (100.0 - float(profit['commission'])) / 100.0
                         out.append(item)
-            # Fallback parser for SDK responses where get_all_open_time() is
-            # unavailable but get_all_init(_v2) contains the active catalogue.
-            if not out:
-                snap = self._init_snapshot()
-                if isinstance(snap, dict):
-                    for kind in kinds:
-                        section = snap.get(kind) or {}
-                        active_map = section.get('actives') if isinstance(section, dict) else {}
-                        if not isinstance(active_map, dict):
-                            continue
-                        for active in active_map.values():
-                            if not isinstance(active, dict):
-                                continue
-                            symbol = str(active.get('name', '')).split('.')[-1]
-                            if not symbol:
-                                continue
-                            option = active.get('option') or {}
-                            profit = option.get('profit') if isinstance(option, dict) else {}
-                            profit = profit if isinstance(profit, dict) else {}
-                            item = {'symbol': symbol, 'instrument': kind, 'open': bool(active.get('enabled')) and not bool(active.get('is_suspended')), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
-                            if kind in ('binary', 'turbo') and profit.get('commission') is not None:
-                                item['payout'] = (100.0 - float(profit['commission'])) / 100.0
-                            out.append(item)
             if not out:
                 return {'ok': False, 'reason': 'IQ_OPTION_ASSET_CATALOG_EMPTY', 'read_only': True}
             return {'ok': True, 'instrument': instrument, 'assets': out, 'count': len(out), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
