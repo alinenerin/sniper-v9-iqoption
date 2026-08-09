@@ -151,12 +151,21 @@ class IQOptionReadonly:
         if not symbols:
             symbols = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC']
         index = 0
+        discovered = bool(symbols)
         while True:
             try:
                 with _lock:
                     api = self.api if self.connected else None
                 if api is None:
                     time.sleep(5); continue
+                if not discovered:
+                    try:
+                        catalog = self.assets('binary')
+                        found = [self._norm_symbol(x.get('symbol','')) for x in (catalog.get('assets') or []) if str(x.get('symbol','')).upper().replace('_OTC','-OTC').endswith('-OTC') and x.get('open', True)]
+                        if found:
+                            symbols = list(dict.fromkeys(found)); discovered = True
+                    except Exception:
+                        pass
                 batch = symbols[index:index + 8]
                 if not batch:
                     index = 0; continue
