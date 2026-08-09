@@ -9,9 +9,17 @@ otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 
 
-def get(path, timeout=60):
-    with urllib.request.urlopen(base + path, timeout=timeout) as response:
-        return json.load(response)
+def get(path, timeout=60, attempts=3):
+    last = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(base + path, timeout=timeout) as response:
+                return json.load(response)
+        except Exception as exc:
+            last = exc
+            if attempt + 1 < attempts:
+                time.sleep(2)
+    raise last
 
 
 def discover_symbols():
@@ -51,9 +59,18 @@ def discover_symbols():
     return bases or [n for n in normalized if not n.endswith('-OTC')] or requested
 
 
-health = get('/health')
-if health.get('status') != 'connected':
-    raise RuntimeError('RAILWAY_NOT_CONNECTED')
+health = None
+for _ in range(18):
+    try:
+        candidate = get('/health', timeout=15, attempts=1)
+        if candidate.get('status') == 'connected':
+            health = candidate
+            break
+    except Exception:
+        pass
+    time.sleep(10)
+if not health:
+    raise RuntimeError('RAILWAY_NOT_CONNECTED_AFTER_WARMUP')
 
 # Discovery runs only after the gateway is functionally connected.
 base_symbols = discover_symbols()
