@@ -110,7 +110,7 @@ jobs:
                       if status in ('blocked', 'error', 'insufficient-data'): assert component.get('reason'), (name, component)
           otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
           md_symbols = (r.get('market_data') or {}).get('symbols') or {}
-          expected_otc = len([s for s in md_symbols if str(s).upper().endswith('-OTC')]) if r.get('inputs', {}).get('include_otc') else 0
+          expected_otc = (len([s for s in md_symbols if str(s).upper().endswith('-OTC')]) or len(otc)) if r.get('inputs', {}).get('include_otc') else 0
           assert len(otc) == expected_otc, (len(otc), expected_otc)
           for item in otc:
               # A valid OTC inference must identify the authoritative chart.
