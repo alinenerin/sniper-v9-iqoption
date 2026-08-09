@@ -144,46 +144,47 @@ class IQOptionReadonly:
         threading.Thread(target=self._otc_collector, daemon=True, name='otc-candle-collector').start()
 
     def _otc_collector(self):
-        global _collector_started
-        # Keep the authenticated websocket warm and continuously populate a
-        # bounded read-only cache. The HTTP workflow never has to fan out 172
-        # blocking get_candles calls against the IQ websocket.
+        # IQ websocket is not safe to flood with dozens of subscriptions.
+        # Rotate a small group and retain each completed group in cache.
+        configured = os.getenv('OTC_SYMBOLS', '').replace(',', ' ').split()
+        symbols = [self._norm_symbol(x) for x in configured]
+        if not symbols:
+            symbols = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC']
+        index = 0
         while True:
             try:
                 with _lock:
                     api = self.api if self.connected else None
                 if api is None:
                     time.sleep(5); continue
-                catalog = self.assets('binary')
-                symbols = []
-                for row in (catalog.get('assets') or []):
-                    name = self._norm_symbol(row.get('symbol', ''))
-                    if name.endswith('-OTC') and row.get('open', True) and name not in symbols:
-                        symbols.append(name)
-                configured = os.getenv('OTC_SYMBOLS', '').replace(',', ' ').split()
-                if configured:
-                    symbols = [self._norm_symbol(x) for x in configured]
-                # Subscribe in small groups; a faulty OTC symbol must not stop
-                # the rest of the universe from being refreshed.
-                for symbol in symbols:
+                batch = symbols[index:index + 8]
+                if not batch:
+                    index = 0; continue
+                subscribed = []
+                for symbol in batch:
                     for interval in (60, 300):
                         try:
                             api.start_candles_stream(symbol, interval, 120)
-                        except Exception:
-                            pass
-                for symbol in symbols:
+                        except Exception as exc:
+                            if 'websocket' in str(exc).lower() or 'closed' in str(exc).lower():
+                                raise
+                    subscribed.append(symbol)
+                for symbol in subscribed:
                     for interval in (60, 300):
-                        try:
-                            raw = api.get_realtime_candles(symbol, interval) or {}
-                            rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
-                            if rows:
-                                with _lock:
-                                    _candle_cache[(symbol, interval)] = sorted(rows, key=lambda x: x['timestamp'])[-120:]
-                        except Exception:
-                            pass
+                        raw = api.get_realtime_candles(symbol, interval) or {}
+                        rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
+                        if rows:
+                            with _lock:
+                                _candle_cache[(symbol, interval)] = sorted(rows, key=lambda x: x['timestamp'])[-120:]
+                index += 8
+                if index >= len(symbols):
+                    index = 0
                 time.sleep(2)
-            except Exception:
-                time.sleep(5)
+            except Exception as exc:
+                reason = str(exc)[:160]
+                if 'websocket' in reason.lower() or 'closed' in reason.lower():
+                    self._schedule_reconnect('IQ_OPTION_OTC_STREAM_DROPPED')
+                time.sleep(10)
 
     def connect(self):
         if self.connected and self.api: return True, 'CONNECTED_READ_ONLY'
