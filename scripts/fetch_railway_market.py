@@ -9,7 +9,7 @@ otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 
 
-def get(path, timeout=60, attempts=5):
+def get(path, timeout=60, attempts=3):
     last = None
     for attempt in range(attempts):
         try:
@@ -18,7 +18,7 @@ def get(path, timeout=60, attempts=5):
         except Exception as exc:
             last = exc
             if attempt + 1 < attempts:
-                time.sleep(min(8, 2 * (attempt + 1)))
+                time.sleep(2)
     raise last
 
 
@@ -106,7 +106,7 @@ for start in range(0, len(symbols), 2):
     chunk = symbols[start:start + 2]
     path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
     try:
-        payload = get(path, timeout=120, attempts=2)
+        payload = get(path, timeout=120, attempts=3)
         for symbol, data in (payload.get('symbols') or {}).items():
             if symbol not in collected or not isinstance(data, dict):
                 continue
@@ -116,10 +116,8 @@ for start in range(0, len(symbols), 2):
                     rows = rows.get('candles') or []
                 if not isinstance(rows, list):
                     rows = []
-                # Never overwrite a valid direct response with an empty batch response.
-            if rows or not collected[symbol][key]['candles']:
                 collected[symbol][key] = {'candles': rows, 'source': payload.get('source'),
-                        'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+                    'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
             # Some gateway sessions acknowledge the batch but return an empty
             # symbol payload. Fall back per symbol, without fabricating data.
             if not collected[symbol]['m1']['candles']:
@@ -127,7 +125,7 @@ for start in range(0, len(symbols), 2):
                     try:
                         direct = get('/api/market/candles?' + urllib.parse.urlencode({
                             'symbol': symbol, 'interval': interval, 'count': 120}),
-                            timeout=60, attempts=5)
+                            timeout=60, attempts=2)
                         rows = direct.get('candles') or []
                         if isinstance(rows, list):
                             collected[symbol][key] = {'candles': rows,
@@ -138,7 +136,30 @@ for start in range(0, len(symbols), 2):
     except Exception as exc:
         for symbol in chunk:
             errors[symbol] = type(exc).__name__
-    time.sleep(3)
+
+# Retry only symbols that remained empty after the first sweep. This is a
+# bounded recovery mode: it improves resilience without inventing candles.
+empty_symbols = [s for s, item in collected.items()
+                 if not ((item.get('m1') or {}).get('candles') or [])]
+if empty_symbols:
+    time.sleep(5)
+    for start in range(0, len(empty_symbols), 2):
+        chunk = empty_symbols[start:start + 2]
+        try:
+            payload = get('/api/market/snapshot_batch?' + urllib.parse.urlencode(
+                {'pairs': ','.join(chunk)}), timeout=120, attempts=3)
+            for symbol, data in (payload.get('symbols') or {}).items():
+                if symbol not in collected or not isinstance(data, dict):
+                    continue
+                for key, interval in (('m1', 60), ('m5', 300)):
+                    rows = data.get(key) or []
+                    if isinstance(rows, dict): rows = rows.get('candles') or []
+                    if isinstance(rows, list) and rows:
+                        collected[symbol][key] = {'candles': rows,
+                            'source': payload.get('source'), 'symbol': symbol,
+                            'interval_seconds': interval, 'read_only': True}
+        except Exception as exc:
+            for symbol in chunk: errors[f'retry:{symbol}'] = type(exc).__name__
 
 fresh = []
 for symbol, item in collected.items():
