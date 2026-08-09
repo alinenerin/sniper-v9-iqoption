@@ -95,7 +95,8 @@ if not fresh:
     raise RuntimeError(f'NO_FRESH_RAILWAY_CANDLES:age_seconds={max(ages) if ages else None}:max_age_seconds={max_age}')
 
 out = {'source': base, 'read_only': True, 'health': health,
-       'assets': [], 'symbols': {}, 'fetch_mode': 'per_symbol_direct',
+       'assets': [], 'symbols': {}, 'otc_symbols': [s for s in symbols if s.upper().endswith('-OTC')],
+       'fetch_mode': 'per_symbol_direct',
        'fresh_symbols': fresh, 'fetch_errors': errors}
 for symbol, item in collected.items():
     out['symbols'][symbol] = {
