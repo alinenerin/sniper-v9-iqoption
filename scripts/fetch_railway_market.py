@@ -1,5 +1,6 @@
 """Fetch fresh read-only candles from Railway, preferring per-symbol endpoints."""
 import json, os, time, urllib.parse, urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
@@ -62,22 +63,24 @@ if health.get('status') != 'connected':
 # Fetch each requested asset independently and preserve missing assets as blocked data.
 collected = {}
 errors = {}
-for symbol in symbols:
-    item = {}
+def fetch_symbol(symbol):
+    item, local_errors = {}, {}
     for interval, key, count in ((60, 'm1', 1000), (300, 'm5', 300)):
-        path = '/api/market/candles?' + urllib.parse.urlencode({
-            'symbol': symbol, 'interval': interval, 'count': count})
+        path = '/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'count': count})
         try:
             payload = get(path, timeout=60)
             rows = payload.get('candles') or []
-            item[key] = {'candles': rows, 'source': payload.get('source'),
-                         'symbol': payload.get('symbol', symbol),
-                         'interval_seconds': payload.get('interval_seconds', interval),
-                         'read_only': payload.get('read_only', True)}
+            item[key] = {'candles': rows, 'source': payload.get('source'), 'symbol': payload.get('symbol', symbol), 'interval_seconds': payload.get('interval_seconds', interval), 'read_only': payload.get('read_only', True)}
         except Exception as exc:
             item[key] = {'candles': [], 'error': type(exc).__name__, 'read_only': True}
-            errors[f'{symbol}:{interval}'] = type(exc).__name__
-    collected[symbol] = item
+            local_errors[f'{symbol}:{interval}'] = type(exc).__name__
+    return symbol, item, local_errors
+with ThreadPoolExecutor(max_workers=min(8, max(1, len(symbols)))) as pool:
+    futures = [pool.submit(fetch_symbol, symbol) for symbol in symbols]
+    for future in as_completed(futures):
+        symbol, item, local_errors = future.result()
+        collected[symbol] = item
+        errors.update(local_errors)
 
 fresh = []
 for symbol, item in collected.items():
