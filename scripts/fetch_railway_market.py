@@ -85,8 +85,8 @@ else:
 # websocket session and avoids 2 HTTP reconnect-sensitive calls per symbol.
 collected = {s: {'m1': {'candles': []}, 'm5': {'candles': []}} for s in symbols}
 errors = {}
-for start in range(0, len(symbols), 10):
-    chunk = symbols[start:start + 10]
+for start in range(0, len(symbols), 2):
+    chunk = symbols[start:start + 2]
     path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
     try:
         payload = get(path, timeout=120, attempts=2)
