@@ -88,6 +88,20 @@ else:
 # websocket session and avoids 2 HTTP reconnect-sensitive calls per symbol.
 collected = {s: {'m1': {'candles': []}, 'm5': {'candles': []}} for s in symbols}
 errors = {}
+# Establish a fresh baseline from the four liquid OTC charts before the
+# broad catalog scan; this prevents a transient catalog batch from producing
+# a false global "no candles" result.
+for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC') if s in collected]:
+    for interval, key in ((60, 'm1'), (300, 'm5')):
+        try:
+            direct = get('/api/market/candles?' + urllib.parse.urlencode({
+                'symbol': symbol, 'interval': interval, 'count': 120}), timeout=60, attempts=3)
+            rows = direct.get('candles') or []
+            if isinstance(rows, list) and rows:
+                collected[symbol][key] = {'candles': rows, 'source': direct.get('source'),
+                    'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+        except Exception as exc:
+            errors[f'{symbol}:{interval}'] = type(exc).__name__
 for start in range(0, len(symbols), 2):
     chunk = symbols[start:start + 2]
     path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
