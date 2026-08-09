@@ -9,6 +9,11 @@ otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 
 
+def get(path, timeout=60):
+    with urllib.request.urlopen(base + path, timeout=timeout) as response:
+        return json.load(response)
+
+
 def discover_symbols():
     if not any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested):
         return requested
@@ -45,11 +50,6 @@ elif include_otc:
     symbols = base_symbols + [s + '-OTC' for s in base_symbols]
 else:
     symbols = base_symbols
-
-
-def get(path, timeout=60):
-    with urllib.request.urlopen(base + path, timeout=timeout) as response:
-        return json.load(response)
 
 
 health = get('/health')
