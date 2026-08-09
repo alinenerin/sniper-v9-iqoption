@@ -169,31 +169,23 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
 
 
 def main() -> int:
-    requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
+    symbols = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
     by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
-    if any(s.upper() in ("ALL", "ALL_AVAILABLE", "*") for s in requested):
-        symbols = list(by_symbol.keys())
-        if otc_only:
-            symbols = [s for s in symbols if s.endswith("-OTC")]
-    else:
-        symbols = requested
+    otc_symbols = market_data.get("otc_symbols") or [s if s.endswith("-OTC") else s + "-OTC" for s in symbols]
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
     for symbol in symbols:
         if not otc_only:
             forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
             binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-        if include_otc:
-            otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
+    if include_otc:
+        for otc_symbol in otc_symbols:
             binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
 
-    ranked = [a for a in binary if isinstance(a.get("score"), (int, float))]
-    ranked.sort(key=lambda a: float(a["score"]), reverse=True)
-    best_candidate = ranked[0] if ranked else None
     result = {
         "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
@@ -203,8 +195,6 @@ def main() -> int:
         "market_data": market_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
-        "best_candidate": best_candidate,
-        "best_candidate_note": "Ranking only; does not approve a trade. Score and all vetoes remain mandatory.",
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
     }
     Path("reports").mkdir(exist_ok=True)
