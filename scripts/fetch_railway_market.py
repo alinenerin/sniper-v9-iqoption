@@ -95,6 +95,10 @@ for start in range(0, len(symbols), 10):
                 continue
             for key, interval in (('m1', 60), ('m5', 300)):
                 rows = data.get(key) or []
+                if isinstance(rows, dict):
+                    rows = rows.get('candles') or []
+                if not isinstance(rows, list):
+                    rows = []
                 collected[symbol][key] = {'candles': rows, 'source': payload.get('source'),
                     'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
     except Exception as exc:
