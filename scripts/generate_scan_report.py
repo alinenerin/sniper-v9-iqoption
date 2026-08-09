@@ -169,22 +169,35 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
 
 
 def main() -> int:
-    symbols = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
+    requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
+    macro_path = Path("reports/macro_data.json")
+    macro_data = json.loads(macro_path.read_text()) if macro_path.exists() else {"ok": False, "reason": "TRADINGVIEW_MACRO_REPORT_MISSING", "symbols": {}}
     by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
-    otc_symbols = market_data.get("otc_symbols") or [s if s.endswith("-OTC") else s + "-OTC" for s in symbols]
+    if any(x.upper() in ("ALL", "ALL_AVAILABLE", "*") for x in requested):
+        symbols = list(by_symbol)
+        if otc_only:
+            symbols = [x for x in symbols if str(x).upper().endswith("-OTC")]
+        else:
+            symbols = [x for x in symbols if not str(x).upper().endswith("-OTC")]
+    else:
+        symbols = requested
+        if otc_only:
+            symbols = [x if x.upper().endswith("-OTC") else x.upper() + "-OTC" for x in symbols]
     forex, binary = [], []
-    observed_at = datetime.now(timezone.utc)
-    for symbol in symbols:
-        if not otc_only:
-            forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-            binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-    if include_otc:
-        for otc_symbol in otc_symbols:
-            binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
+    if otc_only:
+        for symbol in symbols:
+            binary.append(_analyse("otc", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
+    else:
+        for symbol in symbols:
+            forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
+            binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
+            if include_otc:
+                otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
+                binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles"))))
 
     result = {
         "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
