@@ -15,13 +15,22 @@ def get(path, timeout=60):
 
 
 def discover_symbols():
-    if not any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested):
-        return requested
-    payload = get('/api/market/assets?instrument=all', timeout=60)
-    # Assets endpoint also contains stocks/crypto. Keep currency pairs only:
-    # six-letter FX symbols, active and binary, with OTC suffix in OTC mode.
+    # Assets may already be supplied by the scheduler. Sanitize that list too;
+    # never let stocks/crypto leak into an FX-only paper scan.
     import re
     fx_codes = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
+    if not any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested):
+        cleaned = []
+        for raw in requested:
+            name = raw.upper().replace('_OTC', '-OTC')
+            base_name = name[:-4] if name.endswith('-OTC') else name
+            if re.fullmatch(r'[A-Z]{6}', base_name) and base_name[:3] in fx_codes and base_name[3:] in fx_codes:
+                name = base_name + '-OTC' if otc_only else base_name
+                if name not in cleaned: cleaned.append(name)
+        if not cleaned: raise RuntimeError('NO_VALID_FX_SYMBOLS')
+        return cleaned
+    payload = get('/api/market/assets?instrument=all', timeout=60)
+    # Assets endpoint also contains stocks/crypto. Keep currency pairs only.
     rows = payload.get('assets', []) if isinstance(payload, dict) else []
     normalized = []
     for row in rows:
@@ -42,6 +51,10 @@ def discover_symbols():
     return bases or [n for n in normalized if not n.endswith('-OTC')] or requested
 
 
+health = get('/health')
+if health.get('status') != 'connected':
+    raise RuntimeError('RAILWAY_NOT_CONNECTED')
+
 # Discovery runs only after the gateway is functionally connected.
 base_symbols = discover_symbols()
 if otc_only:
@@ -50,11 +63,6 @@ elif include_otc:
     symbols = base_symbols + [s + '-OTC' for s in base_symbols]
 else:
     symbols = base_symbols
-
-
-health = get('/health')
-if health.get('status') != 'connected':
-    raise RuntimeError('RAILWAY_NOT_CONNECTED')
 
 # The batch endpoint can remain stale while the direct per-symbol endpoint is live.
 # Fetch each requested asset independently and preserve missing assets as blocked data.
