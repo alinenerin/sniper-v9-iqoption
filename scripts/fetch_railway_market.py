@@ -1,6 +1,5 @@
 """Fetch fresh read-only candles from Railway, preferring per-symbol endpoints."""
 import json, os, time, urllib.parse, urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
@@ -13,6 +12,7 @@ max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 def get(path, timeout=60):
     with urllib.request.urlopen(base + path, timeout=timeout) as response:
         return json.load(response)
+
 
 def discover_symbols():
     if not any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested):
@@ -34,6 +34,22 @@ def discover_symbols():
             normalized.append(name)
     if otc_only:
         if not normalized:
+            # Asset-list timeout/empty responses are handled by probing a broad
+            # catalog through the direct candles endpoint in parallel.
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            catalog = 'EURUSD GBPUSD USDJPY AUDUSD USDCHF USDCAD NZDUSD EURGBP EURJPY GBPJPY AUDJPY CADJPY CHFJPY NZDJPY EURAUD EURCAD EURNZD GBPAUD GBPCAD GBPCHF AUDCAD AUDCHF AUDNZD CADCHF NZDCAD USDNOK USDSEK USDSGD USDHKD XAUUSD'.split()
+            def probe(base_symbol):
+                try:
+                    p = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': base_symbol + '-OTC', 'interval': 60, 'count': 3}), timeout=15)
+                    rows = p.get('candles') or []
+                    if rows and rows[-1].get('timestamp') is not None and time.time() - float(rows[-1]['timestamp']) <= max_age:
+                        return base_symbol + '-OTC'
+                except Exception:
+                    pass
+                return None
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                normalized = sorted(x for x in (f.result() for f in as_completed([pool.submit(probe, s) for s in catalog])) if x)
+        if not normalized:
             raise RuntimeError('NO_AVAILABLE_OTC_SYMBOLS')
         return normalized
     bases = [n[:-4] for n in normalized if n.endswith('-OTC')]
@@ -50,11 +66,6 @@ else:
     symbols = base_symbols
 
 
-def get(path, timeout=60):
-    with urllib.request.urlopen(base + path, timeout=timeout) as response:
-        return json.load(response)
-
-
 health = get('/health')
 if health.get('status') != 'connected':
     raise RuntimeError('RAILWAY_NOT_CONNECTED')
@@ -63,24 +74,22 @@ if health.get('status') != 'connected':
 # Fetch each requested asset independently and preserve missing assets as blocked data.
 collected = {}
 errors = {}
-def fetch_symbol(symbol):
-    item, local_errors = {}, {}
+for symbol in symbols:
+    item = {}
     for interval, key, count in ((60, 'm1', 1000), (300, 'm5', 300)):
-        path = '/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'count': count})
+        path = '/api/market/candles?' + urllib.parse.urlencode({
+            'symbol': symbol, 'interval': interval, 'count': count})
         try:
             payload = get(path, timeout=60)
             rows = payload.get('candles') or []
-            item[key] = {'candles': rows, 'source': payload.get('source'), 'symbol': payload.get('symbol', symbol), 'interval_seconds': payload.get('interval_seconds', interval), 'read_only': payload.get('read_only', True)}
+            item[key] = {'candles': rows, 'source': payload.get('source'),
+                         'symbol': payload.get('symbol', symbol),
+                         'interval_seconds': payload.get('interval_seconds', interval),
+                         'read_only': payload.get('read_only', True)}
         except Exception as exc:
             item[key] = {'candles': [], 'error': type(exc).__name__, 'read_only': True}
-            local_errors[f'{symbol}:{interval}'] = type(exc).__name__
-    return symbol, item, local_errors
-with ThreadPoolExecutor(max_workers=min(8, max(1, len(symbols)))) as pool:
-    futures = [pool.submit(fetch_symbol, symbol) for symbol in symbols]
-    for future in as_completed(futures):
-        symbol, item, local_errors = future.result()
-        collected[symbol] = item
-        errors.update(local_errors)
+            errors[f'{symbol}:{interval}'] = type(exc).__name__
+    collected[symbol] = item
 
 fresh = []
 for symbol, item in collected.items():
@@ -102,8 +111,7 @@ if not fresh:
     raise RuntimeError(f'NO_FRESH_RAILWAY_CANDLES:age_seconds={max(ages) if ages else None}:max_age_seconds={max_age}')
 
 out = {'source': base, 'read_only': True, 'health': health,
-       'assets': [], 'symbols': {}, 'otc_symbols': [s for s in symbols if s.upper().endswith('-OTC')],
-       'fetch_mode': 'per_symbol_direct',
+       'assets': [], 'symbols': {}, 'fetch_mode': 'per_symbol_direct',
        'fresh_symbols': fresh, 'fetch_errors': errors}
 for symbol, item in collected.items():
     out['symbols'][symbol] = {
