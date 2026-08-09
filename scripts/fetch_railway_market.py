@@ -81,26 +81,25 @@ elif include_otc:
 else:
     symbols = base_symbols
 
-# The batch endpoint can remain stale while the direct per-symbol endpoint is live.
-# Fetch each requested asset independently and preserve missing assets as blocked data.
-collected = {}
+# Use the gateway batch route in small chunks. It keeps one authenticated
+# websocket session and avoids 2 HTTP reconnect-sensitive calls per symbol.
+collected = {s: {'m1': {'candles': []}, 'm5': {'candles': []}} for s in symbols}
 errors = {}
-for symbol in symbols:
-    item = {}
-    for interval, key, count in ((60, 'm1', 1000), (300, 'm5', 300)):
-        path = '/api/market/candles?' + urllib.parse.urlencode({
-            'symbol': symbol, 'interval': interval, 'count': count})
-        try:
-            payload = get(path, timeout=60)
-            rows = payload.get('candles') or []
-            item[key] = {'candles': rows, 'source': payload.get('source'),
-                         'symbol': payload.get('symbol', symbol),
-                         'interval_seconds': payload.get('interval_seconds', interval),
-                         'read_only': payload.get('read_only', True)}
-        except Exception as exc:
-            item[key] = {'candles': [], 'error': type(exc).__name__, 'read_only': True}
-            errors[f'{symbol}:{interval}'] = type(exc).__name__
-    collected[symbol] = item
+for start in range(0, len(symbols), 10):
+    chunk = symbols[start:start + 10]
+    path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
+    try:
+        payload = get(path, timeout=120, attempts=2)
+        for symbol, data in (payload.get('symbols') or {}).items():
+            if symbol not in collected or not isinstance(data, dict):
+                continue
+            for key, interval in (('m1', 60), ('m5', 300)):
+                rows = data.get(key) or []
+                collected[symbol][key] = {'candles': rows, 'source': payload.get('source'),
+                    'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+    except Exception as exc:
+        for symbol in chunk:
+            errors[symbol] = type(exc).__name__
 
 fresh = []
 for symbol, item in collected.items():
