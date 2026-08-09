@@ -86,6 +86,18 @@ def _timing_fields(candles: list[dict[str, Any]], observed_at: datetime) -> dict
             'candle_age_seconds': round(age, 3) if age is not None else None}
 
 
+def _shadow_policy(market: str, score: float | None, direction: str | None, candles: list[dict[str, Any]]) -> dict[str, Any]:
+    """Shadow lane only; never changes official approval or execution."""
+    if market != "otc":
+        return {}
+    value = float(score or 0)
+    eligible = bool(candles) and 90.0 <= value < 95.0 and direction in ("CALL", "PUT")
+    return {"lane": "shadow", "minimum_score": 90.0, "official_minimum_score": 95.0,
+            "eligible": eligible, "requires_live_timing": True,
+            "execution_allowed": False,
+            "reason": "SCORE_90_94_REQUIRES_LIVE_TIMING" if eligible else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION"}
+
+
 def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
     direction, source = _direction(market, result, candles)
     timing = _timing_fields(candles, observed_at)
@@ -115,7 +127,8 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 "chart_evidence": {"ema_cascade": "engine", "algorithmic_cycle": "blocked",
                                    "wick_rejection": "blocked", "previous_candle": "blocked",
                                    "vsa": "blocked", "m5_confirmation": "blocked"} if market == "otc" else {},
-                "components": components, "execution_allowed": False, **timing}
+                "components": components, "execution_allowed": False,
+                "shadow_policy": _shadow_policy(market, None, None, candles), **timing}
     try:
         if market == "forex":
             result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
@@ -130,7 +143,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         if market == "otc":
             # OTC IQ chart is authoritative; Darts/FinBERT are context only.
             chart_components.update(_auxiliary(symbol))
-        return {
+        result = {
             "market": market, "symbol": symbol, "status": "inference_ok",
             "approved": consultation.approved, "score": consultation.score,
             "probability": consultation.probability,
@@ -144,6 +157,10 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             "execution_allowed": False,
             **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at),
         }
+        if market == "otc":
+            direction = result.get("direction_calculated")
+            result["shadow_policy"] = _shadow_policy(market, result.get("score"), direction, candles)
+        return result
     except Exception as exc:
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
         return {"market": market, "symbol": symbol, "status": "blocked",
