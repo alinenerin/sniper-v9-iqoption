@@ -11,6 +11,8 @@ _start_once = False
 _patched = False
 _reconnect_lock = threading.Lock()
 _watchdog_started = False
+_candle_cache = {}
+_collector_started = False
 
 
 def _bounded_call(fn, *args, timeout=8):
@@ -111,6 +113,7 @@ class IQOptionReadonly:
             with _lock:
                 self.api, self.connected, _client = api, True, self
                 _state.update(status='connected', reason=None, connected_at=time.time())
+                self._start_otc_collector()
         except Exception as exc:
             _state.update(status='error', reason=f'{type(exc).__name__}: {exc}'[:180])
             _start_once=False
@@ -128,6 +131,60 @@ class IQOptionReadonly:
                 _state.update(status='reconnecting', reason=reason)
             threading.Thread(target=self._connect_worker, daemon=True, name='iqoption-reconnect').start()
 
+    @staticmethod
+    def _norm_symbol(symbol):
+        return str(symbol).upper().replace('/', '').replace('_OTC', '-OTC')
+
+    def _start_otc_collector(self):
+        global _collector_started
+        with _lock:
+            if _collector_started:
+                return
+            _collector_started = True
+        threading.Thread(target=self._otc_collector, daemon=True, name='otc-candle-collector').start()
+
+    def _otc_collector(self):
+        global _collector_started
+        # Keep the authenticated websocket warm and continuously populate a
+        # bounded read-only cache. The HTTP workflow never has to fan out 172
+        # blocking get_candles calls against the IQ websocket.
+        while True:
+            try:
+                with _lock:
+                    api = self.api if self.connected else None
+                if api is None:
+                    time.sleep(5); continue
+                catalog = self.assets('binary')
+                symbols = []
+                for row in (catalog.get('assets') or []):
+                    name = self._norm_symbol(row.get('symbol', ''))
+                    if name.endswith('-OTC') and row.get('open', True) and name not in symbols:
+                        symbols.append(name)
+                configured = os.getenv('OTC_SYMBOLS', '').replace(',', ' ').split()
+                if configured:
+                    symbols = [self._norm_symbol(x) for x in configured]
+                # Subscribe in small groups; a faulty OTC symbol must not stop
+                # the rest of the universe from being refreshed.
+                for symbol in symbols:
+                    for interval in (60, 300):
+                        try:
+                            api.start_candles_stream(symbol, interval, 120)
+                        except Exception:
+                            pass
+                for symbol in symbols:
+                    for interval in (60, 300):
+                        try:
+                            raw = api.get_realtime_candles(symbol, interval) or {}
+                            rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
+                            if rows:
+                                with _lock:
+                                    _candle_cache[(symbol, interval)] = sorted(rows, key=lambda x: x['timestamp'])[-120:]
+                        except Exception:
+                            pass
+                time.sleep(2)
+            except Exception:
+                time.sleep(5)
+
     def connect(self):
         if self.connected and self.api: return True, 'CONNECTED_READ_ONLY'
         self._schedule_reconnect(_state.get('reason') or 'IQ_OPTION_RECONNECT_REQUIRED')
@@ -137,7 +194,11 @@ class IQOptionReadonly:
         if not self.connected or not self.api:
             return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
-            symbol = str(symbol).upper().replace('/', '')
+            symbol = self._norm_symbol(symbol)
+            with _lock:
+                cached = list(_candle_cache.get((symbol, int(interval)), []))
+            if cached:
+                return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': cached[-max(1, min(int(count), 3000)):], 'source': 'IQ_OPTION_DIRECT_STREAM_CACHE', 'read_only': True}
             # The Webshare websocket can stall on unsupported/OTC symbols.
             # Bound each SDK call so one symbol cannot hang the whole batch.
             raw = _bounded_call(self.api.get_candles, symbol, int(interval), max(1, min(int(count), 3000)), time.time(), timeout=25)
