@@ -9,11 +9,6 @@ otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 
 
-def get(path, timeout=60):
-    with urllib.request.urlopen(base + path, timeout=timeout) as response:
-        return json.load(response)
-
-
 def discover_symbols():
     if not any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested):
         return requested
@@ -21,6 +16,7 @@ def discover_symbols():
     # Assets endpoint also contains stocks/crypto. Keep currency pairs only:
     # six-letter FX symbols, active and binary, with OTC suffix in OTC mode.
     import re
+    fx_codes = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
     rows = payload.get('assets', []) if isinstance(payload, dict) else []
     normalized = []
     for row in rows:
@@ -30,25 +26,10 @@ def discover_symbols():
             continue
         name = str(row.get('symbol') or row.get('name') or '').upper().split('.')[-1].replace('/', '')
         if '_OTC' in name: name = name.replace('_OTC', '-OTC')
-        if re.fullmatch(r'[A-Z]{6}(-OTC)?', name) and name not in normalized:
+        base_name = name[:-4] if name.endswith('-OTC') else name
+        if (re.fullmatch(r'[A-Z]{6}', base_name) and base_name[:3] in fx_codes and base_name[3:] in fx_codes and name not in normalized):
             normalized.append(name)
     if otc_only:
-        if not normalized:
-            # Asset-list timeout/empty responses are handled by probing a broad
-            # catalog through the direct candles endpoint in parallel.
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            catalog = 'EURUSD GBPUSD USDJPY AUDUSD USDCHF USDCAD NZDUSD EURGBP EURJPY GBPJPY AUDJPY CADJPY CHFJPY NZDJPY EURAUD EURCAD EURNZD GBPAUD GBPCAD GBPCHF AUDCAD AUDCHF AUDNZD CADCHF NZDCAD USDNOK USDSEK USDSGD USDHKD XAUUSD'.split()
-            def probe(base_symbol):
-                try:
-                    p = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': base_symbol + '-OTC', 'interval': 60, 'count': 3}), timeout=15)
-                    rows = p.get('candles') or []
-                    if rows and rows[-1].get('timestamp') is not None and time.time() - float(rows[-1]['timestamp']) <= max_age:
-                        return base_symbol + '-OTC'
-                except Exception:
-                    pass
-                return None
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                normalized = sorted(x for x in (f.result() for f in as_completed([pool.submit(probe, s) for s in catalog])) if x)
         if not normalized:
             raise RuntimeError('NO_AVAILABLE_OTC_SYMBOLS')
         return normalized
@@ -64,6 +45,11 @@ elif include_otc:
     symbols = base_symbols + [s + '-OTC' for s in base_symbols]
 else:
     symbols = base_symbols
+
+
+def get(path, timeout=60):
+    with urllib.request.urlopen(base + path, timeout=timeout) as response:
+        return json.load(response)
 
 
 health = get('/health')
