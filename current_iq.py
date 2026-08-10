@@ -10,12 +10,9 @@ _lock = threading.RLock()
 _start_once = False
 _patched = False
 _reconnect_lock = threading.Lock()
-_sdk_lock = threading.RLock()
-_last_io = time.time()
 _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
-_STREAM_ENABLED = os.getenv('IQ_OTC_STREAM_ENABLED', 'false').lower() in ('1','true','yes')
 _stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'collector_error': None, 'polls': 0}
 
 _FX_CODES = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
@@ -27,19 +24,16 @@ def _is_fx_otc(symbol):
 
 
 def _bounded_call(fn, *args, timeout=8):
-    # All IQ SDK calls share one serialized lane. The websocket client is not thread-safe.
-    global _last_io
-    with _sdk_lock:
-        pool = ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(fn, *args)
-        try:
-            result = future.result(timeout=timeout)
-            _last_io = time.time()
-            return result
-        except (FutureTimeout, Exception):
-            return None
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(fn, *args)
+    try:
+        return future.result(timeout=timeout)
+    except (FutureTimeout, Exception):
+        # SDK websocket calls may raise on partial/None IQ responses; callers
+        # must be able to use their fallback parser instead of aborting.
+        return None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 class IQOptionReadonly:
     def __init__(self):
@@ -76,9 +70,6 @@ class IQOptionReadonly:
                 continue
             if api is None:
                 continue
-            if time.time() - _last_io > 300:
-                _state.update(status='error', reason='IQ_OPTION_NO_IO_ACTIVITY_300S')
-                os._exit(75)
             check = getattr(api, 'check_connect', None)
             if callable(check):
                 alive = _bounded_call(check, timeout=8)
@@ -187,15 +178,6 @@ class IQOptionReadonly:
                     api = self.api if self.connected else None
                 if api is None:
                     time.sleep(5); continue
-                if not _STREAM_ENABLED:
-                    # Stable daily mode: keep one authenticated IQ session and
-                    # let candle HTTP requests use the serialized SDK lane. Do
-                    # not subscribe to dozens of OTC streams by default.
-                    alive = _bounded_call(getattr(api, 'check_connect', lambda: False), timeout=10)
-                    if alive is False or alive is None:
-                        self._schedule_reconnect('IQ_OPTION_KEEPALIVE_FAILED')
-                    time.sleep(30)
-                    continue
                 if not discovered:
                     try:
                         catalog = self.assets('binary')
@@ -215,11 +197,7 @@ class IQOptionReadonly:
                             _stream_diag['discovery']['fx_open_count'] = len(found)
                         if found:
                             symbols = list(dict.fromkeys(found)); discovered = True
-                        else:
-                            symbols = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC']; discovered = True
-                            _stream_diag['discovery']['fallback'] = 'priority_seed'
                     except Exception as exc:
-                        symbols = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC']; discovered = True
                         with _lock:
                             _stream_diag['discovery'] = {'ok': False, 'error': f'{type(exc).__name__}:{str(exc)[:160]}'}
 
@@ -235,7 +213,7 @@ class IQOptionReadonly:
                 for symbol in batch:
                     for interval in (60, 300):
                         try:
-                            _bounded_call(api.start_candles_stream, symbol, interval, 120, timeout=10)
+                            api.start_candles_stream(symbol, interval, 120)
                             with _lock:
                                 _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
                         except Exception as exc:
@@ -248,10 +226,14 @@ class IQOptionReadonly:
                 for _ in range(3):
                     for symbol in batch:
                         for interval in (60, 300):
-                            raw = _bounded_call(api.get_realtime_candles, symbol, interval, timeout=10) or {}
+                            raw = api.get_realtime_candles(symbol, interval) or {}
                             rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
+                            # Some OTC symbols accept subscription but emit no
+                            # realtime map. Fall back to bounded REST candles.
+                            if not rows:
+                                fallback = _bounded_call(api.get_candles, symbol, interval, 120, time.time(), timeout=15)
+                                rows = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in (fallback or [])]
                             if rows:
-                                _last_io = time.time()
                                 with _lock:
                                     _stream_diag['updated'][f'{symbol}:{interval}'] = float(max(rows, key=lambda x: x['timestamp']).get('timestamp', 0))
                                     _stream_diag['polls'] += 1
@@ -367,9 +349,12 @@ class IQOptionReadonly:
         # get_all_init_v2, whose websocket response can stall behind Webshare.
         # Asset catalog/payouts are advisory. A transient empty catalog must
         # never prevent the authoritative candle requests from running.
-        # Catalog is advisory and must not compete with the candle websocket.
-        assets=[]
+        asset_response=self.assets('all')
+        assets=asset_response.get('assets',[]) if asset_response.get('ok') else []
         payouts={}
+        for item in assets:
+            if item.get('payout') is not None:
+                payouts.setdefault(item.get('symbol'),{})[item.get('instrument')]=item.get('payout')
         # iqoptionapi's websocket client is not thread-safe: process small batches
         # sequentially to avoid deadlocks, while keeping one external gateway call.
         data={}
