@@ -37,14 +37,14 @@ def discover_symbols():
                 if name not in cleaned: cleaned.append(name)
         if not cleaned: raise RuntimeError('NO_VALID_FX_SYMBOLS')
         return cleaned
-    payload = get('/api/market/assets?instrument=binary' if otc_only else '/api/market/assets?instrument=all', timeout=60)
+    payload = get('/api/market/assets?instrument=all', timeout=60)
     # Assets endpoint also contains stocks/crypto. Keep currency pairs only.
     rows = payload.get('assets', []) if isinstance(payload, dict) else []
     normalized = []
     for row in rows:
         if not isinstance(row, dict) or row.get('open') is False:
             continue
-        if row.get('instrument') not in (None, 'binary'):
+        if not otc_only and row.get('instrument') not in (None, 'binary'):
             continue
         name = str(row.get('symbol') or row.get('name') or '').upper().split('.')[-1].replace('/', '')
         if '_OTC' in name: name = name.replace('_OTC', '-OTC')
