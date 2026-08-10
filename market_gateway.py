@@ -15,8 +15,6 @@ class Handler(BaseHTTPRequestHandler):
         q=parse_qs(urlparse(self.path).query)
         if self.path.startswith('/health'):
             s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-direct-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_DIRECT','gateway_version':'batch-assets-v4-direct','connection':s}); return
-        if self.path.startswith('/api/market/collector'):
-            self._send(SESSION.collector_status()); return
         if self.path.startswith('/api/market/macro'):
             # Keep macro isolated from candle boot; use the fixed TradingView
             # source directly so this route works even on a minimal gateway image.
@@ -57,3 +55,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     port=int(os.getenv('PORT','8080')); ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
+
+
