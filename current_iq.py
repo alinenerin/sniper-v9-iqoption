@@ -221,7 +221,7 @@ class IQOptionReadonly:
                     for symbol in batch:
                         for interval in (60, 300):
                             try:
-                                api.start_candles_stream(symbol, interval, 120)
+                                _bounded_call(api.start_candles_stream, symbol, interval, 120, timeout=10)
                                 with _lock:
                                     _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
                             except Exception as exc:
