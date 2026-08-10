@@ -34,13 +34,14 @@ def fetch_symbol_candles(symbol, interval, count=120):
     query = urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'count': count})
     direct = get('/api/market/candles?' + query, timeout=60, attempts=3)
     rows = direct.get('candles') or []
-    if isinstance(rows, list) and rows:
+    minimum = 120 if int(interval) == 60 else 30
+    if isinstance(rows, list) and len(rows) >= minimum:
         return rows, direct.get('source')
     # Apply the same bounded fallback to real binary pairs; this prevents
     # an empty historical response from becoming a partial scan there too.
     stream = get('/api/market/stream?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'maxdict': count}), timeout=90, attempts=3)
     rows = stream.get('candles') or []
-    if isinstance(rows, list) and rows:
+    if isinstance(rows, list) and len(rows) >= minimum:
         return rows, stream.get('source')
     return [], direct.get('source')
 
