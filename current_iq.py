@@ -15,6 +15,7 @@ _last_io = time.time()
 _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
+_STREAM_ENABLED = os.getenv('IQ_OTC_STREAM_ENABLED', 'false').lower() in ('1','true','yes')
 _stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'collector_error': None, 'polls': 0}
 
 _FX_CODES = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
@@ -186,6 +187,15 @@ class IQOptionReadonly:
                     api = self.api if self.connected else None
                 if api is None:
                     time.sleep(5); continue
+                if not _STREAM_ENABLED:
+                    # Stable daily mode: keep one authenticated IQ session and
+                    # let candle HTTP requests use the serialized SDK lane. Do
+                    # not subscribe to dozens of OTC streams by default.
+                    alive = _bounded_call(getattr(api, 'check_connect', lambda: False), timeout=10)
+                    if alive is False or alive is None:
+                        self._schedule_reconnect('IQ_OPTION_KEEPALIVE_FAILED')
+                    time.sleep(30)
+                    continue
                 if not discovered:
                     try:
                         catalog = self.assets('binary')
