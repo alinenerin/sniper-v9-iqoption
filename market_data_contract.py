@@ -1,44 +1,60 @@
-"""Provider-neutral candle contract for read-only market scans."""
+"""Read-only market-data contract shared by Gateway and data-only tests."""
 from __future__ import annotations
 import math, time
+from dataclasses import dataclass, asdict
+from typing import Any
 
-class CandleContractError(ValueError):
-    pass
+MINIMUMS = {60: 120, 300: 30}
+TIMEFRAME_NAMES = {60: "M1", 300: "M5"}
 
-def normalize_and_validate(rows, symbol: str, interval_seconds: int):
-    if not isinstance(rows, list):
-        raise CandleContractError(f"CANDLES_NOT_LIST:{symbol}:{interval_seconds}")
-    out=[]; seen=set(); previous=None
-    for i, raw in enumerate(rows):
-        if not isinstance(raw, dict): raise CandleContractError(f"CANDLE_NOT_OBJECT:{symbol}:{i}")
-        def num(name, *aliases):
-            value=raw.get(name)
-            if value is None:
-                for alias in aliases:
-                    value=raw.get(alias)
-                    if value is not None: break
-            if value is None or isinstance(value, bool): raise CandleContractError(f"MISSING_{name}:{symbol}:{i}")
-            try: value=float(value)
-            except Exception: raise CandleContractError(f"INVALID_{name}:{symbol}:{i}")
-            if not math.isfinite(value): raise CandleContractError(f"NONFINITE_{name}:{symbol}:{i}")
-            return value
-        ts=num('timestamp','from','time')
-        if ts > 10_000_000_000: ts /= 1000.0
-        if ts <= 0: raise CandleContractError(f"INVALID_TIMESTAMP:{symbol}:{i}")
-        o=num('open'); h=num('high','max'); l=num('low','min'); c=num('close')
-        if min(o,h,l,c) <= 0: raise CandleContractError(f"NONPOSITIVE_OHLC:{symbol}:{i}")
-        if h < max(o,c,l) or l > min(o,c,h): raise CandleContractError(f"INVALID_OHLC:{symbol}:{i}")
-        key=round(ts, 6)
-        if key in seen: raise CandleContractError(f"DUPLICATE_TIMESTAMP:{symbol}:{i}")
-        if previous is not None and ts <= previous: raise CandleContractError(f"NOT_CHRONOLOGICAL:{symbol}:{i}")
-        seen.add(key); previous=ts
-        vol=raw.get('volume',0)
-        try: vol=float(vol or 0)
-        except Exception: vol=0.0
-        out.append({'symbol':symbol,'timeframe':f'M{1 if interval_seconds==60 else 5 if interval_seconds==300 else interval_seconds//60}', 'timestamp':ts,'open':o,'high':h,'low':l,'close':c,'volume':vol})
-    return out
+@dataclass
+class CandleValidation:
+    status: str
+    reason: str | None
+    received: int
+    valid: int
+    duplicate_count: int
+    invalid_count: int
+    gaps: int
+    latest_timestamp: float | None
+    age_seconds: float | None
+    freshness_status: str
 
-def freshness(rows, max_age_seconds=900, now=None):
-    if not rows: return False, None
-    age=(time.time() if now is None else now)-rows[-1]['timestamp']
-    return age <= max_age_seconds, age
+    def to_dict(self):
+        return asdict(self)
+
+def _num(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+def validate_candles(rows: Any, interval: int, required: int, now: float | None = None, max_age: int = 900,
+                     symbol: str | None = None, market_type: str | None = None) -> CandleValidation:
+    now = time.time() if now is None else float(now)
+    rows = rows if isinstance(rows, list) else []
+    seen = set(); duplicate_count = 0; invalid_count = 0; valid_rows = []
+    for row in rows:
+        if not isinstance(row, dict): invalid_count += 1; continue
+        ts = row.get("timestamp")
+        if not _num(ts) or float(ts) > now + 60: invalid_count += 1; continue
+        if any(not _num(row.get(k)) for k in ("open", "high", "low", "close")):
+            invalid_count += 1; continue
+        key = float(ts)
+        if key in seen: duplicate_count += 1; continue
+        seen.add(key); valid_rows.append(row)
+    ordered = sorted(valid_rows, key=lambda x: float(x["timestamp"]))
+    gaps = 0
+    tolerance = max(2.0, interval * 0.25)
+    for a, b in zip(ordered, ordered[1:]):
+        delta = float(b["timestamp"]) - float(a["timestamp"])
+        if delta < interval - tolerance: gaps += 1
+        # Large gaps can be real provider gaps; count them but do not silently repair.
+        if delta > interval + tolerance: gaps += 1
+    latest = float(ordered[-1]["timestamp"]) if ordered else None
+    age = max(0.0, now - latest) if latest is not None else None
+    freshness = "PASS" if age is not None and age <= max_age else "STALE" if age is not None else "ERROR"
+    minimum = int(required or MINIMUMS.get(int(interval), 0))
+    reason = None
+    status = "PASS"
+    if len(ordered) < minimum: status, reason = "INSUFFICIENT_DATA", f"{len(ordered)}<{minimum}"
+    elif invalid_count or duplicate_count: status, reason = "INVALID", "invalid_or_duplicate_candles"
+    elif freshness != "PASS": status, reason = "STALE", "freshness_failed"
+    return CandleValidation(status, reason, len(rows), len(ordered), duplicate_count, invalid_count, gaps, latest, age, freshness)

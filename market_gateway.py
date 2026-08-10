@@ -14,7 +14,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         q=parse_qs(urlparse(self.path).query)
         if self.path.startswith('/health'):
-            s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-direct-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_DIRECT','gateway_version':'batch-assets-v4-direct','connection':s}); return
+            s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-direct-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_DIRECT','gateway_version':'market-data-trace-v1','connection':s}); return
+        if self.path.startswith('/api/market/collector'):
+            self._send(SESSION.collector_status()); return
         if self.path.startswith('/api/market/macro'):
             # Keep macro isolated from candle boot; use the fixed TradingView
             # source directly so this route works even on a minimal gateway image.
@@ -35,7 +37,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({'ok':False,'source':'TradingView','read_only':True,'reason':'TRADINGVIEW_MACRO_UNAVAILABLE:'+type(exc).__name__})
             return
         if self.path.startswith('/api/market/candles'):
-            symbol=q.get('symbol',['EURUSD'])[0]; interval=int(q.get('interval',['60'])[0]); count=int(q.get('count',['300'])[0]); self._send(SESSION.candles(symbol,interval,count)); return
+            symbol=q.get('symbol',['EURUSD'])[0]; interval=int(q.get('interval',['60'])[0]); count=int(q.get('count',['300'])[0])
+            market_type=q.get('market_type',[None])[0]
+            if market_type is None:
+                market_type='OTC' if str(symbol).upper().endswith('-OTC') else 'REAL'
+            payload=SESSION.candles(symbol,interval,count,market_type)
+            self._send(payload); return
+        if self.path.startswith('/api/market/trace'):
+            request_id = q.get('request_id', [None])[0]
+            trace = SESSION.request_trace()
+            if request_id:
+                trace = [item for item in trace if item.get('request_id') == request_id]
+            self._send({'status':'OK','read_only':True,'request_id':request_id,'trace':trace}); return
         if self.path.startswith('/api/market/payout'):
             self._send(SESSION.payout(q.get('symbol',['EURUSD'])[0], q.get('instrument',['binary'])[0])); return
         if self.path.startswith('/api/market/assets'):
@@ -55,5 +68,3 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     port=int(os.getenv('PORT','8080')); ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
-
-
