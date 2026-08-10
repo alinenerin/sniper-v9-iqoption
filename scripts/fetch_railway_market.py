@@ -1,6 +1,8 @@
 """Fetch fresh read-only candles from Railway, preferring per-symbol endpoints."""
 import json, os, time, urllib.parse, urllib.request
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
 requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
@@ -194,20 +196,6 @@ for symbol, item in collected.items():
     out['symbols'][symbol] = {
         'snapshot': {'ok': True, 'assets': [], 'payouts': {}, 'read_only': True},
         'candles': item.get('m1', {}), 'm5_candles': item.get('m5', {})}
-# Normalize and validate at the provider boundary before freshness or analysis.
-from market_data_contract import normalize_and_validate, freshness, CandleContractError
-for symbol, item in collected.items():
-    for key, interval in (('m1', 60), ('m5', 300)):
-        rows = ((item.get(key) or {}).get('candles') or [])
-        try:
-            normalized = normalize_and_validate(rows, symbol, interval)
-            item[key]['candles'] = normalized
-            print(f'[DATA] {symbol} timeframe=M{1 if interval == 60 else 5} candles={len(normalized)} validation=PASS normalization=PASS')
-        except CandleContractError as exc:
-            errors[f'{symbol}:{key}'] = str(exc)
-            item[key] = {'candles': [], 'symbol': symbol, 'interval_seconds': interval, 'read_only': True, 'validation_error': str(exc)}
-            print(f'[ERROR] {symbol} timeframe=M{1 if interval == 60 else 5} validation=FAIL reason={exc}')
-
 Path('reports').mkdir(exist_ok=True)
 Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
 print('railway_market_per_symbol=OK', len(fresh), 'fresh_of', len(symbols))
