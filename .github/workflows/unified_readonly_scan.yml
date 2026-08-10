@@ -102,8 +102,10 @@ jobs:
           assert set(md.get('fresh_symbols') or []) >= set(expected), (md.get('fresh_symbols'), expected)
           for symbol in expected:
               d = (md.get('symbols') or {}).get(symbol) or {}
-              assert (d.get('candles') or {}).get('candles'), f'MISSING_M1:{symbol}'
-              assert (d.get('m5_candles') or {}).get('candles'), f'MISSING_M5:{symbol}'
+              m1 = (d.get('candles') or {}).get('candles') or []
+              m5 = (d.get('m5_candles') or {}).get('candles') or []
+              assert len(m1) >= 120, f'INSUFFICIENT_M1:{symbol}:{len(m1)}'
+              assert len(m5) >= 30, f'INSUFFICIENT_M5:{symbol}:{len(m5)}'
           if os.environ['OTC_ONLY'].lower() == 'true':
               assert inputs.get('include_otc') is True
               assert not r['forex'].get('analyses')
