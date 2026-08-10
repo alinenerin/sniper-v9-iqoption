@@ -78,4 +78,4 @@ def run_once() -> None:
     report = {"phase": "transport", "started_at": time.time(), "hosts": [_probe_host(h) for h in HOSTS], "websocket": [_probe_websocket(h) for h in ("ws.iqoption.com", "iqoption.com")]}
     report["elapsed_ms"] = round((time.monotonic() - started) * 1000, 1)
     # Single-line JSON makes Railway log collection and later comparison reliable.
-    LOG.info("IQ_NETWORK_DIAGNOSTIC %s", json.dumps(report, separators=(",", ":"), sort_keys=True))
+    LOG.warning("IQ_NETWORK_DIAGNOSTIC %s", json.dumps(report, separators=(",", ":"), sort_keys=True))
