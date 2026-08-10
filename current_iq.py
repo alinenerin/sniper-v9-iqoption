@@ -187,15 +187,41 @@ class IQOptionReadonly:
                         pass
                 with _lock:
                     _stream_diag['started_at'] = _stream_diag.get('started_at') or time.time()
-                # Subscribe every discovered FX OTC pair once, then poll the
-                # persistent stream cache. Rotating before the first update
-                # was the reason most pairs never became fresh.
-                for start in range(0, len(symbols), 8):
-                    for symbol in symbols[start:start + 8]:
+                # Controlled rotation: keep the SDK websocket stable instead
+                # of opening dozens of OTC subscriptions at once.
+                if not symbols:
+                    time.sleep(5); continue
+                batch = symbols[index:index + 6]
+                if not batch:
+                    index = 0; continue
+                for symbol in batch:
+                    for interval in (60, 300):
+                        try:
+                            api.start_candles_stream(symbol, interval, 120)
+                            with _lock:
+                                _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
+                        except Exception as exc:
+                            with _lock:
+                                _stream_diag['errors'][f'{symbol}:{interval}'] = f'{type(exc).__name__}:{str(exc)[:120]}'
+                            if 'websocket' in str(exc).lower() or 'closed' in str(exc).lower():
+                                raise
+                # One warm-up window per small batch, then read repeatedly.
+                time.sleep(5)
+                for _ in range(3):
+                    for symbol in batch:
                         for interval in (60, 300):
-                            try:
-                                api.start_candles_stream(symbol, interval, 120)
-                            except Exception as exc:
+                            raw = api.get_realtime_candles(symbol, interval) or {}
+                            rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
+                            if rows:
+                                with _lock:
+                                    _stream_diag['updated'][f'{symbol}:{interval}'] = float(max(rows, key=lambda x: x['timestamp']).get('timestamp', 0))
+                                    _stream_diag['polls'] += 1
+                                    _candle_cache[(symbol, interval)] = sorted(rows, key=lambda x: x['timestamp'])[-120:]
+                    time.sleep(2)
+                index += 6
+                if index >= len(symbols):
+                    index = 0
+            except Exception as exc:
                                 with _lock:
                                     _stream_diag['errors'][f'{symbol}:{interval}'] = f'{type(exc).__name__}:{str(exc)[:120]}'
                                 if 'websocket' in str(exc).lower() or 'closed' in str(exc).lower():
