@@ -359,7 +359,10 @@ class IQOptionReadonly:
                         if raw is None and provider_state != 'connected':
                             self._schedule_reconnect('IQ_OPTION_PROVIDER_CALL_FAILED')
                 rows = [{"timestamp": c.get("from"), "open": c.get("open"), "high": c.get("max"), "low": c.get("min"), "close": c.get("close"), "volume": c.get("volume", 0)} for c in (raw or [])]
-                base["attempts"].append({"attempt": attempt, "kind": "historical", "requested": target, "received": len(rows), "cursor": cursor, "provider_status": "OK" if rows else "EMPTY_RESPONSE", "connection_state": provider_state, "request_attempt": attempt, "connection_reconnect_attempt": _reconnect_attempts})
+                response_type = type(raw).__name__ if raw is not None else "NoneType"
+                response_length = len(raw) if hasattr(raw, '__len__') else None
+                sdk_response = "NONE" if raw is None else "EMPTY_LIST" if isinstance(raw, list) and not raw else "OBJECT_WITH_DATA" if response_length else "OBJECT_EMPTY"
+                base["attempts"].append({"attempt": attempt, "kind": "historical", "requested": target, "received": len(rows), "cursor": cursor, "provider_status": "OK" if rows else "EMPTY_RESPONSE", "connection_state": provider_state, "request_attempt": attempt, "connection_reconnect_attempt": _reconnect_attempts, "provider": "IQ_OPTION_DIRECT", "sdk_method": "IQ_Option.get_candles", "symbol_sent_to_provider": provider_symbol, "interval": interval, "count": target, "start": cursor, "response_type": response_type, "response_length": response_length, "sdk_response": sdk_response})
                 base["historical_received"] = max(base["historical_received"], len(rows))
                 if attempt > 1:
                     base["backfill_attempt"] = attempt
