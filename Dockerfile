@@ -4,6 +4,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 WORKDIR /app
 COPY requirements_gateway.txt .
 RUN pip install --no-cache-dir -r requirements_gateway.txt
-COPY current_iq.py market_gateway.py railway_start.py .
+COPY current_iq.py market_gateway.py railway_start.py network_diagnostics.py .
 EXPOSE 8080
 CMD ["python", "railway_start.py"]

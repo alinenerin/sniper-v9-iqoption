@@ -117,10 +117,10 @@ class IQOptionReadonly:
             # IQ SDK login can hang behind a degraded route; never let it
             # leave the Railway process permanently stuck in "connecting".
             connect_started = time.monotonic()
-            _LOG.info("IQ_SDK_CONNECT_START route=%s", "webshare" if not direct else "direct")
+            _LOG.warning("IQ_SDK_CONNECT_START route=%s", "webshare" if not direct else "direct")
             result = _bounded_call(api.connect, timeout=30)
             connect_elapsed = round(time.monotonic() - connect_started, 3)
-            _LOG.info("IQ_SDK_CONNECT_END elapsed_s=%s result_type=%s", connect_elapsed, type(result).__name__)
+            _LOG.warning("IQ_SDK_CONNECT_END elapsed_s=%s result_type=%s", connect_elapsed, type(result).__name__)
             if not isinstance(result, tuple):
                 _state.update(status='error', reason='IQ_OPTION_CONNECT_TIMEOUT'); _start_once=False; return
             ok, reason = result
