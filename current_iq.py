@@ -196,7 +196,13 @@ class IQOptionReadonly:
                         with _lock:
                             _stream_diag['discovery']['fx_open_count'] = len(found)
                         if found:
-                            symbols = list(dict.fromkeys(found)); discovered = True
+                            # Keep persistent streams limited to a stable seed.
+                            # Broad scans use bounded per-symbol REST reads; the
+                            # long-lived websocket must not carry 112 subscriptions.
+                            seed = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC']
+                            symbols = [x for x in seed if x in found] or found[:4]
+                            discovered = True
+                            _stream_diag['discovery']['catalog_count'] = len(found)
                     except Exception as exc:
                         with _lock:
                             _stream_diag['discovery'] = {'ok': False, 'error': f'{type(exc).__name__}:{str(exc)[:160]}'}
