@@ -13,6 +13,7 @@ _reconnect_lock = threading.Lock()
 _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
+_stream_diag = {'started_at': None, 'subscribed': {}, 'updated': {}, 'errors': {}, 'polls': 0}
 
 _FX_CODES = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
 def _is_fx_otc(symbol):
@@ -150,6 +151,18 @@ class IQOptionReadonly:
             _collector_started = True
         threading.Thread(target=self._otc_collector, daemon=True, name='otc-candle-collector').start()
 
+    def collector_status(self):
+        now = time.time()
+        with _lock:
+            out = dict(_stream_diag)
+            out['subscribed'] = dict(_stream_diag.get('subscribed', {}))
+            out['updated'] = dict(_stream_diag.get('updated', {}))
+            out['errors'] = dict(_stream_diag.get('errors', {}))
+            out['cache_keys'] = [f'{s}:{i}' for (s, i) in _candle_cache.keys()]
+            out['fresh_60s'] = sum(1 for (s, i), rows in _candle_cache.items() if i == 60 and rows and now - float(rows[-1].get('timestamp', 0)) <= 900)
+            out['fresh_300s'] = sum(1 for (s, i), rows in _candle_cache.items() if i == 300 and rows and now - float(rows[-1].get('timestamp', 0)) <= 900)
+            return out
+
     def _otc_collector(self):
         # IQ websocket is not safe to flood with dozens of subscriptions.
         # Rotate a small group and retain each completed group in cache.
@@ -172,6 +185,8 @@ class IQOptionReadonly:
                             symbols = list(dict.fromkeys(found)); discovered = True
                     except Exception:
                         pass
+                with _lock:
+                    _stream_diag['started_at'] = _stream_diag.get('started_at') or time.time()
                 # Subscribe every discovered FX OTC pair once, then poll the
                 # persistent stream cache. Rotating before the first update
                 # was the reason most pairs never became fresh.
@@ -181,6 +196,8 @@ class IQOptionReadonly:
                             try:
                                 api.start_candles_stream(symbol, interval, 120)
                             except Exception as exc:
+                                with _lock:
+                                    _stream_diag['errors'][f'{symbol}:{interval}'] = f'{type(exc).__name__}:{str(exc)[:120]}'
                                 if 'websocket' in str(exc).lower() or 'closed' in str(exc).lower():
                                     raise
                 time.sleep(10)
@@ -191,6 +208,8 @@ class IQOptionReadonly:
                             rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
                             if rows:
                                 with _lock:
+                                    _stream_diag['updated'][f'{symbol}:{interval}'] = float(max(rows, key=lambda x: x['timestamp']).get('timestamp', 0))
+                                    _stream_diag['polls'] += 1
                                     _candle_cache[(symbol, interval)] = sorted(rows, key=lambda x: x['timestamp'])[-120:]
                     time.sleep(2)
             except Exception as exc:
