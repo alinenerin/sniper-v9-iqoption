@@ -73,7 +73,10 @@ class IQOptionReadonly:
             check = getattr(api, 'check_connect', None)
             if callable(check):
                 alive = _bounded_call(check, timeout=8)
-                if alive is False or alive is None:
+                # Some SDK versions return None when the check method has no
+                # boolean result. Treat only an explicit False as a drop;
+                # reconnecting on None repeatedly logs the account out.
+                if alive is False:
                     self._schedule_reconnect('IQ_OPTION_WEBSOCKET_DROPPED')
 
     def _connect_worker(self):
@@ -166,7 +169,7 @@ class IQOptionReadonly:
     def _otc_collector(self):
         # IQ websocket is not safe to flood with dozens of subscriptions.
         # Rotate a small group and retain each completed group in cache.
-        configured = os.getenv('OTC_SYMBOLS', 'EURUSD-OTC GBPUSD-OTC USDJPY-OTC AUDUSD-OTC USDCAD-OTC USDCHF-OTC NZDUSD-OTC EURGBP-OTC EURJPY-OTC GBPJPY-OTC').replace(',', ' ').split()
+        configured = os.getenv('OTC_SYMBOLS', '').replace(',', ' ').split()
         symbols = [self._norm_symbol(x) for x in configured]
         # Empty OTC_SYMBOLS means discover all valid FX OTC pairs; do not
         # silently fall back to four majors in the production collector.
@@ -196,13 +199,7 @@ class IQOptionReadonly:
                         with _lock:
                             _stream_diag['discovery']['fx_open_count'] = len(found)
                         if found:
-                            # Keep persistent streams limited to a stable seed.
-                            # Broad scans use bounded per-symbol REST reads; the
-                            # long-lived websocket must not carry 112 subscriptions.
-                            seed = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC']
-                            symbols = [x for x in seed if x in found] or found[:4]
-                            discovered = True
-                            _stream_diag['discovery']['catalog_count'] = len(found)
+                            symbols = list(dict.fromkeys(found)); discovered = True
                     except Exception as exc:
                         with _lock:
                             _stream_diag['discovery'] = {'ok': False, 'error': f'{type(exc).__name__}:{str(exc)[:160]}'}
@@ -219,7 +216,7 @@ class IQOptionReadonly:
                 for symbol in batch:
                     for interval in (60, 300):
                         try:
-                            _bounded_call(api.start_candles_stream, symbol, interval, 120, timeout=15)
+                            api.start_candles_stream(symbol, interval, 120)
                             with _lock:
                                 _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
                         except Exception as exc:
@@ -232,7 +229,7 @@ class IQOptionReadonly:
                 for _ in range(3):
                     for symbol in batch:
                         for interval in (60, 300):
-                            raw = _bounded_call(api.get_realtime_candles, symbol, interval, timeout=10) or {}
+                            raw = api.get_realtime_candles(symbol, interval) or {}
                             rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
                             # Some OTC symbols accept subscription but emit no
                             # realtime map. Fall back to bounded REST candles.
