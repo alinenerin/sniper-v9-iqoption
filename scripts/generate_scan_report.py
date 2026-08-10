@@ -200,6 +200,19 @@ def main() -> int:
                 otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
                 binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
 
+    # Explicit pipeline dashboard: blocked intelligence is metadata, never a score zero.
+    all_items = forex + binary
+    intelligence_status = {}
+    for item in all_items:
+        for name, component in (item.get("components") or {}).items():
+            if isinstance(component, dict): intelligence_status.setdefault(name, set()).add(component.get("status", "unknown"))
+    intelligence_status = {name: ("executed" if "inference_ok" in states or "executed" in states else "blocked" if "blocked" in states else "error" if "error" in states else "unavailable") for name, states in intelligence_status.items()}
+    for item in all_items:
+        components = item.get("components") or {}
+        executed = [c for c in components.values() if isinstance(c, dict) and c.get("status") in ("inference_ok", "executed")]
+        item.setdefault("analysis_completeness", round(100.0 * len(executed) / max(1, len(components)), 1))
+        item["data_completeness"] = 100.0 if item.get("candle_timing", {}).get("candle_count", 0) >= 120 else 0.0
+
     result = {
         "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
@@ -209,6 +222,11 @@ def main() -> int:
         "market_data": market_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
+        "pipeline_dashboard": {
+            "data": {"candles": "OK" if len(market_data.get("fresh_symbols") or []) == len(symbols) else "ERROR", "pairs_fresh": len(market_data.get("fresh_symbols") or []), "pairs_expected": len(symbols)},
+            "intelligence": intelligence_status,
+            "analysis": {"blocked_is_not_zero": True, "score_policy": "normalized_over_executed_components_only"}
+        },
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
     }
     Path("reports").mkdir(exist_ok=True)
