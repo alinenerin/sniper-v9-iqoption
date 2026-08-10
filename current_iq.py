@@ -288,18 +288,12 @@ class IQOptionReadonly:
             # Bound each SDK call so one symbol cannot hang the whole batch.
             raw = _bounded_call(self.api.get_candles, symbol, int(interval), max(1, min(int(count), 3000)), time.time(), timeout=25)
             if raw is None:
-                self._schedule_reconnect('IQ_OPTION_CANDLES_TIMEOUT')
-                return {'ok': False, 'symbol': symbol, 'reason': 'IQ_OPTION_CANDLES_TIMEOUT_RECONNECTING', 'read_only': True}
+                # A single symbol can time out while the authenticated IQ
+                # session remains healthy. Do not tear down the global session
+                # and cascade CONNECTING failures to the other nine symbols.
+                return {'ok': False, 'symbol': symbol, 'reason': 'IQ_OPTION_CANDLES_TIMEOUT_SYMBOL_ONLY', 'read_only': True}
             out = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in raw or []]
-            if out:
-                return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': out, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
-            # IQ Option can expose an open binary/OTC asset while its REST
-            # history is empty. Read the live candle stream before declaring
-            # the symbol unavailable; the stream is the authoritative chart.
-            streamed = self.realtime_candles(symbol, int(interval), maxdict=max(20, min(int(count), 120)))
-            if streamed.get('candles'):
-                return streamed
-            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': [], 'source': 'IQ_OPTION_DIRECT', 'read_only': True, 'reason': 'NO_CANDLES_FROM_HISTORY_OR_STREAM'}
+            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': out, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception as exc:
             reason = str(exc)[:180]
             # Some SDK paths surface a closed websocket as an exception rather
@@ -345,11 +339,7 @@ class IQOptionReadonly:
         try:
             symbol = str(symbol).upper().replace('/', '')
             self.api.start_candles_stream(symbol, int(interval), int(maxdict))
-            data = {}
-            for _ in range(6):
-                data = self.api.get_realtime_candles(symbol, int(interval)) or {}
-                if data: break
-                time.sleep(0.5)
+            data = self.api.get_realtime_candles(symbol, int(interval)) or {}
             candles = []
             for ts, c in data.items():
                 candles.append({'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)})
