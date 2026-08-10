@@ -10,6 +10,8 @@ _lock = threading.RLock()
 _start_once = False
 _patched = False
 _reconnect_lock = threading.Lock()
+_sdk_lock = threading.RLock()
+_last_sdk_call = 0.0
 _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
@@ -24,16 +26,21 @@ def _is_fx_otc(symbol):
 
 
 def _bounded_call(fn, *args, timeout=8):
-    pool = ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(fn, *args)
-    try:
-        return future.result(timeout=timeout)
-    except (FutureTimeout, Exception):
-        # SDK websocket calls may raise on partial/None IQ responses; callers
-        # must be able to use their fallback parser instead of aborting.
-        return None
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    # Serialize and rate-limit all IQ SDK calls to avoid websocket throttling.
+    global _last_sdk_call
+    with _sdk_lock:
+        gap = time.time() - _last_sdk_call
+        if gap < 1.2:
+            time.sleep(1.2 - gap)
+        _last_sdk_call = time.time()
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(fn, *args)
+        try:
+            return future.result(timeout=timeout)
+        except (FutureTimeout, Exception):
+            return None
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
 class IQOptionReadonly:
     def __init__(self):
