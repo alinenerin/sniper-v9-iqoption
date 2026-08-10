@@ -13,7 +13,7 @@ _reconnect_lock = threading.Lock()
 _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
-_stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'polls': 0}
+_stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'collector_error': None, 'polls': 0}
 
 _FX_CODES = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
 def _is_fx_otc(symbol):
@@ -228,6 +228,8 @@ class IQOptionReadonly:
                     index = 0
             except Exception as exc:
                 reason = str(exc)[:160]
+                with _lock:
+                    _stream_diag['collector_error'] = f'{type(exc).__name__}:{reason}'
                 if 'websocket' in reason.lower() or 'closed' in reason.lower():
                     self._schedule_reconnect('IQ_OPTION_OTC_STREAM_DROPPED')
                 time.sleep(10)
