@@ -7,6 +7,8 @@ requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' '
 include_otc = os.getenv('INCLUDE_OTC', 'false').lower() == 'true'
 otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
+REAL_ALLOWLIST = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD','EURGBP','EURJPY','GBPJPY']
+OTC_ALLOWLIST = [f'{s}-OTC' for s in REAL_ALLOWLIST]
 
 
 def get(path, timeout=60, attempts=3):
@@ -37,6 +39,13 @@ def discover_symbols():
                 if name not in cleaned: cleaned.append(name)
         if not cleaned: raise RuntimeError('NO_VALID_FX_SYMBOLS')
         return cleaned
+    # The approved universe is fixed: never expand to every broker-listed
+    # OTC asset. Availability is checked later by the candle fetch step.
+    if otc_only:
+        return OTC_ALLOWLIST
+    if include_otc:
+        return REAL_ALLOWLIST + OTC_ALLOWLIST
+    return REAL_ALLOWLIST
     payload = get('/api/market/assets?instrument=all', timeout=60)
     # Assets endpoint also contains stocks/crypto. Keep currency pairs only.
     rows = payload.get('assets', []) if isinstance(payload, dict) else []
@@ -135,10 +144,8 @@ def fetch_chunk(chunk):
         for symbol in chunk: local_errors[symbol] = type(exc).__name__
     return local_errors
 
-chunks = [symbols[i:i + 1] for i in range(0, len(symbols), 1)]
-# The gateway owns one non-thread-safe IQ websocket. Never issue concurrent
-# snapshot calls from Actions; serialize chunks and preserve per-symbol data.
-with ThreadPoolExecutor(max_workers=1) as pool:
+chunks = [symbols[i:i + 2] for i in range(0, len(symbols), 2)]
+with ThreadPoolExecutor(max_workers=3) as pool:
     futures = [pool.submit(fetch_chunk, chunk) for chunk in chunks]
     for future in as_completed(futures):
         errors.update(future.result())
