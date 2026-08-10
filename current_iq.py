@@ -287,6 +287,18 @@ class IQOptionReadonly:
                     self._schedule_reconnect('IQ_OPTION_OTC_STREAM_DROPPED')
                 time.sleep(10)
 
+    def _wait_for_connection(self, timeout=35):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with _lock:
+                if self.connected and self.api and _state.get('status') == 'connected':
+                    return True
+                state = _state.get('status')
+            if state not in ('connecting', 'reconnecting'):
+                self._schedule_reconnect('IQ_OPTION_PROVIDER_SESSION_LOST')
+            time.sleep(1)
+        return False
+
     def connect(self):
         if self.connected and self.api: return True, 'CONNECTED_READ_ONLY'
         self._schedule_reconnect(_state.get('reason') or 'IQ_OPTION_RECONNECT_REQUIRED')
@@ -335,12 +347,17 @@ class IQOptionReadonly:
             cursor = time.time()
             for attempt in range(1, 4):
                 with _provider_lock:
-                    with _lock:
-                        api = self.api if self.connected else None
-                        base["connection_state"] = _state.get('status')
-                        base["session_id"] = _session_id
-                    raw = _bounded_call(api.get_candles, provider_symbol, interval, target, cursor, timeout=25) if api else None
-                    provider_state = _state.get('status')
+                    if not self._wait_for_connection(timeout=35):
+                        raw = None; provider_state = _state.get('status')
+                    else:
+                        with _lock:
+                            api = self.api if self.connected else None
+                            base["connection_state"] = _state.get('status')
+                            base["session_id"] = _session_id
+                        raw = _bounded_call(api.get_candles, provider_symbol, interval, target, cursor, timeout=25) if api else None
+                        provider_state = _state.get('status')
+                        if raw is None and provider_state != 'connected':
+                            self._schedule_reconnect('IQ_OPTION_PROVIDER_CALL_FAILED')
                 rows = [{"timestamp": c.get("from"), "open": c.get("open"), "high": c.get("max"), "low": c.get("min"), "close": c.get("close"), "volume": c.get("volume", 0)} for c in (raw or [])]
                 base["attempts"].append({"attempt": attempt, "kind": "historical", "requested": target, "received": len(rows), "cursor": cursor, "provider_status": "OK" if rows else "EMPTY_RESPONSE", "connection_state": provider_state, "request_attempt": attempt, "connection_reconnect_attempt": _reconnect_attempts})
                 base["historical_received"] = max(base["historical_received"], len(rows))
