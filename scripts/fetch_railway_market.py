@@ -146,17 +146,19 @@ def fetch_chunk(chunk):
                 rows = data.get(key) or []
                 if isinstance(rows, dict): rows = rows.get('candles') or []
                 if not isinstance(rows, list): rows = []
-                if rows or not collected[symbol][key]['candles']:
+                minimum = 120 if interval == 60 else 30
+                if len(rows) >= minimum or not collected[symbol][key]['candles']:
                     collected[symbol][key] = {'candles': rows, 'source': payload.get('source'), 'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
         # Retry empty symbols independently; this is bounded per small chunk.
         for symbol in chunk:
-            if collected[symbol]['m1']['candles'] and collected[symbol]['m5']['candles']:
+            if len(collected[symbol]['m1']['candles']) >= 120 and len(collected[symbol]['m5']['candles']) >= 30:
                 continue
             for interval, key in ((60, 'm1'), (300, 'm5')):
-                if collected[symbol][key]['candles']: continue
+                minimum = 120 if interval == 60 else 30
+                if len(collected[symbol][key]['candles']) >= minimum: continue
                 try:
                     rows, source = fetch_symbol_candles(symbol, interval, 120)
-                    if rows:
+                    if len(rows) >= minimum:
                         collected[symbol][key] = {'candles': rows, 'source': source, 'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
                 except Exception as exc:
                     local_errors[f'{symbol}:{interval}'] = type(exc).__name__
