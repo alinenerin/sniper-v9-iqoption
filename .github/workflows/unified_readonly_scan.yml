@@ -85,11 +85,33 @@ jobs:
       - name: Validate report contract and component evidence
         run: |
           python - <<'PY'
-          import json
+          import json, os
           r=json.load(open('reports/latest_scan.json'))
+          assert str(r.get('workflow_run_id')) == os.environ['GITHUB_RUN_ID'], (r.get('workflow_run_id'), os.environ['GITHUB_RUN_ID'])
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
           assert 'binary' in r and 'forex' in r
+          real = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD','EURGBP','EURJPY','GBPJPY']
+          requested = os.environ['SYMBOLS'].replace(',', ' ').upper().split()
+          expected = [s if s.endswith('-OTC') else s + '-OTC' for s in requested] if os.environ['OTC_ONLY'].lower() == 'true' else requested
+          inputs = r.get('inputs') or {}
+          assert bool(inputs.get('include_otc')) == (os.environ['INCLUDE_OTC'].lower() == 'true')
+          assert bool(inputs.get('otc_only')) == (os.environ['OTC_ONLY'].lower() == 'true')
+          assert set(inputs.get('symbols') or []) == set(expected), (inputs.get('symbols'), expected)
+          md = r.get('market_data') or {}
+          assert set(md.get('fresh_symbols') or []) >= set(expected), (md.get('fresh_symbols'), expected)
+          for symbol in expected:
+              d = (md.get('symbols') or {}).get(symbol) or {}
+              assert (d.get('candles') or {}).get('candles'), f'MISSING_M1:{symbol}'
+              assert (d.get('m5_candles') or {}).get('candles'), f'MISSING_M5:{symbol}'
+          if os.environ['OTC_ONLY'].lower() == 'true':
+              assert inputs.get('include_otc') is True
+              assert not r['forex'].get('analyses')
+              assert all(x.get('market') == 'otc' for x in r['binary'].get('analyses', []))
+          else:
+              assert inputs.get('include_otc') is False
+              assert inputs.get('otc_only') is False
+              assert not any(x.get('market') == 'otc' for x in r['binary'].get('analyses', []))
           assert r['forex']['status'] == 'completed'
           assert r['binary']['status'] == 'completed'
           if r.get('inputs', {}).get('otc_only'):
