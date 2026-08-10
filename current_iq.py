@@ -139,6 +139,10 @@ class IQOptionReadonly:
                 self.api = None
                 _client = None
                 _start_once = False
+                # The old collector holds the closed SDK object. Allow a new
+                # collector to be started after the reconnect completes.
+                global _collector_started
+                _collector_started = False
                 _state.update(status='reconnecting', reason=reason)
             threading.Thread(target=self._connect_worker, daemon=True, name='iqoption-reconnect').start()
 
