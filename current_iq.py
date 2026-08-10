@@ -173,7 +173,7 @@ class IQOptionReadonly:
     def _otc_collector(self):
         # IQ websocket is not safe to flood with dozens of subscriptions.
         # Rotate a small group and retain each completed group in cache.
-        configured = os.getenv('OTC_SYMBOLS', '').replace(',', ' ').split()
+        configured = os.getenv('OTC_SYMBOLS', 'EURUSD-OTC GBPUSD-OTC USDJPY-OTC AUDUSD-OTC USDCAD-OTC USDCHF-OTC NZDUSD-OTC EURGBP-OTC EURJPY-OTC GBPJPY-OTC').replace(',', ' ').split()
         symbols = [self._norm_symbol(x) for x in configured]
         # Empty OTC_SYMBOLS means discover all valid FX OTC pairs; do not
         # silently fall back to four majors in the production collector.
