@@ -171,6 +171,7 @@ class IQOptionReadonly:
         # Empty OTC_SYMBOLS means discover all valid FX OTC pairs; do not
         # silently fall back to four majors in the production collector.
         discovered = bool(symbols)
+        index = 0
         while True:
             try:
                 with _lock:
