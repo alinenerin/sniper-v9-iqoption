@@ -11,7 +11,7 @@ on:
       symbols:
         description: 'Pares separados por espaço ou vírgula'
         required: true
-        default: 'ALL_AVAILABLE'
+        default: 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY'
         type: string
       otc_only:
         description: 'Analisar somente OTC, sem Forex real ou binárias reais'
