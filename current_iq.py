@@ -10,6 +10,8 @@ _lock = threading.RLock()
 _start_once = False
 _patched = False
 _reconnect_lock = threading.Lock()
+_sdk_lock = threading.RLock()
+_last_io = time.time()
 _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
@@ -24,7 +26,10 @@ def _is_fx_otc(symbol):
 
 
 def _bounded_call(fn, *args, timeout=8):
-    pool = ThreadPoolExecutor(max_workers=1)
+    # iqoptionapi's websocket client is not thread-safe. Serialize every SDK call.
+    global _last_io
+    with _sdk_lock:
+        pool = ThreadPoolExecutor(max_workers=1)
     future = pool.submit(fn, *args)
     try:
         return future.result(timeout=timeout)
@@ -34,6 +39,7 @@ def _bounded_call(fn, *args, timeout=8):
         return None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+        _last_io = time.time()
 
 class IQOptionReadonly:
     def __init__(self):
@@ -70,6 +76,9 @@ class IQOptionReadonly:
                 continue
             if api is None:
                 continue
+            if time.time() - _last_io > 300:
+                _state.update(status='error', reason='IQ_OPTION_NO_IO_ACTIVITY_300S')
+                os._exit(75)  # Railway restartPolicyType=ON_FAILURE replaces a wedged SDK process.
             check = getattr(api, 'check_connect', None)
             if callable(check):
                 alive = _bounded_call(check, timeout=8)
@@ -199,17 +208,18 @@ class IQOptionReadonly:
                 batch = symbols[index:index + 6]
                 if not batch:
                     index = 0; continue
-                for symbol in batch:
-                    for interval in (60, 300):
-                        try:
-                            api.start_candles_stream(symbol, interval, 120)
-                            with _lock:
-                                _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
-                        except Exception as exc:
-                            with _lock:
-                                _stream_diag['errors'][f'{symbol}:{interval}'] = f'{type(exc).__name__}:{str(exc)[:120]}'
-                            if 'websocket' in str(exc).lower() or 'closed' in str(exc).lower():
-                                raise
+                with _sdk_lock:
+                    for symbol in batch:
+                        for interval in (60, 300):
+                            try:
+                                api.start_candles_stream(symbol, interval, 120)
+                                with _lock:
+                                    _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
+                            except Exception as exc:
+                                with _lock:
+                                    _stream_diag['errors'][f'{symbol}:{interval}'] = f'{type(exc).__name__}:{str(exc)[:120]}'
+                                if 'websocket' in str(exc).lower() or 'closed' in str(exc).lower():
+                                    raise
                 # One warm-up window per small batch, then read repeatedly.
                 time.sleep(5)
                 for _ in range(3):
@@ -333,12 +343,11 @@ class IQOptionReadonly:
         # get_all_init_v2, whose websocket response can stall behind Webshare.
         # Asset catalog/payouts are advisory. A transient empty catalog must
         # never prevent the authoritative candle requests from running.
-        asset_response=self.assets('all')
-        assets=asset_response.get('assets',[]) if asset_response.get('ok') else []
+        # Do not perform an init/catalog request on every batch: it competes with
+        # candle streams and is the main source of websocket drops. Catalog/payout
+        # is advisory and has its own endpoint.
+        assets=[]
         payouts={}
-        for item in assets:
-            if item.get('payout') is not None:
-                payouts.setdefault(item.get('symbol'),{})[item.get('instrument')]=item.get('payout')
         # iqoptionapi's websocket client is not thread-safe: process small batches
         # sequentially to avoid deadlocks, while keeping one external gateway call.
         data={}
