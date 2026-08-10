@@ -135,8 +135,10 @@ def fetch_chunk(chunk):
         for symbol in chunk: local_errors[symbol] = type(exc).__name__
     return local_errors
 
-chunks = [symbols[i:i + 2] for i in range(0, len(symbols), 2)]
-with ThreadPoolExecutor(max_workers=3) as pool:
+chunks = [symbols[i:i + 1] for i in range(0, len(symbols), 1)]
+# The gateway owns one non-thread-safe IQ websocket. Never issue concurrent
+# snapshot calls from Actions; serialize chunks and preserve per-symbol data.
+with ThreadPoolExecutor(max_workers=1) as pool:
     futures = [pool.submit(fetch_chunk, chunk) for chunk in chunks]
     for future in as_completed(futures):
         errors.update(future.result())
