@@ -45,7 +45,7 @@ jobs:
           wf = Path('.github/workflows/forex_v16_supreme.yml').read_text()
           assert 'INCLUDE_OTC: \'false\'' in wf
           assert 'OTC_ONLY: \'false\'' in wf
-          assert 'binary_v16' not in wf.lower()
+          assert 'binary' not in wf.lower()
           assert 'EXECUTION_ALLOWED: \'false\'' in wf
           print('forex-boundary=OK; otc=disabled; execution=blocked')
           PY
