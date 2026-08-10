@@ -188,16 +188,17 @@ def main() -> int:
         if otc_only:
             symbols = [x if x.upper().endswith("-OTC") else x.upper() + "-OTC" for x in symbols]
     forex, binary = [], []
+    observed_at = datetime.now(timezone.utc)
     if otc_only:
         for symbol in symbols:
-            binary.append(_analyse("otc", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
+            binary.append(_analyse("otc", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
     else:
         for symbol in symbols:
-            forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
-            binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles"))))
+            forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
             if include_otc:
                 otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
-                binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles"))))
+                binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
 
     result = {
         "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
