@@ -36,11 +36,12 @@ def fetch_symbol_candles(symbol, interval, count=120):
     rows = direct.get('candles') or []
     if isinstance(rows, list) and rows:
         return rows, direct.get('source')
-    if str(symbol).upper().endswith('-OTC'):
-        stream = get('/api/market/stream?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'maxdict': count}), timeout=90, attempts=3)
-        rows = stream.get('candles') or []
-        if isinstance(rows, list) and rows:
-            return rows, stream.get('source')
+    # Apply the same bounded fallback to real binary pairs; this prevents
+    # an empty historical response from becoming a partial scan there too.
+    stream = get('/api/market/stream?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'maxdict': count}), timeout=90, attempts=3)
+    rows = stream.get('candles') or []
+    if isinstance(rows, list) and rows:
+        return rows, stream.get('source')
     return [], direct.get('source')
 
 def discover_symbols():
