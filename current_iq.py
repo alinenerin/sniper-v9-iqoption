@@ -1,10 +1,7 @@
 """Persistent read-only IQ Option session using Railway's direct network route."""
-import logging
 import os
 import time
 import threading
-
-_LOG = logging.getLogger("iqoption_connection")
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 _client = None
@@ -14,16 +11,6 @@ _start_once = False
 _patched = False
 _reconnect_lock = threading.Lock()
 _watchdog_started = False
-_candle_cache = {}
-_collector_started = False
-_stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'collector_error': None, 'polls': 0}
-
-_FX_CODES = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
-def _is_fx_otc(symbol):
-    name = str(symbol).upper().replace('_OTC','-OTC')
-    base = name[:-4] if name.endswith('-OTC') else name
-    return name.endswith('-OTC') and len(base) == 6 and base[:3] in _FX_CODES and base[3:] in _FX_CODES
-
 
 
 def _bounded_call(fn, *args, timeout=8):
@@ -41,7 +28,7 @@ def _bounded_call(fn, *args, timeout=8):
 class IQOptionReadonly:
     def __init__(self):
         global _client, _start_once
-        self.email = os.getenv('IQ_OPTION_EMAIL') or os.getenv('IQ_OPTION_USER') or os.getenv('IQ_USER', '')
+        self.email = os.getenv('IQ_OPTION_EMAIL') or os.getenv('IQ_USER', '')
         self.password = os.getenv('IQ_OPTION_PASSWORD') or os.getenv('IQ_PASS', '')
         self.balance_mode = os.getenv('IQ_OPTION_BALANCE_MODE') or os.getenv('BALANCE_MODE', 'PRACTICE')
         self.connected = False
@@ -76,10 +63,7 @@ class IQOptionReadonly:
             check = getattr(api, 'check_connect', None)
             if callable(check):
                 alive = _bounded_call(check, timeout=8)
-                # Some SDK versions return None when the check method has no
-                # boolean result. Treat only an explicit False as a drop;
-                # reconnecting on None repeatedly logs the account out.
-                if alive is False:
+                if alive is False or alive is None:
                     self._schedule_reconnect('IQ_OPTION_WEBSOCKET_DROPPED')
 
     def _connect_worker(self):
@@ -114,13 +98,9 @@ class IQOptionReadonly:
             # Force the REST login through the same verified Webshare endpoint.
             if not direct and hasattr(api, 'session'):
                 api.session.proxies.update({'http': proxy_url, 'https': proxy_url})
-            # IQ SDK login can hang behind a degraded route; never let it
+            # IQ SDK login can hang behind a degraded proxy; never let it
             # leave the Railway process permanently stuck in "connecting".
-            connect_started = time.monotonic()
-            _LOG.warning("IQ_SDK_CONNECT_START route=%s", "webshare" if not direct else "direct")
             result = _bounded_call(api.connect, timeout=30)
-            connect_elapsed = round(time.monotonic() - connect_started, 3)
-            _LOG.warning("IQ_SDK_CONNECT_END elapsed_s=%s result_type=%s", connect_elapsed, type(result).__name__)
             if not isinstance(result, tuple):
                 _state.update(status='error', reason='IQ_OPTION_CONNECT_TIMEOUT'); _start_once=False; return
             ok, reason = result
@@ -131,7 +111,6 @@ class IQOptionReadonly:
             with _lock:
                 self.api, self.connected, _client = api, True, self
                 _state.update(status='connected', reason=None, connected_at=time.time())
-                self._start_otc_collector()
         except Exception as exc:
             _state.update(status='error', reason=f'{type(exc).__name__}: {exc}'[:180])
             _start_once=False
@@ -146,129 +125,8 @@ class IQOptionReadonly:
                 self.api = None
                 _client = None
                 _start_once = False
-                # The old collector holds the closed SDK object. Allow a new
-                # collector to be started after the reconnect completes.
-                global _collector_started
-                _collector_started = False
                 _state.update(status='reconnecting', reason=reason)
             threading.Thread(target=self._connect_worker, daemon=True, name='iqoption-reconnect').start()
-
-    @staticmethod
-    def _norm_symbol(symbol):
-        return str(symbol).upper().replace('/', '').replace('_OTC', '-OTC')
-
-    def _start_otc_collector(self):
-        # The legacy SDK websocket is not thread-safe. Keep the optional
-        # background OTC fan-out disabled by default so it cannot race the
-        # authenticated session or the authoritative candle endpoint.
-        enabled = os.getenv('ENABLE_OTC_COLLECTOR', 'false').lower() in ('1', 'true', 'yes')
-        if not enabled:
-            return
-        global _collector_started
-        with _lock:
-            if _collector_started:
-                return
-            _collector_started = True
-        threading.Thread(target=self._otc_collector, daemon=True, name='otc-candle-collector').start()
-
-    def collector_status(self):
-        now = time.time()
-        with _lock:
-            out = dict(_stream_diag)
-            out['subscribed'] = dict(_stream_diag.get('subscribed', {}))
-            out['updated'] = dict(_stream_diag.get('updated', {}))
-            out['errors'] = dict(_stream_diag.get('errors', {}))
-            out['cache_keys'] = [f'{s}:{i}' for (s, i) in _candle_cache.keys()]
-            out['fresh_60s'] = sum(1 for (s, i), rows in _candle_cache.items() if i == 60 and rows and now - float(rows[-1].get('timestamp', 0)) <= 900)
-            out['fresh_300s'] = sum(1 for (s, i), rows in _candle_cache.items() if i == 300 and rows and now - float(rows[-1].get('timestamp', 0)) <= 900)
-            return out
-
-    def _otc_collector(self):
-        # IQ websocket is not safe to flood with dozens of subscriptions.
-        # Rotate a small group and retain each completed group in cache.
-        configured = os.getenv('OTC_SYMBOLS', 'EURUSD-OTC GBPUSD-OTC USDJPY-OTC AUDUSD-OTC USDCAD-OTC USDCHF-OTC NZDUSD-OTC EURGBP-OTC EURJPY-OTC GBPJPY-OTC').replace(',', ' ').split()
-        symbols = [self._norm_symbol(x) for x in configured]
-        # Empty OTC_SYMBOLS means discover all valid FX OTC pairs; do not
-        # silently fall back to four majors in the production collector.
-        discovered = bool(symbols)
-        index = 0
-        while True:
-            try:
-                with _lock:
-                    api = self.api if self.connected else None
-                if api is None:
-                    time.sleep(5); continue
-                if not discovered:
-                    try:
-                        catalog = self.assets('binary')
-                        with _lock:
-                            _stream_diag['discovery'] = {'ok': bool(catalog.get('ok')), 'count': len(catalog.get('assets') or []), 'reason': catalog.get('reason')}
-                        # Use the same strict FX shape as the scan, but do not
-                        # depend on broker naming quirks in the helper predicate.
-                        raw_assets = catalog.get('assets') or []
-                        found = []
-                        for item in raw_assets:
-                            name = self._norm_symbol(item.get('symbol',''))
-                            base = name[:-4] if name.upper().endswith('-OTC') else ''
-                            if (item.get('open', True) and len(base) == 6 and
-                                base[:3] in _FX_CODES and base[3:] in _FX_CODES):
-                                found.append(name)
-                        with _lock:
-                            _stream_diag['discovery']['fx_open_count'] = len(found)
-                        if found:
-                            symbols = list(dict.fromkeys(found)); discovered = True
-                    except Exception as exc:
-                        with _lock:
-                            _stream_diag['discovery'] = {'ok': False, 'error': f'{type(exc).__name__}:{str(exc)[:160]}'}
-
-                with _lock:
-                    _stream_diag['started_at'] = _stream_diag.get('started_at') or time.time()
-                # Controlled rotation: keep the SDK websocket stable instead
-                # of opening dozens of OTC subscriptions at once.
-                if not symbols:
-                    time.sleep(5); continue
-                batch = symbols[index:index + 6]
-                if not batch:
-                    index = 0; continue
-                for symbol in batch:
-                    for interval in (60, 300):
-                        try:
-                            api.start_candles_stream(symbol, interval, 120)
-                            with _lock:
-                                _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
-                        except Exception as exc:
-                            with _lock:
-                                _stream_diag['errors'][f'{symbol}:{interval}'] = f'{type(exc).__name__}:{str(exc)[:120]}'
-                            if 'websocket' in str(exc).lower() or 'closed' in str(exc).lower():
-                                raise
-                # One warm-up window per small batch, then read repeatedly.
-                time.sleep(5)
-                for _ in range(3):
-                    for symbol in batch:
-                        for interval in (60, 300):
-                            raw = api.get_realtime_candles(symbol, interval) or {}
-                            rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
-                            # Some OTC symbols accept subscription but emit no
-                            # realtime map. Fall back to bounded REST candles.
-                            if not rows:
-                                fallback = _bounded_call(api.get_candles, symbol, interval, 120, time.time(), timeout=15)
-                                rows = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in (fallback or [])]
-                            if rows:
-                                with _lock:
-                                    _stream_diag['updated'][f'{symbol}:{interval}'] = float(max(rows, key=lambda x: x['timestamp']).get('timestamp', 0))
-                                    _stream_diag['polls'] += 1
-                                    _candle_cache[(symbol, interval)] = sorted(rows, key=lambda x: x['timestamp'])[-120:]
-                    time.sleep(2)
-                index += 6
-                if index >= len(symbols):
-                    index = 0
-            except Exception as exc:
-                reason = str(exc)[:160]
-                with _lock:
-                    _stream_diag['collector_error'] = f'{type(exc).__name__}:{reason}'
-                if 'websocket' in reason.lower() or 'closed' in reason.lower():
-                    self._schedule_reconnect('IQ_OPTION_OTC_STREAM_DROPPED')
-                time.sleep(10)
 
     def connect(self):
         if self.connected and self.api: return True, 'CONNECTED_READ_ONLY'
@@ -279,27 +137,22 @@ class IQOptionReadonly:
         if not self.connected or not self.api:
             return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
-            symbol = self._norm_symbol(symbol); interval = int(interval); requested = max(1, min(int(count), 3000))
-            minimum = 120 if interval == 60 else 30
-            best = []
-            # Historical IQ data is authoritative. Never let a shallow stream cache
-            # mask a valid historical response. Keep the deepest bounded response.
-            for attempt in range(1, 4):
-                raw = _bounded_call(self.api.get_candles, symbol, interval, requested, time.time(), timeout=25)
-                if raw is None: continue
-                out = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in (raw or [])]
-                if len(out) > len(best): best = out
-                if len(best) >= minimum:
-                    return {'ok': True, 'symbol': symbol, 'interval_seconds': interval, 'candles': best, 'source': 'IQ_OPTION_DIRECT', 'read_only': True, 'attempts': attempt}
-                time.sleep(0.4 * attempt)
-            # Cache is only a last resort and only if it meets the contract.
-            with _lock: cached = list(_candle_cache.get((symbol, interval), []))
-            if len(cached) >= minimum:
-                return {'ok': True, 'symbol': symbol, 'interval_seconds': interval, 'candles': cached[-requested:], 'source': 'IQ_OPTION_DIRECT_STREAM_CACHE', 'read_only': True, 'fallback': 'cache'}
-            return {'ok': False, 'symbol': symbol, 'interval_seconds': interval, 'candles': best, 'reason': f'INSUFFICIENT_CANDLES:{len(best)}<{minimum}', 'read_only': True}
+            symbol = str(symbol).upper().replace('/', '')
+            # The Webshare websocket can stall on unsupported/OTC symbols.
+            # Bound each SDK call so one symbol cannot hang the whole batch.
+            raw = _bounded_call(self.api.get_candles, symbol, int(interval), max(1, min(int(count), 3000)), time.time(), timeout=25)
+            if raw is None:
+                self._schedule_reconnect('IQ_OPTION_CANDLES_TIMEOUT')
+                return {'ok': False, 'symbol': symbol, 'reason': 'IQ_OPTION_CANDLES_TIMEOUT_RECONNECTING', 'read_only': True}
+            out = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in raw or []]
+            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': out, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception as exc:
             reason = str(exc)[:180]
-            if 'websocket' in reason.lower() or 'connection closed' in reason.lower(): self._schedule_reconnect(reason or 'IQ_OPTION_WEBSOCKET_DROPPED')
+            # Some SDK paths surface a closed websocket as an exception rather
+            # than returning None. Invalidate the stale connected state so the
+            # watchdog reconnects instead of serving empty snapshots.
+            if 'websocket' in reason.lower() or 'connection closed' in reason.lower():
+                self._schedule_reconnect(reason or 'IQ_OPTION_WEBSOCKET_DROPPED')
             return {'ok': False, 'reason': reason or f'IQ_OPTION_CANDLES_UNAVAILABLE:{type(exc).__name__}'}
 
     def _init_snapshot(self):
