@@ -1,16 +1,19 @@
 """Fetch fresh read-only candles from Railway, preferring per-symbol endpoints."""
 import json, os, time, urllib.parse, urllib.request
 from pathlib import Path
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
 requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
 include_otc = os.getenv('INCLUDE_OTC', 'false').lower() == 'true'
 otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
-REAL_ALLOWLIST = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD','EURGBP','EURJPY','GBPJPY']
-OTC_ALLOWLIST = [f'{s}-OTC' for s in REAL_ALLOWLIST]
+# Never accept a partial batch as usable market data. The report contract
+# requires at least 120 M1 and 30 M5 candles; request the larger operational
+# targets and recover per symbol when a batch returns a short payload.
+MIN_M1 = int(os.getenv('MIN_M1_CANDLES', '120'))
+MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
+REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '500'))
+REQUEST_M5 = int(os.getenv('REQUEST_M5_CANDLES', '100'))
 
 
 def get(path, timeout=60, attempts=3):
@@ -25,27 +28,6 @@ def get(path, timeout=60, attempts=3):
                 time.sleep(2)
     raise last
 
-
-def fetch_symbol_candles(symbol, interval, count=120):
-    """Fetch the deepest valid response from the Gateway, never the last shallow one."""
-    minimum = 120 if int(interval) == 60 else 30
-    query = urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'count': count})
-    best, source = [], None
-    # IQ Option occasionally answers the same request with a shallow batch.
-    # Keep the deepest response across bounded attempts instead of accepting the last one.
-    for attempt in range(1, 4):
-        direct = get('/api/market/candles?' + query, timeout=60, attempts=1)
-        rows = direct.get('candles') or []
-        if len(rows) > len(best): best, source = rows, direct.get('source')
-        if len(best) >= minimum: return best, source
-        time.sleep(0.5 * attempt)
-    for attempt in range(1, 4):
-        stream = get('/api/market/stream?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'maxdict': count}), timeout=90, attempts=1)
-        rows = stream.get('candles') or []
-        if len(rows) > len(best): best, source = rows, stream.get('source')
-        if len(best) >= minimum: return best, source
-        time.sleep(0.5 * attempt)
-    return (best if len(best) >= minimum else []), source
 
 def discover_symbols():
     # Assets may already be supplied by the scheduler. Sanitize that list too;
@@ -62,13 +44,6 @@ def discover_symbols():
                 if name not in cleaned: cleaned.append(name)
         if not cleaned: raise RuntimeError('NO_VALID_FX_SYMBOLS')
         return cleaned
-    # The approved universe is fixed: never expand to every broker-listed
-    # OTC asset. Availability is checked later by the candle fetch step.
-    if otc_only:
-        return OTC_ALLOWLIST
-    if include_otc:
-        return REAL_ALLOWLIST + OTC_ALLOWLIST
-    return REAL_ALLOWLIST
     payload = get('/api/market/assets?instrument=all', timeout=60)
     # Assets endpoint also contains stocks/crypto. Keep currency pairs only.
     rows = payload.get('assets', []) if isinstance(payload, dict) else []
@@ -76,7 +51,7 @@ def discover_symbols():
     for row in rows:
         if not isinstance(row, dict) or row.get('open') is False:
             continue
-        if not otc_only and row.get('instrument') not in (None, 'binary'):
+        if row.get('instrument') not in (None, 'binary'):
             continue
         name = str(row.get('symbol') or row.get('name') or '').upper().split('.')[-1].replace('/', '')
         if '_OTC' in name: name = name.replace('_OTC', '-OTC')
@@ -126,51 +101,104 @@ errors = {}
 for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC') if s in collected]:
     for interval, key in ((60, 'm1'), (300, 'm5')):
         try:
-            rows, source = fetch_symbol_candles(symbol, interval, 120)
-            if rows:
-                collected[symbol][key] = {'candles': rows, 'source': source,
+            direct = get('/api/market/candles?' + urllib.parse.urlencode({
+                'symbol': symbol, 'interval': interval, 'count': 120}), timeout=60, attempts=3)
+            rows = direct.get('candles') or []
+            if isinstance(rows, list) and rows:
+                collected[symbol][key] = {'candles': rows, 'source': direct.get('source'),
                     'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
         except Exception as exc:
             errors[f'{symbol}:{interval}'] = type(exc).__name__
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-def fetch_chunk(chunk):
-    local_errors = {}
+for start in range(0, len(symbols), 2):
+    chunk = symbols[start:start + 2]
     path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
     try:
-        payload = get(path, timeout=120, attempts=5)
+        payload = get(path, timeout=120, attempts=3)
         for symbol, data in (payload.get('symbols') or {}).items():
             if symbol not in collected or not isinstance(data, dict):
                 continue
             for key, interval in (('m1', 60), ('m5', 300)):
                 rows = data.get(key) or []
-                if isinstance(rows, dict): rows = rows.get('candles') or []
-                if not isinstance(rows, list): rows = []
-                minimum = 120 if interval == 60 else 30
-                if len(rows) >= minimum or not collected[symbol][key]['candles']:
-                    collected[symbol][key] = {'candles': rows, 'source': payload.get('source'), 'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
-        # Retry empty symbols independently; this is bounded per small chunk.
-        for symbol in chunk:
-            if len(collected[symbol]['m1']['candles']) >= 120 and len(collected[symbol]['m5']['candles']) >= 30:
-                continue
-            for interval, key in ((60, 'm1'), (300, 'm5')):
-                minimum = 120 if interval == 60 else 30
-                if len(collected[symbol][key]['candles']) >= minimum: continue
-                try:
-                    rows, source = fetch_symbol_candles(symbol, interval, 120)
-                    if len(rows) >= minimum:
-                        collected[symbol][key] = {'candles': rows, 'source': source, 'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
-                except Exception as exc:
-                    local_errors[f'{symbol}:{interval}'] = type(exc).__name__
+                if isinstance(rows, dict):
+                    rows = rows.get('candles') or []
+                if not isinstance(rows, list):
+                    rows = []
+                collected[symbol][key] = {'candles': rows, 'source': payload.get('source'),
+                    'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+            # Some gateway sessions acknowledge the batch but return an empty
+            # symbol payload. Fall back per symbol, without fabricating data.
+            if not collected[symbol]['m1']['candles']:
+                for interval, key in ((60, 'm1'), (300, 'm5')):
+                    try:
+                        direct = get('/api/market/candles?' + urllib.parse.urlencode({
+                            'symbol': symbol, 'interval': interval, 'count': 120}),
+                            timeout=60, attempts=2)
+                        rows = direct.get('candles') or []
+                        if isinstance(rows, list):
+                            collected[symbol][key] = {'candles': rows,
+                                'source': direct.get('source'), 'symbol': symbol,
+                                'interval_seconds': interval, 'read_only': True}
+                    except Exception as exc:
+                        errors[f'{symbol}:{interval}'] = type(exc).__name__
     except Exception as exc:
-        for symbol in chunk: local_errors[symbol] = type(exc).__name__
-    return local_errors
+        for symbol in chunk:
+            errors[symbol] = type(exc).__name__
 
-chunks = [symbols[i:i + 2] for i in range(0, len(symbols), 2)]
-with ThreadPoolExecutor(max_workers=3) as pool:
-    futures = [pool.submit(fetch_chunk, chunk) for chunk in chunks]
-    for future in as_completed(futures):
-        errors.update(future.result())
+# Retry only symbols that remained empty after the first sweep. This is a
+# bounded recovery mode: it improves resilience without inventing candles.
+empty_symbols = [s for s, item in collected.items()
+                 if not ((item.get('m1') or {}).get('candles') or [])]
+if empty_symbols:
+    time.sleep(5)
+    for start in range(0, len(empty_symbols), 2):
+        chunk = empty_symbols[start:start + 2]
+        try:
+            payload = get('/api/market/snapshot_batch?' + urllib.parse.urlencode(
+                {'pairs': ','.join(chunk)}), timeout=120, attempts=3)
+            for symbol, data in (payload.get('symbols') or {}).items():
+                if symbol not in collected or not isinstance(data, dict):
+                    continue
+                for key, interval in (('m1', 60), ('m5', 300)):
+                    rows = data.get(key) or []
+                    if isinstance(rows, dict): rows = rows.get('candles') or []
+                    if isinstance(rows, list) and rows:
+                        collected[symbol][key] = {'candles': rows,
+                            'source': payload.get('source'), 'symbol': symbol,
+                            'interval_seconds': interval, 'read_only': True}
+        except Exception as exc:
+            for symbol in chunk: errors[f'retry:{symbol}'] = type(exc).__name__
+
+# A non-empty response is not necessarily sufficient. Recover every symbol
+# whose batch/direct response is below the contract threshold, including
+# partial payloads such as 30 M1 candles for GBPUSD.
+short_symbols = [
+    s for s, item in collected.items()
+    if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
+    or len((item.get('m5') or {}).get('candles') or []) < MIN_M5
+]
+for symbol in short_symbols:
+    for interval, key, target, minimum in (
+        (60, 'm1', REQUEST_M1, MIN_M1),
+        (300, 'm5', REQUEST_M5, MIN_M5),
+    ):
+        current = (collected[symbol].get(key) or {}).get('candles') or []
+        if len(current) >= minimum:
+            continue
+        try:
+            direct = get('/api/market/candles?' + urllib.parse.urlencode({
+                'symbol': symbol, 'interval': interval, 'count': target}),
+                timeout=90, attempts=3)
+            rows = direct.get('candles') or []
+            if isinstance(rows, list) and len(rows) > len(current):
+                collected[symbol][key] = {
+                    'candles': rows, 'source': direct.get('source'),
+                    'symbol': symbol, 'interval_seconds': interval,
+                    'read_only': True,
+                }
+            if len(rows) < minimum:
+                errors[f'short:{symbol}:{interval}'] = f'{len(rows)}<{minimum}'
+        except Exception as exc:
+            errors[f'recovery:{symbol}:{interval}'] = type(exc).__name__
 
 fresh = []
 for symbol, item in collected.items():
