@@ -31,11 +31,10 @@ class SentimentAnalysis:
                                 sentiment_score += entity.get("sentiment_score", 0)
                                 count += 1
             
-            avg_sentiment = sentiment_score / count if count > 0 else 0
-            
-            # Normalizando para 0-100
-            final_score = (avg_sentiment + 1) * 50 
-            return int(final_score), {"avg": avg_sentiment, "news_count": count}
-            
+            if count == 0:
+                return None, {"status": "unavailable", "reason": "NO_VERIFIED_NEWS", "news_count": 0}
+            avg_sentiment = sentiment_score / count
+            final_score = (avg_sentiment + 1) * 50
+            return int(final_score), {"status": "executed", "avg": avg_sentiment, "news_count": count}
         except Exception as e:
-            return 50, {"error": str(e)} # Neutro em caso de falha
+            return None, {"status": "error", "reason": type(e).__name__, "news_count": 0}
