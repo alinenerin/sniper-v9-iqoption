@@ -213,7 +213,7 @@ class IQOptionReadonly:
                 for symbol in batch:
                     for interval in (60, 300):
                         try:
-                            api.start_candles_stream(symbol, interval, 120)
+                            _bounded_call(api.start_candles_stream, symbol, interval, 120, timeout=15)
                             with _lock:
                                 _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
                         except Exception as exc:
@@ -226,7 +226,7 @@ class IQOptionReadonly:
                 for _ in range(3):
                     for symbol in batch:
                         for interval in (60, 300):
-                            raw = api.get_realtime_candles(symbol, interval) or {}
+                            raw = _bounded_call(api.get_realtime_candles, symbol, interval, timeout=10) or {}
                             rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
                             # Some OTC symbols accept subscription but emit no
                             # realtime map. Fall back to bounded REST candles.
