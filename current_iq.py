@@ -279,28 +279,27 @@ class IQOptionReadonly:
         if not self.connected or not self.api:
             return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
-            symbol = self._norm_symbol(symbol)
-            with _lock:
-                cached = list(_candle_cache.get((symbol, int(interval)), []))
-            if cached:
-                return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': cached[-max(1, min(int(count), 3000)):], 'source': 'IQ_OPTION_DIRECT_STREAM_CACHE', 'read_only': True}
-            # The Webshare websocket can stall on unsupported/OTC symbols.
-            # Bound each SDK call so one symbol cannot hang the whole batch.
-            raw = _bounded_call(self.api.get_candles, symbol, int(interval), max(1, min(int(count), 3000)), time.time(), timeout=25)
-            if raw is None:
-                # A single symbol can time out while the authenticated IQ
-                # session remains healthy. Do not tear down the global session
-                # and cascade CONNECTING failures to the other nine symbols.
-                return {'ok': False, 'symbol': symbol, 'reason': 'IQ_OPTION_CANDLES_TIMEOUT_SYMBOL_ONLY', 'read_only': True}
-            out = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in raw or []]
-            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': out, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
+            symbol = self._norm_symbol(symbol); interval = int(interval); requested = max(1, min(int(count), 3000))
+            minimum = 120 if interval == 60 else 30
+            best = []
+            # Historical IQ data is authoritative. Never let a shallow stream cache
+            # mask a valid historical response. Keep the deepest bounded response.
+            for attempt in range(1, 4):
+                raw = _bounded_call(self.api.get_candles, symbol, interval, requested, time.time(), timeout=25)
+                if raw is None: continue
+                out = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in (raw or [])]
+                if len(out) > len(best): best = out
+                if len(best) >= minimum:
+                    return {'ok': True, 'symbol': symbol, 'interval_seconds': interval, 'candles': best, 'source': 'IQ_OPTION_DIRECT', 'read_only': True, 'attempts': attempt}
+                time.sleep(0.4 * attempt)
+            # Cache is only a last resort and only if it meets the contract.
+            with _lock: cached = list(_candle_cache.get((symbol, interval), []))
+            if len(cached) >= minimum:
+                return {'ok': True, 'symbol': symbol, 'interval_seconds': interval, 'candles': cached[-requested:], 'source': 'IQ_OPTION_DIRECT_STREAM_CACHE', 'read_only': True, 'fallback': 'cache'}
+            return {'ok': False, 'symbol': symbol, 'interval_seconds': interval, 'candles': best, 'reason': f'INSUFFICIENT_CANDLES:{len(best)}<{minimum}', 'read_only': True}
         except Exception as exc:
             reason = str(exc)[:180]
-            # Some SDK paths surface a closed websocket as an exception rather
-            # than returning None. Invalidate the stale connected state so the
-            # watchdog reconnects instead of serving empty snapshots.
-            if 'websocket' in reason.lower() or 'connection closed' in reason.lower():
-                self._schedule_reconnect(reason or 'IQ_OPTION_WEBSOCKET_DROPPED')
+            if 'websocket' in reason.lower() or 'connection closed' in reason.lower(): self._schedule_reconnect(reason or 'IQ_OPTION_WEBSOCKET_DROPPED')
             return {'ok': False, 'reason': reason or f'IQ_OPTION_CANDLES_UNAVAILABLE:{type(exc).__name__}'}
 
     def _init_snapshot(self):
