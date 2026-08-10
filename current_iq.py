@@ -195,7 +195,16 @@ class IQOptionReadonly:
                         found = [self._norm_symbol(x.get('symbol','')) for x in (catalog.get('assets') or []) if _is_fx_otc(x.get('symbol','')) and x.get('open', True)]
                         if found:
                             symbols = list(dict.fromkeys(found)); discovered = True
+                        else:
+                            # Some IQ snapshots expose OTC names without the OTC
+                            # suffix. Keep the persistent session alive on a known
+                            # safe seed while the HTTP catalog remains advisory.
+                            symbols = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC']
+                            discovered = True
+                            _stream_diag['discovery']['fallback'] = 'priority_seed'
                     except Exception as exc:
+                        symbols = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC']
+                        discovered = True
                         with _lock:
                             _stream_diag['discovery'] = {'ok': False, 'error': f'{type(exc).__name__}:{str(exc)[:160]}'}
 
@@ -228,6 +237,8 @@ class IQOptionReadonly:
                             raw = api.get_realtime_candles(symbol, interval) or {}
                             rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
                             if rows:
+                                global _last_io
+                                _last_io = time.time()
                                 with _lock:
                                     _stream_diag['updated'][f'{symbol}:{interval}'] = float(max(rows, key=lambda x: x['timestamp']).get('timestamp', 0))
                                     _stream_diag['polls'] += 1
