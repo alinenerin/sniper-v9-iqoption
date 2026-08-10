@@ -171,9 +171,13 @@ class IQOptionReadonly:
             return out
 
     def _otc_collector(self):
-        """Persistent read-only REST candle collector for authorized OTC pairs."""
+        # IQ websocket is not safe to flood with dozens of subscriptions.
+        # Rotate a small group and retain each completed group in cache.
         configured = os.getenv('OTC_SYMBOLS', 'EURUSD-OTC GBPUSD-OTC USDJPY-OTC AUDUSD-OTC USDCAD-OTC USDCHF-OTC NZDUSD-OTC EURGBP-OTC EURJPY-OTC GBPJPY-OTC').replace(',', ' ').split()
         symbols = [self._norm_symbol(x) for x in configured]
+        # Empty OTC_SYMBOLS means discover all valid FX OTC pairs; do not
+        # silently fall back to four majors in the production collector.
+        discovered = bool(symbols)
         index = 0
         while True:
             try:
@@ -181,29 +185,77 @@ class IQOptionReadonly:
                     api = self.api if self.connected else None
                 if api is None:
                     time.sleep(5); continue
-                batch = symbols[index:index+2]
-                if not batch:
-                    index = 0; continue
+                if not discovered:
+                    try:
+                        catalog = self.assets('binary')
+                        with _lock:
+                            _stream_diag['discovery'] = {'ok': bool(catalog.get('ok')), 'count': len(catalog.get('assets') or []), 'reason': catalog.get('reason')}
+                        # Use the same strict FX shape as the scan, but do not
+                        # depend on broker naming quirks in the helper predicate.
+                        raw_assets = catalog.get('assets') or []
+                        found = []
+                        for item in raw_assets:
+                            name = self._norm_symbol(item.get('symbol',''))
+                            base = name[:-4] if name.upper().endswith('-OTC') else ''
+                            if (item.get('open', True) and len(base) == 6 and
+                                base[:3] in _FX_CODES and base[3:] in _FX_CODES):
+                                found.append(name)
+                        with _lock:
+                            _stream_diag['discovery']['fx_open_count'] = len(found)
+                        if found:
+                            symbols = list(dict.fromkeys(found)); discovered = True
+                    except Exception as exc:
+                        with _lock:
+                            _stream_diag['discovery'] = {'ok': False, 'error': f'{type(exc).__name__}:{str(exc)[:160]}'}
+
                 with _lock:
                     _stream_diag['started_at'] = _stream_diag.get('started_at') or time.time()
-                    _stream_diag['discovery'] = {'mode': 'explicit_authorized_universe', 'count': len(symbols)}
+                # Controlled rotation: keep the SDK websocket stable instead
+                # of opening dozens of OTC subscriptions at once.
+                if not symbols:
+                    time.sleep(5); continue
+                batch = symbols[index:index + 6]
+                if not batch:
+                    index = 0; continue
                 for symbol in batch:
                     for interval in (60, 300):
-                        raw = _bounded_call(api.get_candles, symbol, interval, 120, time.time(), timeout=20) or []
-                        rows = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in raw if isinstance(c, dict) and c.get('from') is not None]
-                        if rows:
+                        try:
+                            api.start_candles_stream(symbol, interval, 120)
                             with _lock:
-                                _stream_diag['updated'][f'{symbol}:{interval}'] = float(max(rows, key=lambda x: x['timestamp'])['timestamp'])
-                                _stream_diag['polls'] += 1
-                                _candle_cache[(symbol, interval)] = sorted(rows, key=lambda x: x['timestamp'])[-120:]
-                        else:
-                            with _lock: _stream_diag['errors'][f'{symbol}:{interval}'] = 'NO_CANDLES_RETURNED'
-                index += 2
-                if index >= len(symbols): index = 0
-                time.sleep(2)
-            except Exception as exc:
-                with _lock: _stream_diag['collector_error'] = f'{type(exc).__name__}:{str(exc)[:160]}'
+                                _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
+                        except Exception as exc:
+                            with _lock:
+                                _stream_diag['errors'][f'{symbol}:{interval}'] = f'{type(exc).__name__}:{str(exc)[:120]}'
+                            if 'websocket' in str(exc).lower() or 'closed' in str(exc).lower():
+                                raise
+                # One warm-up window per small batch, then read repeatedly.
                 time.sleep(5)
+                for _ in range(3):
+                    for symbol in batch:
+                        for interval in (60, 300):
+                            raw = api.get_realtime_candles(symbol, interval) or {}
+                            rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
+                            # Some OTC symbols accept subscription but emit no
+                            # realtime map. Fall back to bounded REST candles.
+                            if not rows:
+                                fallback = _bounded_call(api.get_candles, symbol, interval, 120, time.time(), timeout=15)
+                                rows = [{'timestamp': c.get('from'), 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for c in (fallback or [])]
+                            if rows:
+                                with _lock:
+                                    _stream_diag['updated'][f'{symbol}:{interval}'] = float(max(rows, key=lambda x: x['timestamp']).get('timestamp', 0))
+                                    _stream_diag['polls'] += 1
+                                    _candle_cache[(symbol, interval)] = sorted(rows, key=lambda x: x['timestamp'])[-120:]
+                    time.sleep(2)
+                index += 6
+                if index >= len(symbols):
+                    index = 0
+            except Exception as exc:
+                reason = str(exc)[:160]
+                with _lock:
+                    _stream_diag['collector_error'] = f'{type(exc).__name__}:{reason}'
+                if 'websocket' in reason.lower() or 'closed' in reason.lower():
+                    self._schedule_reconnect('IQ_OPTION_OTC_STREAM_DROPPED')
+                time.sleep(10)
 
     def connect(self):
         if self.connected and self.api: return True, 'CONNECTED_READ_ONLY'
