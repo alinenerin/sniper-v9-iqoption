@@ -1,52 +1,88 @@
-name: Forex V16 Supreme - Read Only
+name: Forex V16 Supreme - Read Only (Separated)
 
 on:
   workflow_dispatch:
+    inputs:
+      symbols:
+        description: 'Pares Forex reais separados por espaço'
+        required: true
+        default: 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY'
+        type: string
   schedule:
     - cron: '0 7-20 * * 1-5'
     - cron: '0 0-5 * * 2-6'
 
 env:
-  PYTHON_VERSION: '3.11'
+  ANALYSIS_ONLY: '1'
+  EXECUTION_ALLOWED: 'false'
+  EXECUTOR_ENABLED: 'false'
+  INCLUDE_OTC: 'false'
+  OTC_ONLY: 'false'
+  SYMBOLS: ${{ inputs.symbols || 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY' }}
 
 jobs:
   forex-analysis:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
       - name: Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy pandas scipy requests pytz websocket-client scikit-learn xgboost
-      - name: Architecture and read-only checks
+          pip install -r requirements.txt
+      - name: Forex boundary and read-only checks
         run: |
-          python -m py_compile FOREX_SUPREME_FINAL_V16.py shared_ai/consultation.py config/markets/contracts.py
+          python -m py_compile engines/forex/operational.py shared_ai/consultation.py config/markets/contracts.py
           python - <<'PY'
           from pathlib import Path
-          forex = Path('FOREX_SUPREME_FINAL_V16.py').read_text()
-          assert 'executor_v16_supreme' not in forex
-          assert 'from shared_ai.consultation import SharedAI' in forex
-          print('forex boundary: OK')
+          wf = Path('.github/workflows/forex_v16_supreme.yml').read_text()
+          assert 'INCLUDE_OTC: \'false\'' in wf
+          assert 'OTC_ONLY: \'false\'' in wf
+          assert 'binary_v16' not in wf.lower()
+          assert 'EXECUTION_ALLOWED: \'false\'' in wf
+          print('forex-boundary=OK; otc=disabled; execution=blocked')
           PY
-      - name: Forex analysis (read-only)
+      - name: Fetch fresh Forex market data only
         env:
-          IQ_USER: ${{ secrets.IQ_USER }}
-          IQ_PASS: ${{ secrets.IQ_PASS }}
-          BALANCE_MODE: PRACTICE
-        run: timeout 340m python3 FOREX_SUPREME_FINAL_V16.py --scan-only
-      - name: Logs
+          RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
+        run: python scripts/fetch_railway_market.py
+      - name: Run Forex-only read-only inference
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from engines.forex.operational import ForexV16ReadOnly
+          data = json.loads(Path('reports/market_data.json').read_text())
+          symbols = os.environ['SYMBOLS'].replace(',', ' ').split()
+          assert not any(s.upper().endswith('-OTC') for s in symbols)
+          engine = ForexV16ReadOnly()
+          analyses = []
+          for symbol in symbols:
+              item = data.get('symbols', {}).get(symbol, {})
+              candles = item.get('candles', {}).get('candles', [])
+              result = engine.analyze(symbol, candles, metadata={'market': 'forex', 'include_otc': False, 'read_only': True})
+              result['market'] = 'forex'
+              result['execution_allowed'] = False
+              analyses.append(result)
+          report = {'mode': 'read_only', 'execution_allowed': False, 'market': 'forex', 'include_otc': False, 'symbols': symbols, 'analyses': analyses, 'health': data.get('health')}
+          Path('reports/forex_latest_scan.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+          assert len(analyses) == len(symbols)
+          assert all(x.get('execution_allowed') is False for x in analyses)
+          print('forex-only-report=OK', len(analyses))
+          PY
+      - name: Upload Forex-only report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: forex-v16-readonly-logs
+          name: forex-only-${{ github.run_id }}
           path: |
-            *.log
-            forex_performance.db
-            logs/
+            reports/market_data.json
+            reports/forex_latest_scan.json
           retention-days: 7
