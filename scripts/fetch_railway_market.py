@@ -102,64 +102,44 @@ for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC
                     'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
         except Exception as exc:
             errors[f'{symbol}:{interval}'] = type(exc).__name__
-for start in range(0, len(symbols), 2):
-    chunk = symbols[start:start + 2]
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def fetch_chunk(chunk):
+    local_errors = {}
     path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
     try:
-        payload = get(path, timeout=120, attempts=3)
+        payload = get(path, timeout=120, attempts=5)
         for symbol, data in (payload.get('symbols') or {}).items():
             if symbol not in collected or not isinstance(data, dict):
                 continue
             for key, interval in (('m1', 60), ('m5', 300)):
                 rows = data.get(key) or []
-                if isinstance(rows, dict):
-                    rows = rows.get('candles') or []
-                if not isinstance(rows, list):
-                    rows = []
-                collected[symbol][key] = {'candles': rows, 'source': payload.get('source'),
-                    'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
-            # Some gateway sessions acknowledge the batch but return an empty
-            # symbol payload. Fall back per symbol, without fabricating data.
-            if not collected[symbol]['m1']['candles']:
-                for interval, key in ((60, 'm1'), (300, 'm5')):
-                    try:
-                        direct = get('/api/market/candles?' + urllib.parse.urlencode({
-                            'symbol': symbol, 'interval': interval, 'count': 120}),
-                            timeout=60, attempts=2)
-                        rows = direct.get('candles') or []
-                        if isinstance(rows, list):
-                            collected[symbol][key] = {'candles': rows,
-                                'source': direct.get('source'), 'symbol': symbol,
-                                'interval_seconds': interval, 'read_only': True}
-                    except Exception as exc:
-                        errors[f'{symbol}:{interval}'] = type(exc).__name__
-    except Exception as exc:
+                if isinstance(rows, dict): rows = rows.get('candles') or []
+                if not isinstance(rows, list): rows = []
+                if rows or not collected[symbol][key]['candles']:
+                    collected[symbol][key] = {'candles': rows, 'source': payload.get('source'), 'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+        # Retry empty symbols independently; this is bounded per small chunk.
         for symbol in chunk:
-            errors[symbol] = type(exc).__name__
-
-# Retry only symbols that remained empty after the first sweep. This is a
-# bounded recovery mode: it improves resilience without inventing candles.
-empty_symbols = [s for s, item in collected.items()
-                 if not ((item.get('m1') or {}).get('candles') or [])]
-if empty_symbols:
-    time.sleep(5)
-    for start in range(0, len(empty_symbols), 2):
-        chunk = empty_symbols[start:start + 2]
-        try:
-            payload = get('/api/market/snapshot_batch?' + urllib.parse.urlencode(
-                {'pairs': ','.join(chunk)}), timeout=120, attempts=3)
-            for symbol, data in (payload.get('symbols') or {}).items():
-                if symbol not in collected or not isinstance(data, dict):
-                    continue
-                for key, interval in (('m1', 60), ('m5', 300)):
-                    rows = data.get(key) or []
-                    if isinstance(rows, dict): rows = rows.get('candles') or []
+            if collected[symbol]['m1']['candles'] and collected[symbol]['m5']['candles']:
+                continue
+            for interval, key in ((60, 'm1'), (300, 'm5')):
+                if collected[symbol][key]['candles']: continue
+                try:
+                    direct = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'count': 120}), timeout=60, attempts=5)
+                    rows = direct.get('candles') or []
                     if isinstance(rows, list) and rows:
-                        collected[symbol][key] = {'candles': rows,
-                            'source': payload.get('source'), 'symbol': symbol,
-                            'interval_seconds': interval, 'read_only': True}
-        except Exception as exc:
-            for symbol in chunk: errors[f'retry:{symbol}'] = type(exc).__name__
+                        collected[symbol][key] = {'candles': rows, 'source': direct.get('source'), 'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+                except Exception as exc:
+                    local_errors[f'{symbol}:{interval}'] = type(exc).__name__
+    except Exception as exc:
+        for symbol in chunk: local_errors[symbol] = type(exc).__name__
+    return local_errors
+
+chunks = [symbols[i:i + 2] for i in range(0, len(symbols), 2)]
+with ThreadPoolExecutor(max_workers=3) as pool:
+    futures = [pool.submit(fetch_chunk, chunk) for chunk in chunks]
+    for future in as_completed(futures):
+        errors.update(future.result())
 
 fresh = []
 for symbol, item in collected.items():
