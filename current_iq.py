@@ -1,7 +1,10 @@
 """Persistent read-only IQ Option session using Railway's direct network route."""
+import logging
 import os
 import time
 import threading
+
+_LOG = logging.getLogger("iqoption_connection")
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 _client = None
@@ -111,9 +114,13 @@ class IQOptionReadonly:
             # Force the REST login through the same verified Webshare endpoint.
             if not direct and hasattr(api, 'session'):
                 api.session.proxies.update({'http': proxy_url, 'https': proxy_url})
-            # IQ SDK login can hang behind a degraded proxy; never let it
+            # IQ SDK login can hang behind a degraded route; never let it
             # leave the Railway process permanently stuck in "connecting".
+            connect_started = time.monotonic()
+            _LOG.info("IQ_SDK_CONNECT_START route=%s", "webshare" if not direct else "direct")
             result = _bounded_call(api.connect, timeout=30)
+            connect_elapsed = round(time.monotonic() - connect_started, 3)
+            _LOG.info("IQ_SDK_CONNECT_END elapsed_s=%s result_type=%s", connect_elapsed, type(result).__name__)
             if not isinstance(result, tuple):
                 _state.update(status='error', reason='IQ_OPTION_CONNECT_TIMEOUT'); _start_once=False; return
             ok, reason = result

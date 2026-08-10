@@ -25,6 +25,12 @@ def health_connected():
         return False
 
 def main():
+    # Transport diagnosis runs before any SDK login and never uses credentials.
+    try:
+        from network_diagnostics import run_once
+        run_once()
+    except Exception as exc:
+        print(f"[SUPERVISOR] network diagnostic unavailable: {type(exc).__name__}", flush=True)
     print("[SUPERVISOR] persistent read-only IQ gateway enabled", flush=True)
     while True:
         child = start_gateway()
