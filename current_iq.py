@@ -14,6 +14,13 @@ _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
 
+_FX_CODES = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
+def _is_fx_otc(symbol):
+    name = str(symbol).upper().replace('_OTC','-OTC')
+    base = name[:-4] if name.endswith('-OTC') else name
+    return name.endswith('-OTC') and len(base) == 6 and base[:3] in _FX_CODES and base[3:] in _FX_CODES
+
+
 
 def _bounded_call(fn, *args, timeout=8):
     pool = ThreadPoolExecutor(max_workers=1)
@@ -161,7 +168,7 @@ class IQOptionReadonly:
                 if not discovered:
                     try:
                         catalog = self.assets('binary')
-                        found = [self._norm_symbol(x.get('symbol','')) for x in (catalog.get('assets') or []) if str(x.get('symbol','')).upper().replace('_OTC','-OTC').endswith('-OTC') and x.get('open', True)]
+                        found = [self._norm_symbol(x.get('symbol','')) for x in (catalog.get('assets') or []) if _is_fx_otc(x.get('symbol','')) and x.get('open', True)]
                         if found:
                             symbols = list(dict.fromkeys(found)); discovered = True
                     except Exception:
@@ -178,6 +185,9 @@ class IQOptionReadonly:
                             if 'websocket' in str(exc).lower() or 'closed' in str(exc).lower():
                                 raise
                     subscribed.append(symbol)
+                # Give the IQ websocket time to populate the first candle
+                # window before reading it; immediate reads often return {}.
+                time.sleep(3)
                 for symbol in subscribed:
                     for interval in (60, 300):
                         raw = api.get_realtime_candles(symbol, interval) or {}
