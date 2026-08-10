@@ -222,7 +222,6 @@ class IQOptionReadonly:
                 if index >= len(symbols):
                     index = 0
             except Exception as exc:
-            except Exception as exc:
                 reason = str(exc)[:160]
                 if 'websocket' in reason.lower() or 'closed' in reason.lower():
                     self._schedule_reconnect('IQ_OPTION_OTC_STREAM_DROPPED')
