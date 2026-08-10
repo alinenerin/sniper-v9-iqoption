@@ -13,7 +13,7 @@ _reconnect_lock = threading.Lock()
 _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
-_stream_diag = {'started_at': None, 'subscribed': {}, 'updated': {}, 'errors': {}, 'polls': 0}
+_stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'polls': 0}
 
 _FX_CODES = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
 def _is_fx_otc(symbol):
@@ -181,11 +181,15 @@ class IQOptionReadonly:
                 if not discovered:
                     try:
                         catalog = self.assets('binary')
+                        with _lock:
+                            _stream_diag['discovery'] = {'ok': bool(catalog.get('ok')), 'count': len(catalog.get('assets') or []), 'reason': catalog.get('reason')}
                         found = [self._norm_symbol(x.get('symbol','')) for x in (catalog.get('assets') or []) if _is_fx_otc(x.get('symbol','')) and x.get('open', True)]
                         if found:
                             symbols = list(dict.fromkeys(found)); discovered = True
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        with _lock:
+                            _stream_diag['discovery'] = {'ok': False, 'error': f'{type(exc).__name__}:{str(exc)[:160]}'}
+
                 with _lock:
                     _stream_diag['started_at'] = _stream_diag.get('started_at') or time.time()
                 # Controlled rotation: keep the SDK websocket stable instead
