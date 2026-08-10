@@ -16,6 +16,9 @@ _lock = threading.RLock()
 _start_once = False
 _patched = False
 _reconnect_lock = threading.Lock()
+_provider_lock = threading.Lock()
+_session_id = None
+_reconnect_attempts = 0
 _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
@@ -138,8 +141,10 @@ class IQOptionReadonly:
                 _state.update(status='error', reason=str(reason or 'IQ_OPTION_LOGIN_FAILED')[:180]); _start_once=False; return
             try: api.change_balance(self.balance_mode)
             except Exception: pass
+            global _session_id
             with _lock:
                 self.api, self.connected, _client = api, True, self
+                _session_id = uuid.uuid4().hex
                 _state.update(status='connected', reason=None, connected_at=time.time())
                 self._start_otc_collector()
         except Exception as exc:
@@ -147,7 +152,9 @@ class IQOptionReadonly:
             _start_once=False
 
     def _schedule_reconnect(self, reason):
-        global _client, _start_once
+        global _client, _start_once, _reconnect_attempts
+        with _lock:
+            _reconnect_attempts += 1
         with _reconnect_lock:
             with _lock:
                 if _state.get('status') in ('connecting', 'reconnecting') and _start_once:
@@ -305,7 +312,9 @@ class IQOptionReadonly:
             "request_timestamp": datetime.fromtimestamp(requested_at, timezone.utc).isoformat(),
             "candles_requested": int(count), "cache_hit": False, "cache_size": 0,
             "historical_requested": True, "historical_received": 0, "backfill_attempt": 0,
-            "attempts": [], "read_only": True
+            "attempts": [], "read_only": True,
+            "session_id": _session_id, "connection_state": _state.get('status'),
+            "connection_reconnect_attempt": _reconnect_attempts
         }
         expected_otc = requested_symbol.endswith("-OTC")
         if market_type not in ("REAL", "OTC") or expected_otc != (market_type == "OTC"):
@@ -325,9 +334,15 @@ class IQOptionReadonly:
             target = max(required, min(int(count), 3000)); best = []
             cursor = time.time()
             for attempt in range(1, 4):
-                raw = _bounded_call(self.api.get_candles, provider_symbol, interval, target, cursor, timeout=25)
+                with _provider_lock:
+                    with _lock:
+                        api = self.api if self.connected else None
+                        base["connection_state"] = _state.get('status')
+                        base["session_id"] = _session_id
+                    raw = _bounded_call(api.get_candles, provider_symbol, interval, target, cursor, timeout=25) if api else None
+                    provider_state = _state.get('status')
                 rows = [{"timestamp": c.get("from"), "open": c.get("open"), "high": c.get("max"), "low": c.get("min"), "close": c.get("close"), "volume": c.get("volume", 0)} for c in (raw or [])]
-                base["attempts"].append({"attempt": attempt, "kind": "historical", "requested": target, "received": len(rows), "cursor": cursor, "provider_status": "OK" if rows else "EMPTY_RESPONSE"})
+                base["attempts"].append({"attempt": attempt, "kind": "historical", "requested": target, "received": len(rows), "cursor": cursor, "provider_status": "OK" if rows else "EMPTY_RESPONSE", "connection_state": provider_state, "request_attempt": attempt, "connection_reconnect_attempt": _reconnect_attempts})
                 base["historical_received"] = max(base["historical_received"], len(rows))
                 if attempt > 1:
                     base["backfill_attempt"] = attempt
