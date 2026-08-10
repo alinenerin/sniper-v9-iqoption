@@ -24,6 +24,25 @@ def get(path, timeout=60, attempts=3):
     raise last
 
 
+def fetch_symbol_candles(symbol, interval, count=120):
+    """Use historical candles first, then the live stream for OTC symbols.
+
+    IQ Option can expose an OTC asset as open in the catalog while its
+    historical endpoint returns an empty list. The stream is authoritative
+    for that case; never convert an empty response into valid market data.
+    """
+    query = urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'count': count})
+    direct = get('/api/market/candles?' + query, timeout=60, attempts=3)
+    rows = direct.get('candles') or []
+    if isinstance(rows, list) and rows:
+        return rows, direct.get('source')
+    if str(symbol).upper().endswith('-OTC'):
+        stream = get('/api/market/stream?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'maxdict': count}), timeout=90, attempts=3)
+        rows = stream.get('candles') or []
+        if isinstance(rows, list) and rows:
+            return rows, stream.get('source')
+    return [], direct.get('source')
+
 def discover_symbols():
     # Assets may already be supplied by the scheduler. Sanitize that list too;
     # never let stocks/crypto leak into an FX-only paper scan.
@@ -103,11 +122,9 @@ errors = {}
 for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC') if s in collected]:
     for interval, key in ((60, 'm1'), (300, 'm5')):
         try:
-            direct = get('/api/market/candles?' + urllib.parse.urlencode({
-                'symbol': symbol, 'interval': interval, 'count': 120}), timeout=60, attempts=3)
-            rows = direct.get('candles') or []
-            if isinstance(rows, list) and rows:
-                collected[symbol][key] = {'candles': rows, 'source': direct.get('source'),
+            rows, source = fetch_symbol_candles(symbol, interval, 120)
+            if rows:
+                collected[symbol][key] = {'candles': rows, 'source': source,
                     'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
         except Exception as exc:
             errors[f'{symbol}:{interval}'] = type(exc).__name__
@@ -134,10 +151,9 @@ def fetch_chunk(chunk):
             for interval, key in ((60, 'm1'), (300, 'm5')):
                 if collected[symbol][key]['candles']: continue
                 try:
-                    direct = get('/api/market/candles?' + urllib.parse.urlencode({'symbol': symbol, 'interval': interval, 'count': 120}), timeout=60, attempts=5)
-                    rows = direct.get('candles') or []
-                    if isinstance(rows, list) and rows:
-                        collected[symbol][key] = {'candles': rows, 'source': direct.get('source'), 'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+                    rows, source = fetch_symbol_candles(symbol, interval, 120)
+                    if rows:
+                        collected[symbol][key] = {'candles': rows, 'source': source, 'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
                 except Exception as exc:
                     local_errors[f'{symbol}:{interval}'] = type(exc).__name__
     except Exception as exc:
