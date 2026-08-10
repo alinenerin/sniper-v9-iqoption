@@ -158,6 +158,12 @@ class IQOptionReadonly:
         return str(symbol).upper().replace('/', '').replace('_OTC', '-OTC')
 
     def _start_otc_collector(self):
+        # The legacy SDK websocket is not thread-safe. Keep the optional
+        # background OTC fan-out disabled by default so it cannot race the
+        # authenticated session or the authoritative candle endpoint.
+        enabled = os.getenv('ENABLE_OTC_COLLECTOR', 'false').lower() in ('1', 'true', 'yes')
+        if not enabled:
+            return
         global _collector_started
         with _lock:
             if _collector_started:
