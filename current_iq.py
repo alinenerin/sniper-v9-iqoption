@@ -38,7 +38,7 @@ def _bounded_call(fn, *args, timeout=8):
 class IQOptionReadonly:
     def __init__(self):
         global _client, _start_once
-        self.email = os.getenv('IQ_OPTION_EMAIL') or os.getenv('IQ_USER', '')
+        self.email = os.getenv('IQ_OPTION_EMAIL') or os.getenv('IQ_OPTION_USER') or os.getenv('IQ_USER', '')
         self.password = os.getenv('IQ_OPTION_PASSWORD') or os.getenv('IQ_PASS', '')
         self.balance_mode = os.getenv('IQ_OPTION_BALANCE_MODE') or os.getenv('BALANCE_MODE', 'PRACTICE')
         self.connected = False
