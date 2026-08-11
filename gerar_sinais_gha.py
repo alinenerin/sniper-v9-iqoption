@@ -1,5 +1,5 @@
-import os, sys, time, json
-from datetime import datetime
+import os, sys, time
+from datetime import datetime, timedelta
 import pytz
 from iqoptionapi.stable_api import IQ_Option
 from core.signal_engine import generate_signal
@@ -27,19 +27,11 @@ def _normalizar_candles(candles):
     return out
 
 
-def analisar_par(par, iq):
+def analisar_par(par, iq, market='BINARIA', mode='STANDARD'):
     # O motor usa EMA200; portanto M1 precisa de pelo menos 200 candles.
     velas = _normalizar_candles(iq.get_candles(par, 60, 250, time.time()))
     if not velas or len(velas) < 200:
         return None, 0, {'reason': 'Dados insuficientes', 'engine_status': 'NO_TRADE'}
-
-    is_otc = '-OTC' in par.upper()
-    if is_otc:
-        market, mode = 'BINARIA', 'OTC'
-    elif MODO in {'BINARIA', 'AMBOS'}:
-        market, mode = 'BINARIA', 'STANDARD'
-    else:
-        market, mode = 'FOREX', 'STANDARD'
 
     # Primeira camada: motor unificado. Não executa ordens.
     sig = generate_signal(
@@ -69,15 +61,15 @@ def analisar_par(par, iq):
         det['reason'] = '; '.join(sig.reasons) if sig.reasons else 'Sem setup'
         return None, 0, det
 
-    # Mantém a trava específica já existente para JPY e OTC.
+    # Trava específica já existente para JPY.
     if 'JPY' in par and sig.score < 95:
         det['reason'] = 'Trava JPY: score abaixo de 95'
         return None, 0, det
-    if is_otc:
-        # OTC continua exigindo confirmação forte do motor.
-        if sig.score < 75:
-            det['reason'] = 'Trava OTC: score abaixo de 75'
-            return None, 0, det
+
+    # OTC continua sendo BINARIA, com confirmação adicional.
+    if mode == 'OTC' and sig.score < 75:
+        det['reason'] = 'Trava OTC: score abaixo de 75'
+        return None, 0, det
 
     return sig.direction, sig.score, det
 
@@ -91,20 +83,25 @@ if not ok:
     sys.exit(1)
 
 now = datetime.now(BRT)
-h_sinal = (now.replace(minute=now.minute + 2, second=0, microsecond=0)).strftime('%H:%M')
+h_sinal = (now + timedelta(minutes=2)).replace(second=0, microsecond=0).strftime('%H:%M')
 
+# Cada lista possui uma modalidade explícita. Isso evita misturar FOREX com BINÁRIA.
 if MODO == 'FOREX':
-    pares = PARES_FOREX
+    universos = [('FOREX', 'STANDARD', p) for p in PARES_FOREX]
 elif MODO == 'BINARIA':
-    pares = PARES_BINARIA
+    universos = [('BINARIA', 'STANDARD', p) for p in PARES_BINARIA]
 elif MODO == 'OTC':
-    pares = PARES_OTC
+    universos = [('BINARIA', 'OTC', p) for p in PARES_OTC]
 else:
-    pares = PARES_FOREX + PARES_BINARIA + PARES_OTC
+    universos = (
+        [('FOREX', 'STANDARD', p) for p in PARES_FOREX] +
+        [('BINARIA', 'STANDARD', p) for p in PARES_BINARIA] +
+        [('BINARIA', 'OTC', p) for p in PARES_OTC]
+    )
 
 sinais = []
-for p in pares:
-    d, sc, det = analisar_par(p, iq)
+for market, mode, p in universos:
+    d, sc, det = analisar_par(p, iq, market=market, mode=mode)
     if d:
         ic = '💎' if sc >= 85 else '✅'
         sinais.append((sc, p, h_sinal, d, det, ic))
@@ -113,7 +110,7 @@ sinais.sort(key=lambda x: x[0], reverse=True)
 
 print('══════════════════════════════════════════')
 print(f'  SNIPER V9 — SIGNAL ENGINE — {now.strftime("%H:%M")} BRT')
-print(f'  MODO: {MODO} | {len(pares)} pares analisados')
+print(f'  MODO: {MODO} | {len(universos)} instrumentos analisados')
 print('  FOREX | BINÁRIA | OTC (BINÁRIA)')
 print('══════════════════════════════════════════')
 
