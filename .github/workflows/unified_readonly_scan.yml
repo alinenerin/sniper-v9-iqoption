@@ -30,6 +30,9 @@ jobs:
       INCLUDE_OTC: ${{ inputs.include_otc }}
       OTC_ONLY: ${{ inputs.otc_only }}
       SYMBOLS: ${{ inputs.symbols }}
+      # Optional read-only advisory integrations; absent secrets remain fail-closed.
+      LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
+      MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
