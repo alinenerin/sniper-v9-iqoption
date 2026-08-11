@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from market_data_contract import validate_candles, MINIMUMS, TIMEFRAME_NAMES
 
 _LOG = logging.getLogger("iqoption_connection")
+
+# The legacy SDK keeps the provider active-id registry in this module-level
+# mapping.  It is intentionally read-only here: refreshes are performed only
+# through the SDK's official binary/turbo init mechanism.
+import iqoptionapi.constants as OP_code
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 _client = None
@@ -329,6 +334,16 @@ class IQOptionReadonly:
             "connection_reconnect_attempt": _reconnect_attempts
         }
         expected_otc = requested_symbol.endswith("-OTC")
+        # These fields are populated for OTC resolution below.  Keeping them
+        # in every request makes the trace schema stable without implying that
+        # REAL active IDs were refreshed by this OTC-only change.
+        base.update({
+            "active_id_before": None,
+            "active_id_after": None,
+            "mapping_source": "NOT_APPLICABLE_REAL" if not expected_otc else "NOT_ATTEMPTED",
+            "mapping_updated": False,
+            "active_id_resolution_status": "NOT_APPLICABLE_REAL" if not expected_otc else "NOT_ATTEMPTED",
+        })
         if market_type not in ("REAL", "OTC") or expected_otc != (market_type == "OTC"):
             base.update(status="ERROR", provider_status="SYMBOL_MARKET_TYPE_MISMATCH", validation_status="ERROR", freshness_status="ERROR",
                         error_type="SYMBOL_MARKET_TYPE_MISMATCH", error_message=f"{requested_symbol}:{market_type}", candles_received=0,
@@ -354,6 +369,35 @@ class IQOptionReadonly:
                             api = self.api if self.connected else None
                             base["connection_state"] = _state.get('status')
                             base["session_id"] = _session_id
+
+                        # OTC binary/turbo symbols are resolved only through
+                        # the SDK's official initializer.  This method mutates
+                        # OP_code.ACTIVES from the provider's init payload; no
+                        # local alias or guessed active ID is introduced.
+                        if expected_otc and api:
+                            before = OP_code.ACTIVES.get(provider_symbol)
+                            base["active_id_before"] = before
+                            base["mapping_source"] = "IQ_Option.get_ALL_Binary_ACTIVES_OPCODE"
+                            refresh_result = _bounded_call(api.get_ALL_Binary_ACTIVES_OPCODE, timeout=35)
+                            after = OP_code.ACTIVES.get(provider_symbol)
+                            base["active_id_after"] = after
+                            base["mapping_updated"] = before != after and after is not None
+                            base["active_id_resolution_status"] = "RESOLVED" if after is not None else "ACTIVE_ID_UNAVAILABLE"
+                            if after is None:
+                                # Do not invoke get_candles with an unresolved
+                                # provider symbol.  The official refresh result
+                                # itself is not treated as an active ID.
+                                base["provider_status"] = "ACTIVE_ID_UNAVAILABLE"
+                                base["status"] = "ERROR"
+                                base["validation_status"] = "ERROR"
+                                base["freshness_status"] = "ERROR"
+                                base["error_type"] = "ACTIVE_ID_UNAVAILABLE"
+                                base["error_message"] = "get_ALL_Binary_ACTIVES_OPCODE did not populate OP_code.ACTIVES"
+                                base["mapping_refresh_return_type"] = type(refresh_result).__name__
+                                base["candles_received"] = 0
+                                base["response_timestamp"] = datetime.now(timezone.utc).isoformat()
+                                _trace(base.copy())
+                                return base
                         raw = _bounded_call(api.get_candles, provider_symbol, interval, target, cursor, timeout=25) if api else None
                         provider_state = _state.get('status')
                         if raw is None and provider_state != 'connected':
