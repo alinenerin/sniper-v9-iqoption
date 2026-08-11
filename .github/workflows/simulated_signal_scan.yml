@@ -1,0 +1,58 @@
+name: Simulated Signal Scan - IQ Option Read Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'FOREX, BINARIA, OTC ou AMBOS'
+        required: true
+        default: 'AMBOS'
+        type: choice
+        options:
+          - FOREX
+          - BINARIA
+          - OTC
+          - AMBOS
+
+jobs:
+  simulated-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pandas scipy requests pytz websocket-client
+          pip install git+https://github.com/iqoptionapi/iqoptionapi.git
+
+      - name: Read-only architecture check
+        run: |
+          python -m py_compile core/simulated_signal_scan.py core/signal_engine.py current_iq.py market_data_contract.py
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('core/simulated_signal_scan.py').read_text()
+          assert 'SIMULATION_ONLY' in text
+          assert 'execution_allowed' in text
+          assert '.buy(' not in text
+          assert '.sell(' not in text
+          print('simulation-only scanner: OK')
+          PY
+
+      - name: Simulated signal scan
+        env:
+          IQ_USER: ${{ secrets.IQ_USER }}
+          IQ_PASS: ${{ secrets.IQ_PASS }}
+          IQ_OPTION_USER: ${{ secrets.IQ_USER }}
+          IQ_OPTION_PASSWORD: ${{ secrets.IQ_PASS }}
+          IQ_OPTION_BALANCE_MODE: PRACTICE
+          ENABLE_WEBSHARE: 'false'
+          MODO: ${{ inputs.mode }}
+        run: python core/simulated_signal_scan.py
