@@ -86,8 +86,41 @@ def _timing_fields(candles: list[dict[str, Any]], observed_at: datetime) -> dict
             'candle_age_seconds': round(age, 3) if age is not None else None}
 
 
+def _score_separation(market: str, score: float | None, components: dict[str, Any],
+                      candles: list[dict[str, Any]], direction: str | None) -> dict[str, Any]:
+    """Expose score, evidence confidence and status without changing approval."""
+    value = round(float(score or 0), 1)
+    executed = sorted(name for name, item in (components or {}).items()
+                      if isinstance(item, dict) and item.get("status") == "inference_ok")
+    blocked = sorted(name for name, item in (components or {}).items()
+                     if isinstance(item, dict) and item.get("status") in ("blocked", "error", "insufficient-data"))
+    core_ready = all(isinstance(components.get(name), dict) and
+                     components[name].get("status") == "inference_ok"
+                     for name in ("smc", "vsa")) if components else False
+    confidence = "FULL" if core_ready and not blocked else "PARTIAL" if core_ready else "INSUFFICIENT"
+    if value >= 95:
+        band = "SUPREME"
+    elif value >= 85:
+        band = "STRONG_SHADOW"
+    elif value >= 75:
+        band = "TECHNICAL_SHADOW"
+    else:
+        band = "REJECTED"
+    shadow_eligible = bool(candles) and value >= 75.0 and value < 95.0 and direction in ("CALL", "PUT")
+    return {"technical_score": value,
+            "data_confidence": {"status": confidence, "executed_components": executed,
+                                "blocked_components": blocked, "core_chart_ready": core_ready},
+            "operational_status": band,
+            "shadow_policy": {"lane": "shadow", "eligible": shadow_eligible,
+                               "official_minimum_score": 95.0,
+                               "execution_allowed": False,
+                               "approval_unchanged": True,
+                               "reason": "TECHNICAL_SCORE_REQUIRES_RESEARCH_VALIDATION" if shadow_eligible
+                                         else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION"}}
+
+
 def _shadow_policy(market: str, score: float | None, direction: str | None, candles: list[dict[str, Any]]) -> dict[str, Any]:
-    """Shadow lane only; never changes official approval or execution."""
+    """Backward-compatible OTC shadow view; never changes official approval."""
     if market != "otc":
         return {}
     value = float(score or 0)
@@ -157,7 +190,10 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             "execution_allowed": False,
             **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at),
         }
+        result.update(_score_separation(market, consultation.score, chart_components,
+                                        candles, result.get("direction_calculated")))
         if market == "otc":
+
             direction = result.get("direction_calculated")
             result["shadow_policy"] = _shadow_policy(market, result.get("score"), direction, candles)
         return result
