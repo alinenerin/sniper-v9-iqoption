@@ -1,5 +1,6 @@
-"""Filtros operacionais read-only de Binarias/OTC."""
+"""Filtros operacionais read-only de Binárias/OTC."""
 from __future__ import annotations
+import os
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -12,8 +13,18 @@ OTC_SYMBOLS = ('EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC',
 COOLDOWN_SECONDS = 120
 BLOCKED_MINUTES = (0, 1)
 
+
+def _signal_threshold(is_otc: bool) -> float:
+    """Limiar de candidato de sinal, separado da classificação SUPREME."""
+    env_name = "OTC_SIGNAL_THRESHOLD" if is_otc else "BINARY_SIGNAL_THRESHOLD"
+    try:
+        return float(os.environ.get(env_name, "70"))
+    except (TypeError, ValueError):
+        return 70.0
+
+
 class BinaryPolicy:
-    def __init__(self, payout_minimum: float = .80, score_minimum: float = 95):
+    def __init__(self, payout_minimum: float = .80, score_minimum: Optional[float] = None):
         self.payout_minimum = payout_minimum
         self.score_minimum = score_minimum
         self.last_scan: Dict[str, float] = {}
@@ -50,7 +61,8 @@ class BinaryPolicy:
         try:
             import pandas as pd
             df = pd.DataFrame(candles)
-            if len(df) < 25: return False
+            if len(df) < 25:
+                return False
             close = pd.to_numeric(df['close'])
             fast = close.ewm(span=9, adjust=False).mean().iloc[-1]
             slow = close.ewm(span=21, adjust=False).mean().iloc[-1]
@@ -60,27 +72,47 @@ class BinaryPolicy:
 
     def evaluate(self, api: Any, symbol: str, consultation: Any, candles, m5_candles=None) -> Dict[str, Any]:
         now = datetime.now(BRT)
-        result = {'market': 'otc' if '-OTC' in symbol.upper() else 'binary', 'symbol': symbol,
-                  'score': float(getattr(consultation, 'score', 0)),
-                  'probability': float(getattr(consultation, 'probability', 0)),
-                  'execution_allowed': False, 'veto': True, 'vetoes': [], 'sniper_timing': plan_sniper_window(), 'rate_decision': choose_rate_window()}
-        if now.minute in BLOCKED_MINUTES: result['vetoes'].append('MINUTO_BLOQUEADO')
-        if time.time() - self.last_scan.get(symbol, 0) < COOLDOWN_SECONDS: result['vetoes'].append('COOLDOWN')
+        is_otc = '-OTC' in symbol.upper()
+        threshold = self.score_minimum if self.score_minimum is not None else _signal_threshold(is_otc)
+        result = {
+            'market': 'otc' if is_otc else 'binary',
+            'symbol': symbol,
+            'score': float(getattr(consultation, 'score', 0)),
+            'probability': float(getattr(consultation, 'probability', 0)),
+            'signal_threshold': threshold,
+            'execution_allowed': False,
+            'veto': True,
+            'vetoes': [],
+            'sniper_timing': plan_sniper_window(),
+            'rate_decision': choose_rate_window(),
+        }
+        if now.minute in BLOCKED_MINUTES:
+            result['vetoes'].append('MINUTO_BLOQUEADO')
+        if time.time() - self.last_scan.get(symbol, 0) < COOLDOWN_SECONDS:
+            result['vetoes'].append('COOLDOWN')
         payout = self.payout(api, symbol)
         result['payout'] = payout
         result['expiry_minutes'] = 1
         m5_source = m5_candles if m5_candles is not None else []
         result['m5'] = 'M5_CONFIRMADO' if self.m5_confirmation(m5_source) else 'M5_SEM_CONFIRMACAO'
         result['m5_candles_count'] = len(m5_source)
-        if payout is None: result['vetoes'].append('PAYOUT_UNAVAILABLE')
-        elif payout < self.payout_minimum: result['vetoes'].append('PAYOUT_BELOW_MINIMUM')
-        if not getattr(consultation, 'approved', False) or result['score'] < self.score_minimum: result['vetoes'].append('SHARED_AI_VETO')
-        if result['m5'] != 'M5_CONFIRMADO': result['vetoes'].append('M5_SEM_CONFIRMACAO')
+        if payout is None:
+            result['vetoes'].append('PAYOUT_UNAVAILABLE')
+        elif payout < self.payout_minimum:
+            result['vetoes'].append('PAYOUT_BELOW_MINIMUM')
+        if not getattr(consultation, 'approved', False) or result['score'] < threshold:
+            result['vetoes'].append('SHARED_AI_VETO')
+        if result['m5'] != 'M5_CONFIRMADO':
+            result['vetoes'].append('M5_SEM_CONFIRMACAO')
         result['veto'] = bool(result['vetoes'])
         if not result['veto']:
+            # Este módulo continua read-only: aprovado para sinal/paper scan,
+            # nunca para envio de ordem.
             result['execution_allowed'] = False
-            result['reason'] = 'BINARY_OPERATIONAL_FILTERS_APPROVED_READ_ONLY'
+            result['signal_ready'] = True
+            result['reason'] = 'BINARY_SIGNAL_FILTERS_APPROVED_READ_ONLY'
             self.last_scan[symbol] = time.time()
         else:
+            result['signal_ready'] = False
             result['reason'] = ';'.join(result['vetoes'])
         return result

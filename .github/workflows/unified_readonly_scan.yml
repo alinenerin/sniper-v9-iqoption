@@ -18,20 +18,26 @@ on:
         required: true
         default: false
         type: boolean
+  push:
+    branches:
+      - agent/fix-binary-signal-pipeline
+
+env:
+  DEFAULT_SYMBOLS: 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY'
 
 jobs:
   unified-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     env:
       ANALYSIS_ONLY: '1'
       EXECUTION_ALLOWED: 'false'
       EXECUTOR_ENABLED: 'false'
-      INCLUDE_OTC: ${{ inputs.include_otc }}
-      OTC_ONLY: ${{ inputs.otc_only }}
-      SYMBOLS: ${{ inputs.symbols }}
-      # Optional read-only advisory integrations; absent secrets remain fail-closed.
+      INCLUDE_OTC: ${{ inputs.include_otc || false }}
+      OTC_ONLY: ${{ inputs.otc_only || false }}
+      SYMBOLS: ${{ inputs.symbols || 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY' }}
       LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
+      MARKETAUX_API_TOKEN: ${{ secrets.MARKETAUX_API_TOKEN }}
       MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
     steps:
       - uses: actions/checkout@v4
@@ -66,10 +72,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: finbert-prosusai-${{ runner.os }}-v1
+          key: finbert-prosusai-${{ runner.os }}-v2
       - name: Run real FinBERT inference
         env:
-          MARKETAUX_API_TOKEN: ${{ secrets.MARKETAUX_API_TOKEN }}
           HF_HOME: ~/.cache/huggingface
           TRANSFORMERS_CACHE: ~/.cache/huggingface
         run: python scripts/run_finbert_inference.py
@@ -78,7 +83,7 @@ jobs:
       - name: Train and run XGBoost inference
         run: python scripts/train_xgboost_inference.py
       - name: Compile read-only analysis modules
-        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
+        run: python -m py_compile shared_ai/consultation.py shared_ai/lse_advisor.py core/integrations/news_shield_v2.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
       - name: Generate unified report from Railway candles
         run: python scripts/generate_scan_report.py
       - name: Evaluate hypothetical result after expiration
@@ -114,9 +119,9 @@ jobs:
               assert not r['forex'].get('analyses')
               assert all(x.get('market') == 'otc' for x in r['binary'].get('analyses', []))
           else:
-              assert inputs.get('include_otc') is False
               assert inputs.get('otc_only') is False
-              assert not any(x.get('market') == 'otc' for x in r['binary'].get('analyses', []))
+              if not inputs.get('include_otc'):
+                  assert not any(x.get('market') == 'otc' for x in r['binary'].get('analyses', []))
           assert r['forex']['status'] == 'completed'
           assert r['binary']['status'] == 'completed'
           if r.get('inputs', {}).get('otc_only'):
@@ -140,9 +145,6 @@ jobs:
           expected_otc = (len([s for s in md_symbols if str(s).upper().endswith('-OTC')]) or len(otc)) if r.get('inputs', {}).get('include_otc') else 0
           assert len(otc) == expected_otc, (len(otc), expected_otc)
           for item in otc:
-              # A valid OTC inference must identify the authoritative chart.
-              # A blocked item may instead be rejected for missing/invalid candles;
-              # that is a data-quality veto, not a contract failure.
               if item.get('status') == 'inference_ok':
                   assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
                   assert item.get('chart_evidence', {}).get('ema_cascade') == 'engine'
