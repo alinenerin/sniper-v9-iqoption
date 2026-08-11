@@ -10,7 +10,7 @@ from market_data_contract import validate_candles, MINIMUMS, TIMEFRAME_NAMES
 _LOG = logging.getLogger("iqoption_connection")
 
 # The legacy SDK keeps the provider active-id registry in this module-level
-# mapping.  It is intentionally read-only here: refreshes are performed only
+# mapping. It is intentionally read-only here: refreshes are performed only
 # through the SDK's official binary/turbo init mechanism.
 import iqoptionapi.constants as OP_code
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -334,15 +334,14 @@ class IQOptionReadonly:
             "connection_reconnect_attempt": _reconnect_attempts
         }
         expected_otc = requested_symbol.endswith("-OTC")
-        # These fields are populated for OTC resolution below.  Keeping them
-        # in every request makes the trace schema stable without implying that
-        # REAL active IDs were refreshed by this OTC-only change.
+        # These fields are populated for every market type so the trace is
+        # comparable between REAL and OTC requests.
         base.update({
             "active_id_before": None,
             "active_id_after": None,
-            "mapping_source": "NOT_APPLICABLE_REAL" if not expected_otc else "NOT_ATTEMPTED",
+            "mapping_source": "NOT_ATTEMPTED",
             "mapping_updated": False,
-            "active_id_resolution_status": "NOT_APPLICABLE_REAL" if not expected_otc else "NOT_ATTEMPTED",
+            "active_id_resolution_status": "NOT_ATTEMPTED",
         })
         if market_type not in ("REAL", "OTC") or expected_otc != (market_type == "OTC"):
             base.update(status="ERROR", provider_status="SYMBOL_MARKET_TYPE_MISMATCH", validation_status="ERROR", freshness_status="ERROR",
@@ -370,11 +369,11 @@ class IQOptionReadonly:
                             base["connection_state"] = _state.get('status')
                             base["session_id"] = _session_id
 
-                        # OTC binary/turbo symbols are resolved only through
-                        # the SDK's official initializer.  This method mutates
-                        # OP_code.ACTIVES from the provider's init payload; no
+                        # Symbols are resolved only through the SDK's official
+                        # binary/turbo initializer. This method mutates
+                        # OP_code.ACTIVES from the provider init payload; no
                         # local alias or guessed active ID is introduced.
-                        if expected_otc and api:
+                        if api:
                             before = OP_code.ACTIVES.get(provider_symbol)
                             base["active_id_before"] = before
                             base["mapping_source"] = "IQ_Option.get_ALL_Binary_ACTIVES_OPCODE"
