@@ -21,9 +21,8 @@ from typing import Any, Dict, List
 
 import iqoptionapi.constants as OP_code
 
-from current_iq import IQOptionReadonly
+from current_iq import IQOptionReadonly, _bounded_call
 from core.signal_engine import generate_signal
-from market_data_contract import TIMEFRAME_NAMES
 
 TIMEFRAMES = {
     "H4": (14400, 600),
@@ -31,9 +30,7 @@ TIMEFRAMES = {
     "M15": (900, 1200),
     "M5": (300, 1500),
 }
-
 WEIGHTS = {"H4": 0.30, "H1": 0.30, "M15": 0.20, "M5": 0.20}
-
 REAL_PAIRS = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY",
     "EURGBP", "USDCAD", "USDCHF", "NZDUSD",
@@ -57,7 +54,7 @@ def normalize_candles(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def fetch_history(session: IQOptionReadonly, symbol: str, interval: int, count: int) -> List[Dict[str, Any]]:
-    """Fetch exactly the requested historical depth through IQ_Option.get_candles.
+    """Fetch the requested historical depth through IQ_Option.get_candles.
 
     Pagination follows the provider SDK convention: the next cursor is the
     oldest returned candle timestamp minus one second. No synthetic candles,
@@ -65,17 +62,14 @@ def fetch_history(session: IQOptionReadonly, symbol: str, interval: int, count: 
     """
     if not session._wait_for_connection(timeout=35):
         raise RuntimeError("IQ_OPTION_NOT_CONNECTED")
-
-    with session._lock if hasattr(session, "_lock") else _NullLock():
-        api = session.api
-
+    api = session.api
     if api is None:
         raise RuntimeError("IQ_OPTION_API_UNAVAILABLE")
 
     normalized = session._norm_symbol(symbol)
     active_id = OP_code.ACTIVES.get(normalized)
     if active_id is None:
-        session._bounded_call(api.get_ALL_Binary_ACTIVES_OPCODE, timeout=35)
+        _bounded_call(api.get_ALL_Binary_ACTIVES_OPCODE, timeout=35)
         active_id = OP_code.ACTIVES.get(normalized)
     if active_id is None:
         raise RuntimeError(f"ACTIVE_ID_UNAVAILABLE:{normalized}")
@@ -88,7 +82,7 @@ def fetch_history(session: IQOptionReadonly, symbol: str, interval: int, count: 
     while len(collected) < target and pages < 20:
         pages += 1
         batch_size = min(max(target - len(collected), 100), 1000)
-        raw = session._bounded_call(
+        raw = _bounded_call(
             api.get_candles,
             normalized,
             int(interval),
@@ -121,13 +115,6 @@ def fetch_history(session: IQOptionReadonly, symbol: str, interval: int, count: 
     return sorted(collected.values(), key=lambda x: x["timestamp"])[-target:]
 
 
-class _NullLock:
-    def __enter__(self):
-        return self
-    def __exit__(self, *args):
-        return False
-
-
 def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: str) -> Dict[str, Any]:
     timeframe_results: Dict[str, Any] = {}
     weighted: Dict[str, float] = {"CALL": 0.0, "PUT": 0.0}
@@ -154,11 +141,7 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
 
     direction = max(weighted, key=weighted.get)
     score = round(weighted[direction], 2)
-    votes = [
-        result.get("direction")
-        for result in timeframe_results.values()
-        if isinstance(result, dict)
-    ]
+    votes = [r.get("direction") for r in timeframe_results.values() if isinstance(r, dict)]
     same_direction = sum(1 for vote in votes if vote == direction)
 
     # Fail closed: a simulated signal requires at least 3/4 timeframes and
