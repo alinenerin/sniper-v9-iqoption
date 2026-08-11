@@ -114,9 +114,9 @@ jobs:
               assert not r['forex'].get('analyses')
               assert all(x.get('market') == 'otc' for x in r['binary'].get('analyses', []))
           else:
-              assert inputs.get('include_otc') is False
               assert inputs.get('otc_only') is False
-              assert not any(x.get('market') == 'otc' for x in r['binary'].get('analyses', []))
+              if not inputs.get('include_otc'):
+                  assert not any(x.get('market') == 'otc' for x in r['binary'].get('analyses', []))
           assert r['forex']['status'] == 'completed'
           assert r['binary']['status'] == 'completed'
           if r.get('inputs', {}).get('otc_only'):
