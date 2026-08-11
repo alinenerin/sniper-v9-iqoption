@@ -99,6 +99,10 @@ class SharedAI:
             from core.supreme_intelligence import SupremeIntelligence
             engine = SupremeIntelligence(symbol=request.symbol)
             analysis = engine.get_full_analysis(frame)
+            # O símbolo precisa existir antes de consultar os artefatos por-par.
+            # Sem isso, DARTS/FinBERT/XGBoost eram reportados como blocked
+            # mesmo quando seus workflows haviam concluído com inference_ok.
+            analysis["symbol"] = request.symbol
             approved, reason = engine.is_supreme_approved(analysis)
             advisory: Dict[str, Any] = {}
             # Memória fornece apenas contexto; nunca altera score, veto ou aprovação.
