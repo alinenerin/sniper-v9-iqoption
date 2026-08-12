@@ -47,7 +47,7 @@ def _is_relevant(article: dict[str, Any], symbol: str) -> bool:
 
 FETCH_DIAGNOSTICS: dict[str, Any] = {
     "provider": "Finnhub",
-    "endpoint": "https://finnhub.io/api/v1/forex/news",
+    "endpoint": "https://finnhub.io/api/v1/news?category=forex",
     "http_status": None,
     "content_type": None,
     "response_bytes": 0,
@@ -57,7 +57,7 @@ FETCH_DIAGNOSTICS: dict[str, Any] = {
 
 def _fetch_forex_news() -> list[dict[str, Any]]:
     response = requests.get(
-        "https://finnhub.io/api/v1/forex/news",
+        "https://finnhub.io/api/v1/news",
         params={"category": "forex", "token": FINNHUB_KEY},
         timeout=(5, 15),
     )
