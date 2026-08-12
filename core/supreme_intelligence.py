@@ -113,8 +113,10 @@ class SupremeIntelligence:
         weight_total = sum(weight for _, _, weight in score_parts)
         final_score = sum(value * weight for _, value, weight in score_parts) / weight_total if weight_total else 0.0
         analysis_completeness = round(100.0 * weight_total / 1.0, 1)
+        smc_direction = str(smc_details.get("direction", "NEUTRAL")).upper()
         analysis = {
             "symbol": self.symbol,
+            "direction": smc_direction,
             "score": round(final_score, 1),
             "raw_score": round(final_score, 1),
             "normalized_score": round(final_score, 1),
@@ -136,28 +138,24 @@ class SupremeIntelligence:
         
         return analysis
 
-    def get_supreme_score(self, par, direcao):
-        """Interface direta para o sniper_loop. Retorna (score 0-100, motivo)."""
+    def get_supreme_score(self, par, direcao, candles=None):
+        """Calcula score somente com candles reais fornecidos pelo chamador.
+
+        O caminho legado não pode fabricar OHLCV aleatório: sem dados reais,
+        retorna veto explícito em vez de um score aparentemente válido.
+        """
+        if candles is None or len(candles) < 50:
+            return 0, 'VETO: REAL_MARKET_DATA_UNAVAILABLE'
         try:
-            import numpy
-            import pandas
-            base = 1.1 if 'EUR' in par or 'GBP' in par else 0.65
-            npy = numpy.random.randn(100) * 0.001
-            df = pandas.DataFrame({
-                'open': npy + base,
-                'close': npy + base,
-                'high': npy + base + 0.001,
-                'low': npy + base - 0.001,
-                'volume': numpy.random.randint(100, 1000, 100)
-            })
+            df = candles.copy() if isinstance(candles, pd.DataFrame) else pd.DataFrame(candles)
             analise = self.get_full_analysis(df)
             if analise.get('veto', False):
                 return 0, 'VETO: ' + str(analise.get('veto_reason', ''))
-            s = int(analise.get('score', 0))
-            s = max(0, min(100, s))
-            return s, 'SMC+VSA+' + str(s)
-        except Exception as e:
-            return 50, 'FALLBACK: ' + str(e)
+            if str(analise.get('direction', 'NEUTRAL')).upper() != str(direcao).upper():
+                return 0, 'VETO: DIRECTION_MISMATCH'
+            return max(0, min(100, int(analise.get('score', 0)))), 'SMC+VSA'
+        except (KeyError, TypeError, ValueError) as exc:
+            return 0, 'VETO: INVALID_REAL_MARKET_DATA:' + type(exc).__name__
 
     def is_supreme_approved(self, analysis):
         """
