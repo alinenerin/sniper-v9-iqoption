@@ -522,7 +522,9 @@ class IQOptionReadonly:
         for start in range(0, len(symbols), 2):
             for symbol in symbols[start:start+2]:
                 kind = 'OTC' if str(symbol).upper().endswith('-OTC') else 'REAL'
-                data[symbol]={'m1':self.candles(symbol,60,120,kind),'m5':self.candles(symbol,300,30,kind)}
+                data[symbol]={'m1':self.candles(symbol,60,120,kind),
+                             'm3':self.candles(symbol,180,120,kind),
+                             'm5':self.candles(symbol,300,30,kind)}
         return {'ok':True,'assets':assets,'payouts':payouts,'symbols':data,'source':'IQ_OPTION_DIRECT','read_only':True}
 
     def snapshot(self, symbol, interval=60):
