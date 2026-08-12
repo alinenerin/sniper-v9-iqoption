@@ -1,8 +1,6 @@
 name: Unified V16 Scan - Read Only
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       include_otc:
@@ -29,9 +27,9 @@ jobs:
       ANALYSIS_ONLY: '1'
       EXECUTION_ALLOWED: 'false'
       EXECUTOR_ENABLED: 'false'
-      INCLUDE_OTC: ${{ github.event_name == 'schedule' && 'false' || inputs.include_otc }}
-      OTC_ONLY: ${{ github.event_name == 'schedule' && 'false' || inputs.otc_only }}
-      SYMBOLS: ${{ github.event_name == 'schedule' && 'ALL_AVAILABLE' || inputs.symbols }}
+      INCLUDE_OTC: ${{ inputs.include_otc }}
+      OTC_ONLY: ${{ inputs.otc_only }}
+      SYMBOLS: ${{ inputs.symbols }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
