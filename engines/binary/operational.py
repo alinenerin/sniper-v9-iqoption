@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 from engines.binary.sniper_timing import plan_sniper_window
 from engines.binary.rate_optimizer import choose_rate_window
+from config.settings import TRADING_CONFIG
 
 BRT = ZoneInfo('America/Sao_Paulo')
 OTC_SYMBOLS = ('EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','AUDJPY-OTC','EURGBP-OTC')
@@ -13,7 +14,7 @@ COOLDOWN_SECONDS = 120
 BLOCKED_MINUTES = (0, 1)
 
 class BinaryPolicy:
-    def __init__(self, payout_minimum: float = .80, score_minimum: float = 95):
+    def __init__(self, payout_minimum: float = .80, score_minimum: float = TRADING_CONFIG.diamond_threshold):
         self.payout_minimum = payout_minimum
         self.score_minimum = score_minimum
         self.last_scan: Dict[str, float] = {}
