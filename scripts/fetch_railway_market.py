@@ -1,6 +1,9 @@
 """Fetch fresh read-only candles from Railway, preferring per-symbol endpoints."""
-import json, os, time, urllib.parse, urllib.request
+import json, os, sys, time, urllib.parse, urllib.request
 from pathlib import Path
+
+# Allow imports from the repository root when executed as scripts/fetch_....py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
 requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
