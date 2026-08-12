@@ -248,6 +248,10 @@ def main() -> int:
                 intelligence_status.setdefault(name, set()).add(component.get("status") or "blocked")
     intelligence_status = {name: ("executed" if "inference_ok" in states or "executed" in states else "blocked" if ("blocked" in states or "unknown" in states or "unavailable" in states) else "error") for name, states in intelligence_status.items()}
     for item in all_items:
+        symbol_data = (market_data.get("symbols") or {}).get(item.get("symbol"), {})
+        item["payout"] = (market_data.get("payouts") or {}).get(item.get("symbol"))
+        item["snapshot_observed_at_utc"] = market_data.get("observed_at_utc")
+        item["snapshot_latency_ms"] = market_data.get("latency_ms")
         components = item.get("components") or {}
         executed = [c for c in components.values() if isinstance(c, dict) and c.get("status") in ("inference_ok", "executed")]
         item.setdefault("analysis_completeness", round(100.0 * len(executed) / max(1, len(components)), 1))
