@@ -14,6 +14,7 @@ ARQUITETURA DE CAMADAS:
 """
 
 import pandas as pd
+from config.settings import TRADING_CONFIG
 from core.smc_analysis import SMCAnalysis
 from core.vsa_analysis import VSAAnalysis
 from core.sentiment_analysis import SentimentAnalysis
@@ -168,9 +169,9 @@ class SupremeIntelligence:
         score = analysis.get("score", 0)
         
         # Classificação do Score Diamante
-        if score >= 95:
+        if score >= TRADING_CONFIG.supreme_threshold:
             return True, "SUPREME_CONFLUENCE_TOTAL"
-        elif score >= 90:
+        elif score >= TRADING_CONFIG.diamond_threshold:
             return True, "DIAMOND_CONFLUENCE_MAJORITY"
         else:
-            return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: 95)"
+            return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: {TRADING_CONFIG.diamond_threshold:.0f})"
