@@ -150,6 +150,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
     from config.markets.contracts import MarketRequest
     from engines.forex.operational import ForexV16ReadOnly
     from shared_ai.consultation import SharedAI
+    from config.settings import TRADING_CONFIG
 
     if not candles:
         components = _blocked_components("NO_RAILWAY_CANDLES")
@@ -164,11 +165,11 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 "shadow_policy": _shadow_policy(market, None, None, candles), **timing}
     try:
         if market == "forex":
-            result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
+            result = ForexV16ReadOnly(score_minimum=TRADING_CONFIG.diamond_threshold).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
             result.update(_analysis_timing(market, result, candles, observed_at))
             return result
-        consultation = SharedAI(score_minimum=95).consult(MarketRequest(
+        consultation = SharedAI(score_minimum=TRADING_CONFIG.diamond_threshold).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         ))
@@ -213,20 +214,14 @@ def main() -> int:
     macro_path = Path("reports/macro_data.json")
     macro_data = json.loads(macro_path.read_text()) if macro_path.exists() else {"ok": False, "reason": "TRADINGVIEW_MACRO_REPORT_MISSING", "symbols": {}}
     by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
-    # Bound the scan to the ten authorized pairs.  ALL_AVAILABLE previously
-    # expanded to every broker-discovered symbol (114+) and repeatedly loaded
-    # heavy models until the GitHub runner killed report generation (exit 137).
-    authorized = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF",
-                  "NZDUSD", "EURGBP", "EURJPY", "GBPJPY"}
     if any(x.upper() in ("ALL", "ALL_AVAILABLE", "*") for x in requested):
-        symbols = [x for x in by_symbol
-                   if str(x).upper().replace("-OTC", "") in authorized]
-        symbols = [x for x in symbols
-                   if (str(x).upper().endswith("-OTC") if otc_only
-                       else not str(x).upper().endswith("-OTC"))]
+        symbols = list(by_symbol)
+        if otc_only:
+            symbols = [x for x in symbols if str(x).upper().endswith("-OTC")]
+        else:
+            symbols = [x for x in symbols if not str(x).upper().endswith("-OTC")]
     else:
-        symbols = [x for x in requested
-                   if x.upper().replace("-OTC", "") in authorized]
+        symbols = requested
         if otc_only:
             symbols = [x if x.upper().endswith("-OTC") else x.upper() + "-OTC" for x in symbols]
     forex, binary = [], []
@@ -266,7 +261,7 @@ def main() -> int:
         "binary": {"status": "completed", "analyses": binary},
         "market_data": market_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
-        "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
+        "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
         "pipeline_dashboard": {
             "data": {"candles": "OK" if len(market_data.get("fresh_symbols") or []) == len(symbols) else "ERROR", "pairs_fresh": len(market_data.get("fresh_symbols") or []), "pairs_expected": len(symbols)},
             "intelligence": intelligence_status,
