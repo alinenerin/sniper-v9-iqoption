@@ -7,6 +7,7 @@ Distribuído via GitHub → Railway / GitHub Actions
 ====================================================
 """
 
+import os
 import pytz
 from dataclasses import dataclass, field
 from typing import List
@@ -14,17 +15,18 @@ from typing import List
 # =============================================================================
 # 🔐 CREDENCIAIS (Protegidas via GitHub Secrets / Railway Variables)
 # =============================================================================
-IQ_USER = "laiane.aline@gmail.com"
-IQ_PASS = "alineegui95"
-BALANCE_MODE = "PRACTICE"  # PRACTICE | REAL
+# Credenciais devem existir somente no ambiente/cofre. Sem fallback inseguro.
+IQ_USER = os.getenv("IQ_USER", "")
+IQ_PASS = os.getenv("IQ_PASS", os.getenv("IQ_PASSWORD", ""))
+BALANCE_MODE = os.getenv("IQ_BALANCE_MODE", "PRACTICE").upper()  # PRACTICE | REAL
 
 # =============================================================================
 # 🌐 PROXY - WEBSHARE
 # =============================================================================
-PROXY_HOST = "31.59.20.176"
-PROXY_PORT = "61993"
-PROXY_USER = "t6n8s47tg2i9vo8ndud7l415s3ce3zgj1mx3m6o5"
-PROXY_PASS = "h9s8k4d2m1"
+PROXY_HOST = os.getenv("PROXY_HOST", "")
+PROXY_PORT = os.getenv("PROXY_PORT", "")
+PROXY_USER = os.getenv("PROXY_USER", "")
+PROXY_PASS = os.getenv("PROXY_PASS", "")
 
 # =============================================================================
 # 📊 PARES MONITORADOS (Prioritários)
@@ -120,11 +122,11 @@ class TradingConfig:
     # =========================================================================
     # 🌐 API KEYS
     # =========================================================================
-    marketaux_key: str = "FkrvyUcxIUSUcmvH71QZOxBlLZuYeoueVTA54z1x"
-    polygon_key: str = "gXySF0ojKao907z3vKOtpxr8opt0cbLx"
-    twelve_data_key: str = "1be0b948fb1c48bb997e350c542edafd"
-    finnhub_key: str = "d8p5sbpr01qp954vdn3gd8p5sbpr01qp954vdn40"
-    lse_key: str = "{{credential:LSE_API_KEY}}"
+    # Finnhub é a fonte de notícias; FinBERT classifica o texto recebido.
+    finnhub_key: str = field(default_factory=lambda: os.getenv("FINNHUB_API_KEY", ""))
+    polygon_key: str = field(default_factory=lambda: os.getenv("POLYGON_API_KEY", ""))
+    twelve_data_key: str = field(default_factory=lambda: os.getenv("TWELVE_DATA_API_KEY", ""))
+    lse_key: str = field(default_factory=lambda: os.getenv("LSE_API_KEY", ""))
     
     # =========================================================================
     # 🌍 TIMEZONE
