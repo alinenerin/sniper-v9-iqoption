@@ -38,14 +38,18 @@ class SMCAnalysis:
 
     @staticmethod
     def get_smc_score(df):
-        df = SMCAnalysis.detect_fvg(df)
-        df = SMCAnalysis.detect_bos(df)
-        
-        last_fvg = df['fvg'].iloc[-2] # Olha a vela anterior fechada
-        last_bos = df['bos'].iloc[-1]
-        
-        score = 0
-        if last_fvg != 0: score += 50
-        if last_bos != 0: score += 50
-        
-        return score, {"fvg": last_fvg, "bos": last_bos}
+        # O último candle recebido pode estar em formação. Um FVG precisa de
+        # três candles fechados; portanto o candle corrente não pode ser usado
+        # como o candle futuro da estrutura.
+        closed = df.iloc[:-1].copy() if len(df) > 3 else df.copy()
+        if len(closed) < 3:
+            return 0, {"fvg": 0, "bos": 0, "direction": "NEUTRAL", "reason": "INSUFFICIENT_CLOSED_CANDLES"}
+        closed = SMCAnalysis.detect_fvg(closed)
+        closed = SMCAnalysis.detect_bos(closed)
+        last_fvg = int(closed['fvg'].iloc[-2])
+        last_bos = int(closed['bos'].iloc[-1])
+        score = (50 if last_fvg != 0 else 0) + (50 if last_bos != 0 else 0)
+        votes = [x for x in (last_fvg, last_bos) if x != 0]
+        direction = "CALL" if votes and all(x == 1 for x in votes) else "PUT" if votes and all(x == -1 for x in votes) else "NEUTRAL"
+        return score, {"fvg": last_fvg, "bos": last_bos, "direction": direction,
+                       "closed_candles_used": len(closed), "lookahead_protected": True}
