@@ -241,8 +241,11 @@ def main() -> int:
     intelligence_status = {}
     for item in all_items:
         for name, component in (item.get("components") or {}).items():
-            if isinstance(component, dict): intelligence_status.setdefault(name, set()).add(component.get("status", "unknown"))
-    intelligence_status = {name: ("executed" if "inference_ok" in states or "executed" in states else "blocked" if "blocked" in states else "error" if "error" in states else "unavailable") for name, states in intelligence_status.items()}
+            if isinstance(component, dict):
+                # Missing/unknown evidence is a blocked auxiliary component,
+                # never a third state that can be mistaken for approval.
+                intelligence_status.setdefault(name, set()).add(component.get("status") or "blocked")
+    intelligence_status = {name: ("executed" if "inference_ok" in states or "executed" in states else "blocked" if ("blocked" in states or "unknown" in states or "unavailable" in states) else "error") for name, states in intelligence_status.items()}
     for item in all_items:
         components = item.get("components") or {}
         executed = [c for c in components.values() if isinstance(c, dict) and c.get("status") in ("inference_ok", "executed")]
