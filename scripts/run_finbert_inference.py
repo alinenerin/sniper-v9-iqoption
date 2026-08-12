@@ -45,14 +45,40 @@ def _is_relevant(article: dict[str, Any], symbol: str) -> bool:
     return base in text or quote in text
 
 
+FETCH_DIAGNOSTICS: dict[str, Any] = {
+    "provider": "Finnhub",
+    "endpoint": "https://finnhub.io/api/v1/forex/news",
+    "http_status": None,
+    "content_type": None,
+    "response_bytes": 0,
+    "valid_json": False,
+}
+
+
 def _fetch_forex_news() -> list[dict[str, Any]]:
     response = requests.get(
         "https://finnhub.io/api/v1/forex/news",
         params={"category": "forex", "token": FINNHUB_KEY},
         timeout=(5, 15),
     )
+    FETCH_DIAGNOSTICS.update(
+        {
+            "http_status": response.status_code,
+            "content_type": response.headers.get("content-type", ""),
+            "response_bytes": len(response.content),
+        }
+    )
     response.raise_for_status()
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            "FINNHUB_NON_JSON_RESPONSE "
+            f"status={response.status_code} "
+            f"content_type={response.headers.get('content-type', '')!r} "
+            f"bytes={len(response.content)}"
+        ) from exc
+    FETCH_DIAGNOSTICS["valid_json"] = True
     if not isinstance(payload, list):
         raise ValueError("FINNHUB_INVALID_NEWS_PAYLOAD")
 
@@ -157,12 +183,15 @@ if INCLUDE_OTC:
         }
 
 Path("reports").mkdir(exist_ok=True)
+report_status = "ok" if fetch_error is None else "degraded"
 Path("reports/finbert_inference.json").write_text(
     json.dumps(
         {
-            "status": "ok",
+            "status": report_status,
             "purpose": "Finnhub Forex news classified by FinBERT; OTC receives base-pair context only",
             "provider": "Finnhub",
+            "fetch_diagnostics": FETCH_DIAGNOSTICS,
+            "fetch_error": fetch_error,
             "components": results,
             "read_only": True,
             "execution_allowed": False,
@@ -172,4 +201,13 @@ Path("reports/finbert_inference.json").write_text(
     )
     + "\n"
 )
-print("finbert_inference_complete", len(results), "provider=Finnhub")
+print(
+    "finbert_inference_complete",
+    len(results),
+    "provider=Finnhub",
+    f"status={report_status}",
+    f"http_status={FETCH_DIAGNOSTICS.get('http_status')}",
+    f"content_type={FETCH_DIAGNOSTICS.get('content_type', '')!r}",
+    f"response_bytes={FETCH_DIAGNOSTICS.get('response_bytes')}",
+    f"valid_json={FETCH_DIAGNOSTICS.get('valid_json')}",
+)
