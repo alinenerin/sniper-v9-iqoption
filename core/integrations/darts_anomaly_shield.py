@@ -304,7 +304,7 @@ class DartsAnomalyShield:
         self.cooldown_counters[symbol] = 0
         
         # Treina Darts nativo se disponível
-        darts_status = "unavailable"
+        darts_status = "blocked"
         if self.darts_available:
             try:
                 self._train_darts_model(symbol, features)
