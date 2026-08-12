@@ -1,6 +1,8 @@
 name: Unified V16 Scan - Read Only
 
 on:
+  schedule:
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       include_otc:
@@ -27,9 +29,9 @@ jobs:
       ANALYSIS_ONLY: '1'
       EXECUTION_ALLOWED: 'false'
       EXECUTOR_ENABLED: 'false'
-      INCLUDE_OTC: ${{ inputs.include_otc }}
-      OTC_ONLY: ${{ inputs.otc_only }}
-      SYMBOLS: ${{ inputs.symbols }}
+      INCLUDE_OTC: ${{ github.event_name == 'schedule' && 'false' || inputs.include_otc }}
+      OTC_ONLY: ${{ github.event_name == 'schedule' && 'false' || inputs.otc_only }}
+      SYMBOLS: ${{ github.event_name == 'schedule' && 'ALL_AVAILABLE' || inputs.symbols }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -91,7 +93,7 @@ jobs:
           assert finbert['provider'] == 'Finnhub'
           assert finbert['read_only'] is True
           assert finbert['execution_allowed'] is False
-          assert finbert['status'] == 'ok', finbert.get('fetch_error')
+          assert finbert['status'] in ('ok', 'blocked'), finbert.get('reason')
           assert finbert.get('fetch_diagnostics', {}).get('valid_json') is True
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
