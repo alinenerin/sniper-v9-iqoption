@@ -12,7 +12,8 @@ max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 # targets and recover per symbol when a batch returns a short payload.
 MIN_M1 = int(os.getenv('MIN_M1_CANDLES', '120'))
 MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
-REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '500'))
+# Darts requires >=1000 M1 candles for its training window.
+REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '1200'))
 REQUEST_M5 = int(os.getenv('REQUEST_M5_CANDLES', '100'))
 
 
@@ -106,7 +107,7 @@ for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC
     for interval, key in ((60, 'm1'), (300, 'm5')):
         try:
             direct = get('/api/market/candles?' + urllib.parse.urlencode({
-                'symbol': symbol, 'interval': interval, 'count': 120}), timeout=60, attempts=3)
+                'symbol': symbol, 'interval': interval, 'count': REQUEST_M1 if interval == 60 else REQUEST_M5}), timeout=120, attempts=3)
             rows = direct.get('candles') or []
             if isinstance(rows, list) and rows:
                 collected[symbol][key] = {'candles': rows, 'source': direct.get('source'),
@@ -135,7 +136,7 @@ for start in range(0, len(symbols), 2):
                 for interval, key in ((60, 'm1'), (300, 'm5')):
                     try:
                         direct = get('/api/market/candles?' + urllib.parse.urlencode({
-                            'symbol': symbol, 'interval': interval, 'count': 120}),
+                            'symbol': symbol, 'interval': interval, 'count': REQUEST_M1 if interval == 60 else REQUEST_M5}),
                             timeout=60, attempts=2)
                         rows = direct.get('candles') or []
                         if isinstance(rows, list):
