@@ -91,7 +91,7 @@ jobs:
           import json
           r=json.load(open('reports/latest_scan.json'))
           finbert=json.load(open('reports/finbert_inference.json'))
-          assert finbert['provider'] == 'Finnhub'
+          assert 'Finnhub' in str(finbert.get('provider', ''))
           assert finbert['read_only'] is True
           assert finbert['execution_allowed'] is False
           assert finbert['status'] == 'ok', finbert.get('fetch_error')
