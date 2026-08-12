@@ -11,6 +11,7 @@ from pathlib import Path
 import json
 
 from config.markets.contracts import AIConsultation, MarketRequest
+from config.settings import TRADING_CONFIG
 
 
 _ALLOWED_MARKETS = {"forex", "binary", "otc"}
@@ -19,7 +20,7 @@ _ALLOWED_MARKETS = {"forex", "binary", "otc"}
 class SharedAI:
     """Adaptador único para o núcleo analítico existente."""
 
-    def __init__(self, score_minimum: float = 95.0):
+    def __init__(self, score_minimum: float = TRADING_CONFIG.diamond_threshold):
         self.score_minimum = float(score_minimum)
 
     @staticmethod
