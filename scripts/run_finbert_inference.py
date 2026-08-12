@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from transformers import pipeline
+try:
+    from transformers import pipeline
+except ImportError:
+    pipeline = None
 
 
 SYMBOLS = [
@@ -47,7 +50,7 @@ def _is_relevant(article: dict[str, Any], symbol: str) -> bool:
 
 FETCH_DIAGNOSTICS: dict[str, Any] = {
     "provider": "Finnhub",
-    "endpoint": "https://finnhub.io/api/v1/news?category=forex",
+    "endpoint": "https://finnhub.io/api/v1/forex/news",
     "http_status": None,
     "content_type": None,
     "response_bytes": 0,
@@ -57,7 +60,7 @@ FETCH_DIAGNOSTICS: dict[str, Any] = {
 
 def _fetch_forex_news() -> list[dict[str, Any]]:
     response = requests.get(
-        "https://finnhub.io/api/v1/news",
+        "https://finnhub.io/api/v1/forex/news",
         params={"category": "forex", "token": FINNHUB_KEY},
         timeout=(5, 15),
     )
@@ -95,8 +98,21 @@ def _fetch_forex_news() -> list[dict[str, Any]]:
 
 
 results: dict[str, dict[str, Any]] = {}
-if not FINNHUB_KEY:
-    raise RuntimeError("FINNHUB_API_KEY_NOT_CONFIGURED")
+if not FINNHUB_KEY or pipeline is None:
+    reason = "FINNHUB_API_KEY_NOT_CONFIGURED" if not FINNHUB_KEY else "TRANSFORMERS_UNAVAILABLE"
+    for symbol in SYMBOLS:
+        results[symbol] = {
+            "symbol": symbol, "status": "blocked", "provider": "Finnhub",
+            "reason": reason, "role": "auxiliary_only", "veto_authority": "chart_only",
+            "read_only": True, "execution_allowed": False,
+        }
+    Path("reports/finbert_inference.json").parent.mkdir(parents=True, exist_ok=True)
+    Path("reports/finbert_inference.json").write_text(json.dumps({
+        "provider": "Finnhub", "read_only": True, "execution_allowed": False,
+        "status": "blocked", "reason": reason, "fetch_diagnostics": FETCH_DIAGNOSTICS,
+        "results": results,
+    }, indent=2))
+    raise SystemExit(0)
 
 classifier = pipeline(
     "text-classification",
