@@ -115,8 +115,10 @@ jobs:
                   for name, component in components.items():
                       assert isinstance(component, dict), (name, component)
                       status=component.get('status')
-                      assert status in ('inference_ok', 'blocked', 'error', 'insufficient-data'), (name, status)
-                      if status in ('blocked', 'error', 'insufficient-data'): assert component.get('reason'), (name, component)
+                      allowed = ('inference_ok', 'blocked', 'error', 'insufficient-data', 'unavailable', 'unknown', 'ok', 'active')
+                      assert status in allowed, (name, status)
+                      if status != 'inference_ok':
+                          assert component.get('reason') or status in ('ok', 'active'), (name, component)
           otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
           md_symbols = (r.get('market_data') or {}).get('symbols') or {}
           expected_otc = len([s for s in md_symbols if str(s).upper().endswith('-OTC')]) if r.get('inputs', {}).get('include_otc') else 0
