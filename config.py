@@ -5,10 +5,10 @@
 # ══════════════════════════════════════════════════════════════════
 
 # ── CREDENCIAIS ───────────────────────────────────────────────────
-IQ_EMAIL      = "laiane.aline@gmail.com"
-IQ_PASS       = "alineegui95"
-TG_TOKEN      = "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg"
-TG_CHAT       = "5911742397"
+IQ_EMAIL      = ""
+IQ_PASS       = ""
+TG_TOKEN      = os.environ.get("TG_TOKEN", "")
+TG_CHAT       = ""
 TWELVE_API    = "1be0b948fb1c48bb997e350c542edafd"
 
 # ── MODO DE OPERAÇÃO ──────────────────────────────────────────────
