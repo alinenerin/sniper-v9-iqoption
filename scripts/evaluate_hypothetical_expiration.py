@@ -59,11 +59,18 @@ def evaluate(item):
 
 def main():
     if not REPORT.exists(): raise SystemExit('REPORT_NOT_FOUND')
-    time.sleep(WAIT_SECONDS)
     report = json.loads(REPORT.read_text())
-    for book in ('forex', 'binary'):
-        for item in report.get(book, {}).get('analyses', []): evaluate(item)
-    report['paper_outcome_evaluation'] = {'status': 'completed', 'wait_seconds': WAIT_SECONDS, 'execution_allowed': False}
+    if WAIT_SECONDS > 0:
+        time.sleep(WAIT_SECONDS)
+        for book in ('forex', 'binary'):
+            for item in report.get(book, {}).get('analyses', []): evaluate(item)
+        outcome_status = 'completed'
+    else:
+        # Validation mode must not make one network request per symbol. The
+        # report already carries the pending hypothetical field; a later
+        # dedicated paper evaluator can observe the future candle.
+        outcome_status = 'pending'
+    report['paper_outcome_evaluation'] = {'status': outcome_status, 'wait_seconds': WAIT_SECONDS, 'execution_allowed': False}
     REPORT.write_text(json.dumps(report, indent=2, ensure_ascii=False) + '\n')
     print('hypothetical_expiration=OK', WAIT_SECONDS)
 
