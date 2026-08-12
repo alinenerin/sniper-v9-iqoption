@@ -82,9 +82,9 @@ class TradingConfig:
     # =========================================================================
     # 💰 SCORE DIAMANTE — LIMIARES
     # =========================================================================
-    supreme_threshold: float = 95.0   # SUPREME (95-100) → Execução Pesada
-    diamond_threshold: float = 90.0   # DIAMOND (90-94) → Execução Padrão
-    noise_threshold: float = 90.0     # Abaixo disso = RUÍDO → SILÊNCIO
+    supreme_threshold: float = 88.0   # SUPREME (88-100) → Execução Pesada
+    diamond_threshold: float = 80.0   # DIAMOND (80-87) → Execução Padrão
+    noise_threshold: float = 75.0     # Abaixo disso = RUÍDO → SILÊNCIO
     
     # Pesos do Score
     smc_weight: float = 0.4       # SMC (ICT Concepts)
