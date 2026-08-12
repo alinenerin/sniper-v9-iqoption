@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tradingagents_committee import evaluate_report
+from shared_ai.tradingagents_committee import evaluate_report
 
 
 INPUT = Path("reports/latest_scan.json")
