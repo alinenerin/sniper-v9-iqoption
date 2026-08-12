@@ -11,7 +11,7 @@ on:
       symbols:
         description: 'Pares separados por espaço ou vírgula'
         required: true
-        default: 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY'
+        default: 'ALL_AVAILABLE'
         type: string
       otc_only:
         description: 'Analisar somente OTC, sem Forex real ou binárias reais'
@@ -80,7 +80,10 @@ jobs:
         run: python scripts/generate_scan_report.py
       - name: Evaluate hypothetical result after expiration
         env:
-          PAPER_EXPIRATION_WAIT_SECONDS: 65
+          # Do not spend the workflow timeout waiting for a future candle;
+          # the evaluator remains read-only and records pending_expiration when
+          # no post-decision candle exists yet.
+          PAPER_EXPIRATION_WAIT_SECONDS: 0
         run: python scripts/evaluate_hypothetical_expiration.py
       - name: Validate report contract and component evidence
         run: |
@@ -91,11 +94,8 @@ jobs:
           assert finbert['provider'] == 'Finnhub'
           assert finbert['read_only'] is True
           assert finbert['execution_allowed'] is False
-          assert finbert['status'] in ('ok', 'blocked'), finbert.get('reason')
-          if finbert['status'] == 'ok':
-              assert finbert.get('fetch_diagnostics', {}).get('valid_json') is True
-          else:
-              assert finbert.get('reason'), 'blocked FinBERT must explain the reason'
+          assert finbert['status'] == 'ok', finbert.get('fetch_error')
+          assert finbert.get('fetch_diagnostics', {}).get('valid_json') is True
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
           assert 'binary' in r and 'forex' in r
@@ -115,10 +115,8 @@ jobs:
                   for name, component in components.items():
                       assert isinstance(component, dict), (name, component)
                       status=component.get('status')
-                      allowed = ('inference_ok', 'blocked', 'error', 'insufficient-data', 'unavailable', 'unknown', 'ok', 'active')
-                      assert status in allowed, (name, status)
-                      if status != 'inference_ok':
-                          assert component.get('reason') or status in ('ok', 'active'), (name, component)
+                      assert status in ('inference_ok', 'blocked', 'error', 'insufficient-data'), (name, status)
+                      if status in ('blocked', 'error', 'insufficient-data'): assert component.get('reason'), (name, component)
           otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
           md_symbols = (r.get('market_data') or {}).get('symbols') or {}
           expected_otc = len([s for s in md_symbols if str(s).upper().endswith('-OTC')]) if r.get('inputs', {}).get('include_otc') else 0
