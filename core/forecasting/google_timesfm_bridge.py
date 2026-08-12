@@ -11,7 +11,13 @@ from datetime import datetime
 
 
 class TimesFMBridge:
-    """Bridge V3.0 com TimesFM 2.5 200M rodando real no GHA."""
+    """Bridge V3.0 com TimesFM 2.5 200M rodando real no GHA.
+
+    The model is process-wide: loading one 1.5GB checkpoint per symbol can
+    exhaust the GitHub runner during report assembly.
+    """
+    _shared_model = None
+    _shared_model_loaded = False
 
     def __init__(self, json_path="previsao_timesfm.json"):
         self.json_path = json_path
@@ -22,7 +28,9 @@ class TimesFMBridge:
 
     def _load_model(self):
         """Carrega o TimesFM 2.5 200M real do HuggingFace."""
-        if self._model_loaded:
+        if TimesFMBridge._shared_model_loaded:
+            self.model = TimesFMBridge._shared_model
+            self._model_loaded = True
             return True
         try:
             import timesfm
@@ -43,6 +51,8 @@ class TimesFMBridge:
                 force_flip_invariance=True, infer_is_positive=True,
                 fix_quantile_crossing=True,
             ))
+            TimesFMBridge._shared_model = self.model
+            TimesFMBridge._shared_model_loaded = True
             self._model_loaded = True
             print("[TIMESFM] Modelo carregado!")
             return True
