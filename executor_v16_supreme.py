@@ -169,7 +169,11 @@ def scan_once(api: Any, symbols: Optional[Iterable[str]] = None):
         try:
             result = analisar_binaria(api, symbol)
             results.append(result)
-            logger.info("%s | score=%s | veto=%s | %s", symbol, result["score"], result["veto"], result["reason"])
+            if not result.get("veto") and result.get("direction") in ("CALL", "PUT"):
+                logger.info("SIGNAL_SHADOW %s;%s;%s;%s", result.get("timeframe", "M1"), symbol,
+                            time.strftime("%H:%M"), result["direction"])
+            else:
+                logger.info("%s | score=%s | veto=%s | %s", symbol, result["score"], result["veto"], result["reason"])
         except Exception as exc:
             logger.exception("Falha na análise de %s: %s", symbol, exc)
             results.append({"market": "binary", "symbol": symbol, "veto": True, "score": 0, "reason": "ANALYSIS_ERROR"})
