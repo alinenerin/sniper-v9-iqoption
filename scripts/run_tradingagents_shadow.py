@@ -2,7 +2,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+# GitHub Actions executes this file as scripts/<name>.py, so the repository
+# root is not guaranteed to be on sys.path. Keep the import explicit and local.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from shared_ai.tradingagents_committee import evaluate_report
 
