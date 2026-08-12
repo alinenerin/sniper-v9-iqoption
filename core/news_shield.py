@@ -17,7 +17,7 @@ class NewsShield:
         try:
             response = requests.get(self.url, timeout=10)
             if response.status_code != 200:
-                return False, "Erro ao acessar calendário"
+                return True, "VETO: calendário econômico indisponível"
 
             news_data = response.json()
             now_utc = datetime.now(pytz.utc)
@@ -46,7 +46,7 @@ class NewsShield:
             return False, "Mercado Seguro (Sem notícias vermelhas agora)"
             
         except Exception as e:
-            return False, f"Falha no scanner de notícias: {str(e)}"
+            return True, f"VETO: falha no scanner de notícias: {type(e).__name__}"
 
 if __name__ == "__main__":
     shield = NewsShield()
