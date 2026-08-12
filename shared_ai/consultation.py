@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 from pathlib import Path
+import json
 
 from config.markets.contracts import AIConsultation, MarketRequest
 
@@ -52,12 +53,13 @@ class SharedAI:
         news_ok = bool(news.get("api_success") or news.get("status") in ("ok", "success"))
         model_path = Path("models/xgboost_supreme.model")
         def report_status(filename: str, symbol: str):
+            path = Path("reports") / filename
             try:
-                report=json.loads(Path("reports") .joinpath(filename).read_text())
-                item=(report.get("components") or {}).get(symbol,{})
-                return item if isinstance(item, dict) else {}
-            except Exception:
+                report = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
                 return {}
+            item = (report.get("components") or {}).get(symbol, {})
+            return item if isinstance(item, dict) else {}
         symbol=str(analysis.get("symbol") or "")
         darts_report=report_status("darts_inference.json", symbol)
         times_report=report_status("timesfm_inference.json", symbol)
@@ -183,10 +185,14 @@ class SharedAI:
                 vetoes.append(str(analysis.get("veto_reason") or "CORE_VETO"))
             if not approved and reason not in vetoes:
                 vetoes.append(str(reason))
+            direction = str(analysis.get("direction", "NEUTRAL")).upper()
+            if direction not in ("CALL", "PUT"):
+                vetoes.append("DIRECTION_UNCONFIRMED")
             return AIConsultation(
-                approved=bool(approved and score >= self.score_minimum and not vetoes),
+                approved=bool(approved and score >= self.score_minimum and direction in ("CALL", "PUT") and not vetoes),
                 score=score,
                 probability=max(0.0, min(1.0, score / 100.0)),
+                direction=direction,
                 anomaly_score=anomaly,
                 vetoes=vetoes,
                 components={
