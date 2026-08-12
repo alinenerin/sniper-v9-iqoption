@@ -45,6 +45,10 @@ def discover_symbols():
                 if name not in cleaned: cleaned.append(name)
         if not cleaned: raise RuntimeError('NO_VALID_FX_SYMBOLS')
         return cleaned
+    # ALL_AVAILABLE is still constrained by the canonical ten-pair contract;
+    # provider discovery must never expand the operational universe.
+    from market_universes import REAL_SYMBOLS, OTC_SYMBOLS
+    return list(OTC_SYMBOLS if otc_only else REAL_SYMBOLS)
     payload = get('/api/market/assets?instrument=all', timeout=60)
     # Assets endpoint also contains stocks/crypto. Keep currency pairs only.
     rows = payload.get('assets', []) if isinstance(payload, dict) else []
