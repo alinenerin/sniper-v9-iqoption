@@ -167,13 +167,22 @@ class SharedAI:
                 advisory["probability_engine"]["status"] = "inference_ok"
             except Exception as exc:
                 advisory["probability_engine"] = {"status": "blocked", "reason": type(exc).__name__}
-            # TimesFM é opcional e advisory-only: ausência/fallback nunca aprova.
+            # Reuse the per-symbol inference artifact produced earlier in the
+            # workflow.  Do not reload the 1.5GB TimesFM model once per symbol.
+            # A missing artifact is a real blocked dependency, not permission
+            # to silently run a second heavyweight inference in report assembly.
             try:
-                from core.forecasting.google_timesfm_bridge import TimesFMBridge
-                forecast = TimesFMBridge().forecast_next_candle(frame["close"].astype(float).tolist())
-                advisory["timesfm"] = forecast
+                artifact_path = Path("reports/timesfm_inference.json")
+                artifact = json.loads(artifact_path.read_text()) if artifact_path.exists() else {}
+                forecast = (artifact.get("components") or {}).get(request.symbol)
+                if isinstance(forecast, dict) and forecast.get("status") == "inference_ok":
+                    advisory["timesfm"] = forecast
+                elif isinstance(forecast, dict):
+                    advisory["timesfm"] = forecast
+                else:
+                    advisory["timesfm"] = {"status": "blocked", "reason": "TIMESFM_ARTIFACT_MISSING_SYMBOL"}
             except Exception as exc:
-                advisory["timesfm"] = {"active": False, "error": type(exc).__name__}
+                advisory["timesfm"] = {"status": "error", "reason": "TIMESFM_ARTIFACT_READ_ERROR:" + type(exc).__name__}
             analysis["shared_advisory"] = advisory
             analysis["symbol"] = request.symbol
             component_status = self._component_status(analysis, advisory)
