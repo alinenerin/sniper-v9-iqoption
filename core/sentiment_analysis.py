@@ -1,3 +1,4 @@
+import os
 import requests
 import json
 
@@ -6,7 +7,7 @@ class SentimentAnalysis:
     Inspirado em NewsSentimentWithLLM e nlp-finance-sentiment-analysis
     Utiliza MarketAux (conforme TOOLS.md) para análise de sentimento real-time.
     """
-    API_TOKEN = "FkrvyUcxIUSUcmvH71QZOxBlLZuYeoueVTA54z1x"
+    API_TOKEN = os.getenv("MARKETAUX_API_TOKEN", "")
     
     @staticmethod
     def get_sentiment(symbol="EURUSD"):
@@ -32,9 +33,9 @@ class SentimentAnalysis:
                                 count += 1
             
             if count == 0:
-                return None, {"status": "unavailable", "reason": "NO_VERIFIED_NEWS", "news_count": 0}
+                return None, {"status": "blocked", "reason": "NO_VERIFIED_NEWS", "news_count": 0}
             avg_sentiment = sentiment_score / count
             final_score = (avg_sentiment + 1) * 50
-            return int(final_score), {"status": "executed", "avg": avg_sentiment, "news_count": count}
+            return int(final_score), {"status": "inference_ok", "avg": avg_sentiment, "news_count": count}
         except Exception as e:
             return None, {"status": "error", "reason": type(e).__name__, "news_count": 0}
