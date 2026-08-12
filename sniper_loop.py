@@ -85,12 +85,12 @@ if not _IQ_LIB_OK:
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÕES GLOBAIS
 # ══════════════════════════════════════════════════════════════════
-TG_TOKEN  = os.environ.get("TG_TOKEN", "8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg")
-TG_CHAT   = os.environ.get("TG_CHAT",  "5911742397")
-IQ_EMAIL  = os.environ.get("IQ_EMAIL",    "laiane.aline@gmail.com")
-IQ_PASS   = os.environ.get("IQ_PASSWORD", os.environ.get("IQ_PASS", "alineEgui95@"))
+TG_TOKEN = os.environ.get("TG_TOKEN", "")
+TG_CHAT   = os.environ.get("TG_CHAT",  "")
+IQ_EMAIL  = os.environ.get("IQ_EMAIL",    "")
+IQ_PASS   = os.environ.get("IQ_PASSWORD", os.environ.get("IQ_PASS", ""))
 IQ_SSID   = os.environ.get("IQ_SSID",  "")
-POLYGON_KEY = os.environ.get("POLYGON_KEY", "gXySF0ojKao907z3vKOtpxr8opt0cbLx")
+POLYGON_KEY = os.environ.get("POLYGON_KEY", "")
 
 BRT            = pytz.timezone("America/Sao_Paulo")
 MAX_LOSSES_DIA = 4
@@ -2489,7 +2489,7 @@ def parar():
     return jsonify({"ok": True})
 
 # ── CONTROLE REMOTO (Zapia / API) ─────────────────────────────────
-CMD_SECRET = os.environ.get("CMD_SECRET", "sniper2026")
+CMD_SECRET = os.environ.get("CMD_SECRET", "")
 
 @app.route("/cmd", methods=["POST"])
 def cmd_remoto():
