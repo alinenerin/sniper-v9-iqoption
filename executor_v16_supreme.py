@@ -13,8 +13,10 @@ import os
 import time
 from typing import Any, Dict, Iterable, Optional
 
+from config.settings import TRADING_CONFIG
+
 PAYOUT_MINIMO = 80
-SCORE_MINIMO = 95
+SCORE_MINIMO = TRADING_CONFIG.diamond_threshold
 TIMEFRAME_SECONDS = 60
 EXPIRACAO_MINUTOS = 1
 DEFAULT_SYMBOLS = ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY", "EURGBP")
