@@ -88,10 +88,10 @@ jobs:
           import json
           r=json.load(open('reports/latest_scan.json'))
           finbert=json.load(open('reports/finbert_inference.json'))
-          assert finbert['provider'] == 'Finnhub'
+          assert finbert['provider'] == 'GDELT+Finnhub'
           assert finbert['read_only'] is True
           assert finbert['execution_allowed'] is False
-          assert finbert['status'] in ('ok', 'blocked'), finbert.get('reason')
+          assert finbert['status'] == 'ok', finbert.get('fetch_error')
           assert finbert.get('fetch_diagnostics', {}).get('valid_json') is True
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
