@@ -1,11 +1,13 @@
 """Fetch fresh read-only candles from Railway, preferring per-symbol endpoints."""
 import json, os, sys, time, urllib.parse, urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Allow imports from the repository root when executed as scripts/fetch_....py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
+fetch_started = time.perf_counter()
 requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
 include_otc = os.getenv('INCLUDE_OTC', 'false').lower() == 'true'
 otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
@@ -103,7 +105,7 @@ else:
 
 # Use the gateway batch route in small chunks. It keeps one authenticated
 # websocket session and avoids 2 HTTP reconnect-sensitive calls per symbol.
-collected = {s: {'m1': {'candles': []}, 'm5': {'candles': []}} for s in symbols}
+collected = {s: {'m1': {'candles': []}, 'm3': {'candles': []}, 'm5': {'candles': []}} for s in symbols}
 errors = {}
 # Establish a fresh baseline from the four liquid OTC charts before the
 # broad catalog scan; this prevents a transient catalog batch from producing
@@ -111,7 +113,7 @@ errors = {}
 for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
                             'USDCAD-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
                             'EURGBP-OTC', 'EURJPY-OTC', 'GBPJPY-OTC') if s in collected]:
-    for interval, key in ((60, 'm1'), (300, 'm5')):
+    for interval, key in ((60, 'm1'), (180, 'm3'), (300, 'm5')):
         try:
             direct = get('/api/market/candles?' + urllib.parse.urlencode({
                 'symbol': symbol, 'interval': interval, 'count': REQUEST_M1 if interval == 60 else REQUEST_M5}), timeout=120, attempts=3)
@@ -129,7 +131,7 @@ for start in range(0, len(symbols), 2):
         for symbol, data in (payload.get('symbols') or {}).items():
             if symbol not in collected or not isinstance(data, dict):
                 continue
-            for key, interval in (('m1', 60), ('m5', 300)):
+            for key, interval in (('m1', 60), ('m3', 180), ('m5', 300)):
                 rows = data.get(key) or []
                 if isinstance(rows, dict):
                     rows = rows.get('candles') or []
@@ -140,7 +142,7 @@ for start in range(0, len(symbols), 2):
             # Some gateway sessions acknowledge the batch but return an empty
             # symbol payload. Fall back per symbol, without fabricating data.
             if not collected[symbol]['m1']['candles']:
-                for interval, key in ((60, 'm1'), (300, 'm5')):
+                for interval, key in ((60, 'm1'), (180, 'm3'), (300, 'm5')):
                     try:
                         direct = get('/api/market/candles?' + urllib.parse.urlencode({
                             'symbol': symbol, 'interval': interval, 'count': REQUEST_M1 if interval == 60 else REQUEST_M5}),
@@ -170,7 +172,7 @@ if empty_symbols:
             for symbol, data in (payload.get('symbols') or {}).items():
                 if symbol not in collected or not isinstance(data, dict):
                     continue
-                for key, interval in (('m1', 60), ('m5', 300)):
+                for key, interval in (('m1', 60), ('m3', 180), ('m5', 300)):
                     rows = data.get(key) or []
                     if isinstance(rows, dict): rows = rows.get('candles') or []
                     if isinstance(rows, list) and rows:
@@ -231,13 +233,24 @@ if not fresh:
             ages.append(round(time.time() - float(rows[-1]['timestamp']), 1))
     raise RuntimeError(f'NO_FRESH_RAILWAY_CANDLES:age_seconds={max(ages) if ages else None}:max_age_seconds={max_age}')
 
+# Payout is current binary metadata and must travel with the same scan snapshot.
+payouts = {}
+for symbol in symbols:
+    try:
+        payout = get('/api/market/payout?' + urllib.parse.urlencode({'symbol': symbol, 'instrument': 'binary'}), timeout=30, attempts=2)
+        payouts[symbol] = payout
+    except Exception as exc:
+        payouts[symbol] = {'ok': False, 'reason': 'PAYOUT_FETCH_ERROR:' + type(exc).__name__, 'read_only': True}
+
 out = {'source': base, 'read_only': True, 'health': health,
-       'assets': [], 'symbols': {}, 'fetch_mode': 'per_symbol_direct',
-       'fresh_symbols': fresh, 'fetch_errors': errors}
+       'assets': [], 'payouts': payouts, 'symbols': {}, 'fetch_mode': 'per_symbol_direct',
+       'fresh_symbols': fresh, 'fetch_errors': errors,
+       'observed_at_utc': datetime.now(timezone.utc).isoformat(),
+       'latency_ms': round((time.perf_counter() - fetch_started) * 1000, 1)}
 for symbol, item in collected.items():
     out['symbols'][symbol] = {
         'snapshot': {'ok': True, 'assets': [], 'payouts': {}, 'read_only': True},
-        'candles': item.get('m1', {}), 'm5_candles': item.get('m5', {})}
+        'candles': item.get('m1', {}), 'm3_candles': item.get('m3', {}), 'm5_candles': item.get('m5', {})}
 Path('reports').mkdir(exist_ok=True)
 Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
 print('railway_market_per_symbol=OK', len(fresh), 'fresh_of', len(symbols))
