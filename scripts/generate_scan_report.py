@@ -213,14 +213,20 @@ def main() -> int:
     macro_path = Path("reports/macro_data.json")
     macro_data = json.loads(macro_path.read_text()) if macro_path.exists() else {"ok": False, "reason": "TRADINGVIEW_MACRO_REPORT_MISSING", "symbols": {}}
     by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
+    # Bound the scan to the ten authorized pairs.  ALL_AVAILABLE previously
+    # expanded to every broker-discovered symbol (114+) and repeatedly loaded
+    # heavy models until the GitHub runner killed report generation (exit 137).
+    authorized = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF",
+                  "NZDUSD", "EURGBP", "EURJPY", "GBPJPY"}
     if any(x.upper() in ("ALL", "ALL_AVAILABLE", "*") for x in requested):
-        symbols = list(by_symbol)
-        if otc_only:
-            symbols = [x for x in symbols if str(x).upper().endswith("-OTC")]
-        else:
-            symbols = [x for x in symbols if not str(x).upper().endswith("-OTC")]
+        symbols = [x for x in by_symbol
+                   if str(x).upper().replace("-OTC", "") in authorized]
+        symbols = [x for x in symbols
+                   if (str(x).upper().endswith("-OTC") if otc_only
+                       else not str(x).upper().endswith("-OTC"))]
     else:
-        symbols = requested
+        symbols = [x for x in requested
+                   if x.upper().replace("-OTC", "") in authorized]
         if otc_only:
             symbols = [x if x.upper().endswith("-OTC") else x.upper() + "-OTC" for x in symbols]
     forex, binary = [], []
