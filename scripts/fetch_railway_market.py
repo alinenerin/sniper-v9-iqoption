@@ -63,7 +63,9 @@ def discover_symbols():
             raise RuntimeError('NO_AVAILABLE_OTC_SYMBOLS')
         # Probe the most liquid FX pairs first so a transient gateway
         # degradation cannot leave the entire report without fresh candles.
-        priority = {'EURUSD-OTC': 0, 'GBPUSD-OTC': 1, 'USDJPY-OTC': 2, 'AUDUSD-OTC': 3}
+        priority = {'EURUSD-OTC': 0, 'GBPUSD-OTC': 1, 'USDJPY-OTC': 2, 'AUDUSD-OTC': 3,
+                    'USDCAD-OTC': 4, 'USDCHF-OTC': 5, 'NZDUSD-OTC': 6,
+                    'EURGBP-OTC': 7, 'EURJPY-OTC': 8, 'GBPJPY-OTC': 9}
         return sorted(normalized, key=lambda s: (priority.get(s, 10), s))
     bases = [n[:-4] for n in normalized if n.endswith('-OTC')]
     return bases or [n for n in normalized if not n.endswith('-OTC')] or requested
@@ -98,7 +100,9 @@ errors = {}
 # Establish a fresh baseline from the four liquid OTC charts before the
 # broad catalog scan; this prevents a transient catalog batch from producing
 # a false global "no candles" result.
-for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC') if s in collected]:
+for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
+                            'USDCAD-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
+                            'EURGBP-OTC', 'EURJPY-OTC', 'GBPJPY-OTC') if s in collected]:
     for interval, key in ((60, 'm1'), (300, 'm5')):
         try:
             direct = get('/api/market/candles?' + urllib.parse.urlencode({
