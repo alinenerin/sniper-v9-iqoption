@@ -46,21 +46,27 @@ class BinaryPolicy:
         return None
 
     @staticmethod
-    def m5_confirmation(candles) -> bool:
+    def m5_confirmation(candles, direction: str) -> bool:
         try:
             import pandas as pd
             df = pd.DataFrame(candles)
-            if len(df) < 25: return False
-            close = pd.to_numeric(df['close'])
-            fast = close.ewm(span=9, adjust=False).mean().iloc[-1]
-            slow = close.ewm(span=21, adjust=False).mean().iloc[-1]
-            return abs(float(fast) - float(slow)) > 0
-        except Exception:
+            if len(df) < 25 or direction not in ("CALL", "PUT"): return False
+            close = pd.to_numeric(df['close'], errors='coerce').dropna()
+            if len(close) < 25: return False
+            fast = close.ewm(span=9, adjust=False).mean()
+            slow = close.ewm(span=21, adjust=False).mean()
+            slope = fast.iloc[-1] - fast.iloc[-4]
+            if direction == "CALL":
+                return bool(fast.iloc[-1] > slow.iloc[-1] and close.iloc[-1] > slow.iloc[-1] and slope > 0)
+            return bool(fast.iloc[-1] < slow.iloc[-1] and close.iloc[-1] < slow.iloc[-1] and slope < 0)
+        except (KeyError, TypeError, ValueError, IndexError):
             return False
 
     def evaluate(self, api: Any, symbol: str, consultation: Any, candles, m5_candles=None) -> Dict[str, Any]:
         now = datetime.now(BRT)
+        direction = str(getattr(consultation, 'direction', 'NEUTRAL')).upper()
         result = {'market': 'otc' if '-OTC' in symbol.upper() else 'binary', 'symbol': symbol,
+                  'direction': direction,
                   'score': float(getattr(consultation, 'score', 0)),
                   'probability': float(getattr(consultation, 'probability', 0)),
                   'execution_allowed': False, 'veto': True, 'vetoes': [], 'sniper_timing': plan_sniper_window(), 'rate_decision': choose_rate_window()}
@@ -70,7 +76,7 @@ class BinaryPolicy:
         result['payout'] = payout
         result['expiry_minutes'] = 1
         m5_source = m5_candles if m5_candles is not None else []
-        result['m5'] = 'M5_CONFIRMADO' if self.m5_confirmation(m5_source) else 'M5_SEM_CONFIRMACAO'
+        result['m5'] = 'M5_CONFIRMADO' if self.m5_confirmation(m5_source, direction) else 'M5_SEM_CONFIRMACAO'
         result['m5_candles_count'] = len(m5_source)
         if payout is None: result['vetoes'].append('PAYOUT_UNAVAILABLE')
         elif payout < self.payout_minimum: result['vetoes'].append('PAYOUT_BELOW_MINIMUM')
