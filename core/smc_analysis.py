@@ -48,8 +48,22 @@ class SMCAnalysis:
         closed = SMCAnalysis.detect_bos(closed)
         last_fvg = int(closed['fvg'].iloc[-2])
         last_bos = int(closed['bos'].iloc[-1])
-        score = (50 if last_fvg != 0 else 0) + (50 if last_bos != 0 else 0)
         votes = [x for x in (last_fvg, last_bos) if x != 0]
         direction = "CALL" if votes and all(x == 1 for x in votes) else "PUT" if votes and all(x == -1 for x in votes) else "NEUTRAL"
+        # Missing FVG/BOS is neutral evidence, not opposition. Mixed signals
+        # are mildly contrary because the structure is genuinely divergent.
+        if not votes:
+            score = 50.0
+            state = "NEUTRO"
+        elif len(votes) == 2 and votes[0] == votes[1]:
+            score = 100.0
+            state = "FORTE_FAVORAVEL"
+        elif len(votes) == 1:
+            score = 70.0
+            state = "FAVORAVEL"
+        else:
+            score = 35.0
+            state = "CONTRA"
         return score, {"fvg": last_fvg, "bos": last_bos, "direction": direction,
+                       "evidence_state": state,
                        "closed_candles_used": len(closed), "lookahead_protected": True}
