@@ -83,6 +83,11 @@ jobs:
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
       - name: Generate unified report from Railway candles
         run: python scripts/generate_scan_report.py
+      - name: Final M1 and payout preflight before signal exposure
+        env:
+          RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
+          FINAL_PREFLIGHT_MAX_AGE_SECONDS: '30'
+        run: python scripts/final_preflight.py
       - name: Evaluate hypothetical result after expiration
         env:
           # Do not spend the workflow timeout waiting for a future candle;
