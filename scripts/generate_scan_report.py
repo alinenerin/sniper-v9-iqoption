@@ -209,6 +209,7 @@ def main() -> int:
     requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
+    market_mode = os.getenv("MARKET", "unified").lower()
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
     macro_path = Path("reports/macro_data.json")
@@ -231,8 +232,10 @@ def main() -> int:
             binary.append(_analyse("otc", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
     else:
         for symbol in symbols:
-            forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-            binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            if market_mode in ("unified", "forex"):
+                forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            if market_mode in ("unified", "binary"):
+                binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
             if include_otc:
                 otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
                 binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
@@ -261,11 +264,11 @@ def main() -> int:
         "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
         "mode": "read_only", "execution_allowed": False,
-        "forex": {"status": "completed", "analyses": forex},
-        "binary": {"status": "completed", "analyses": binary},
+        "forex": {"status": "completed" if forex else "not_requested", "analyses": forex},
+        "binary": {"status": "completed" if binary else "not_requested", "analyses": binary},
         "market_data": market_data,
         "macro_data": macro_data,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "market": market_mode, "source": "Railway"},
         "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
         "pipeline_dashboard": {
             "data": {"candles": "OK" if len(market_data.get("fresh_symbols") or []) == len(symbols) else "ERROR", "pairs_fresh": len(market_data.get("fresh_symbols") or []), "pairs_expected": len(symbols)},
