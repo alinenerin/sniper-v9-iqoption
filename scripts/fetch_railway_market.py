@@ -16,6 +16,7 @@ max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
 # requires at least 120 M1 and 30 M5 candles; request the larger operational
 # targets and recover per symbol when a batch returns a short payload.
 MIN_M1 = int(os.getenv('MIN_M1_CANDLES', '120'))
+MIN_M3 = int(os.getenv('MIN_M3_CANDLES', '30'))
 MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
 # Darts requires >=1000 M1 candles for its training window.
 REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '1200'))
@@ -188,11 +189,13 @@ if empty_symbols:
 short_symbols = [
     s for s, item in collected.items()
     if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
+    or len((item.get('m3') or {}).get('candles') or []) < MIN_M3
     or len((item.get('m5') or {}).get('candles') or []) < MIN_M5
 ]
 for symbol in short_symbols:
     for interval, key, target, minimum in (
         (60, 'm1', REQUEST_M1, MIN_M1),
+        (180, 'm3', REQUEST_M5, MIN_M3),
         (300, 'm5', REQUEST_M5, MIN_M5),
     ):
         current = (collected[symbol].get(key) or {}).get('candles') or []
@@ -213,6 +216,13 @@ for symbol in short_symbols:
                 errors[f'short:{symbol}:{interval}'] = f'{len(rows)}<{minimum}'
         except Exception as exc:
             errors[f'recovery:{symbol}:{interval}'] = type(exc).__name__
+
+remaining_short = [s for s, item in collected.items()
+                  if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
+                  or len((item.get('m3') or {}).get('candles') or []) < MIN_M3
+                  or len((item.get('m5') or {}).get('candles') or []) < MIN_M5]
+if remaining_short:
+    raise RuntimeError('CANDLE_DATA_INCOMPLETE:' + ','.join(remaining_short))
 
 fresh = []
 for symbol, item in collected.items():
@@ -241,6 +251,9 @@ for symbol in symbols:
         payouts[symbol] = payout
     except Exception as exc:
         payouts[symbol] = {'ok': False, 'reason': 'PAYOUT_FETCH_ERROR:' + type(exc).__name__, 'read_only': True}
+missing_payout = [s for s in symbols if not (payouts.get(s) or {}).get('ok') or (payouts.get(s) or {}).get('payout') is None]
+if missing_payout:
+    raise RuntimeError('PAYOUT_DATA_INCOMPLETE:' + ','.join(missing_payout))
 
 out = {'source': base, 'read_only': True, 'health': health,
        'assets': [], 'payouts': payouts, 'symbols': {}, 'fetch_mode': 'per_symbol_direct',
