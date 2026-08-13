@@ -23,10 +23,9 @@ class VSAAnalysis:
         df['vsa_anomaly'] = (df['relative_vol'] > 1.5) & (df['relative_range'] < 1.0)
         
         last_anomaly = df['vsa_anomaly'].iloc[-1]
-        v_score = 0
-        if not last_anomaly: # Se não há anomalia de exaustão, o movimento é saudável
-             v_score = 100
-        else:
-             v_score = 0 # Veto por anomalia VSA
-             
-        return v_score, {"anomaly": last_anomaly, "rel_vol": df['relative_vol'].iloc[-1]}
+        # VSA is not directional in this implementation. A healthy/neutral
+        # reading must not become 100 (false confirmation) or 0 (false veto).
+        # Only the explicit exhaustion/absorption condition is contrary.
+        v_score = 0.0 if bool(last_anomaly) else 50.0
+        return v_score, {"anomaly": bool(last_anomaly), "rel_vol": df['relative_vol'].iloc[-1],
+                         "evidence_state": "CONTRA" if bool(last_anomaly) else "NEUTRO"}
