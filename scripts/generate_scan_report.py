@@ -98,25 +98,29 @@ def _score_separation(market: str, score: float | None, components: dict[str, An
                      components[name].get("status") == "inference_ok"
                      for name in ("smc", "vsa")) if components else False
     confidence = "FULL" if core_ready and not blocked else "PARTIAL" if core_ready else "INSUFFICIENT"
-    if value >= 95:
+    supreme = float(TRADING_CONFIG.supreme_threshold)
+    qualified = float(TRADING_CONFIG.diamond_threshold)
+    noise = float(TRADING_CONFIG.noise_threshold)
+    if value >= supreme:
         band = "SUPREME"
-    elif value >= 85:
-        band = "STRONG_SHADOW"
-    elif value >= 75:
+    elif value >= qualified:
+        band = "QUALIFIED"
+    elif value >= noise:
         band = "TECHNICAL_SHADOW"
     else:
         band = "REJECTED"
-    shadow_eligible = bool(candles) and value >= 75.0 and value < 95.0 and direction in ("CALL", "PUT")
+    shadow_eligible = bool(candles) and value >= qualified and direction in ("CALL", "PUT")
     return {"technical_score": value,
             "data_confidence": {"status": confidence, "executed_components": executed,
                                 "blocked_components": blocked, "core_chart_ready": core_ready},
             "operational_status": band,
             "shadow_policy": {"lane": "shadow", "eligible": shadow_eligible,
-                               "official_minimum_score": 95.0,
+                               "qualification_threshold": float(TRADING_CONFIG.diamond_threshold),
+                               "supreme_threshold": float(TRADING_CONFIG.supreme_threshold),
                                "execution_allowed": False,
                                "approval_unchanged": True,
-                               "reason": "TECHNICAL_SCORE_REQUIRES_RESEARCH_VALIDATION" if shadow_eligible
-                                         else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION"}}
+                               "reason": "QUALIFIED_IN_SHADOW_MODE" if shadow_eligible
+                                         else "OUTSIDE_QUALIFICATION_BAND_OR_MISSING_DIRECTION"}}
 
 
 def _shadow_policy(market: str, score: float | None, direction: str | None, candles: list[dict[str, Any]]) -> dict[str, Any]:
@@ -124,8 +128,9 @@ def _shadow_policy(market: str, score: float | None, direction: str | None, cand
     if market != "otc":
         return {}
     value = float(score or 0)
-    eligible = bool(candles) and 90.0 <= value < 95.0 and direction in ("CALL", "PUT")
-    return {"lane": "shadow", "minimum_score": 90.0, "official_minimum_score": 95.0,
+    minimum = float(TRADING_CONFIG.diamond_threshold)
+    eligible = bool(candles) and value >= minimum and direction in ("CALL", "PUT")
+    return {"lane": "shadow", "minimum_score": minimum,
             "eligible": eligible, "requires_live_timing": True,
             "execution_allowed": False,
             "reason": "SCORE_90_94_REQUIRES_LIVE_TIMING" if eligible else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION"}
@@ -209,7 +214,6 @@ def main() -> int:
     requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
-    market_mode = os.getenv("MARKET", "unified").lower()
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
     macro_path = Path("reports/macro_data.json")
@@ -232,10 +236,8 @@ def main() -> int:
             binary.append(_analyse("otc", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
     else:
         for symbol in symbols:
-            if market_mode in ("unified", "forex"):
-                forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-            if market_mode in ("unified", "binary"):
-                binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
             if include_otc:
                 otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
                 binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
@@ -264,11 +266,11 @@ def main() -> int:
         "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
         "mode": "read_only", "execution_allowed": False,
-        "forex": {"status": "completed" if forex else "not_requested", "analyses": forex},
-        "binary": {"status": "completed" if binary else "not_requested", "analyses": binary},
+        "forex": {"status": "completed", "analyses": forex},
+        "binary": {"status": "completed", "analyses": binary},
         "market_data": market_data,
         "macro_data": macro_data,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "market": market_mode, "source": "Railway"},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
         "pipeline_dashboard": {
             "data": {"candles": "OK" if len(market_data.get("fresh_symbols") or []) == len(symbols) else "ERROR", "pairs_fresh": len(market_data.get("fresh_symbols") or []), "pairs_expected": len(symbols)},
