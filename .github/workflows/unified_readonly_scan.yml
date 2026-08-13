@@ -18,6 +18,15 @@ on:
         required: true
         default: false
         type: boolean
+      market:
+        description: 'Mercado do pipeline: binary, forex ou unified'
+        required: true
+        default: 'binary'
+        type: choice
+        options:
+          - binary
+          - forex
+          - unified
 
 jobs:
   unified-scan:
@@ -30,6 +39,7 @@ jobs:
       INCLUDE_OTC: ${{ inputs.include_otc }}
       OTC_ONLY: ${{ inputs.otc_only }}
       SYMBOLS: ${{ inputs.symbols }}
+      MARKET: ${{ inputs.market }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -109,8 +119,10 @@ jobs:
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
           assert 'binary' in r and 'forex' in r
-          assert r['forex']['status'] == 'completed'
-          assert r['binary']['status'] == 'completed'
+          assert r['binary']['status'] == ('completed' if os.environ.get('MARKET') in ('binary', 'unified') else 'not_requested')
+          assert r['forex']['status'] == ('completed' if os.environ.get('MARKET') in ('forex', 'unified') else 'not_requested')
+          if os.environ.get('MARKET') == 'binary': assert not r['forex'].get('analyses')
+          if os.environ.get('MARKET') == 'forex': assert not r['binary'].get('analyses')
           if r.get('inputs', {}).get('otc_only'):
               assert r.get('inputs', {}).get('include_otc') is True
               assert not r['forex'].get('analyses')
