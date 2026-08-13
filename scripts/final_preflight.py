@@ -4,6 +4,7 @@ analysis is never emitted as a current signal.
 """
 from __future__ import annotations
 import json, os, time, urllib.parse, urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -40,28 +41,33 @@ if include_otc:
 targets = sorted(set(symbols))
 observed = datetime.now(timezone.utc)
 checks = {}
-for start in range(0, len(targets), 2):
-    chunk = targets[start:start + 2]
-    try:
-        payload = get("/api/market/snapshot_batch?" + urllib.parse.urlencode({"pairs": ",".join(chunk)}))
-        payouts = payload.get("payouts") or {}
-        for symbol in chunk:
-            data = (payload.get("symbols") or {}).get(symbol) or {}
-            rows = rows_of(data.get("m1"))
-            last = rows[-1] if rows else None
-            stamp = ts_of(last)
-            age = max(0.0, observed.timestamp() - stamp) if stamp is not None else None
-            payout = payouts.get(symbol)
-            if not isinstance(payout, dict): payout = (report.get("market_data") or {}).get("payouts", {}).get(symbol)
-            payout_ok = bool(isinstance(payout, dict) and payout.get("ok") and payout.get("payout") is not None)
-            checks[symbol] = {"ok": bool(age is not None and age <= MAX_AGE and payout_ok),
-                              "candle_age_seconds": round(age, 3) if age is not None else None,
-                              "last_candle_timestamp_utc": datetime.fromtimestamp(stamp, timezone.utc).isoformat() if stamp else None,
-                              "payout": payout, "observed_at_utc": observed.isoformat(),
-                              "max_age_seconds": MAX_AGE, "read_only": True}
-    except Exception as exc:
-        for symbol in chunk:
-            checks[symbol] = {"ok": False, "reason": "FINAL_PREFLIGHT_" + type(exc).__name__, "read_only": True}
+chunks = [targets[start:start + 2] for start in range(0, len(targets), 2)]
+def fetch_chunk(chunk):
+    return chunk, get("/api/market/snapshot_batch?" + urllib.parse.urlencode({"pairs": ",".join(chunk)}))
+with ThreadPoolExecutor(max_workers=min(5, max(1, len(chunks)))) as pool:
+    futures = [pool.submit(fetch_chunk, chunk) for chunk in chunks]
+    for future in as_completed(futures):
+        chunk = []
+        try:
+            chunk, payload = future.result()
+            payouts = payload.get("payouts") or {}
+            for symbol in chunk:
+                data = (payload.get("symbols") or {}).get(symbol) or {}
+                rows = rows_of(data.get("m1"))
+                last = rows[-1] if rows else None
+                stamp = ts_of(last)
+                age = max(0.0, observed.timestamp() - stamp) if stamp is not None else None
+                payout = payouts.get(symbol)
+                if not isinstance(payout, dict): payout = (report.get("market_data") or {}).get("payouts", {}).get(symbol)
+                payout_ok = bool(isinstance(payout, dict) and payout.get("ok") and payout.get("payout") is not None)
+                checks[symbol] = {"ok": bool(age is not None and age <= MAX_AGE and payout_ok),
+                                  "candle_age_seconds": round(age, 3) if age is not None else None,
+                                  "last_candle_timestamp_utc": datetime.fromtimestamp(stamp, timezone.utc).isoformat() if stamp else None,
+                                  "payout": payout, "observed_at_utc": observed.isoformat(),
+                                  "max_age_seconds": MAX_AGE, "read_only": True}
+        except Exception as exc:
+            for symbol in chunk:
+                checks[symbol] = {"ok": False, "reason": "FINAL_PREFLIGHT_" + type(exc).__name__, "read_only": True}
 
 expiry = observed + timedelta(seconds=120)
 for book in (report.get("binary"),):
