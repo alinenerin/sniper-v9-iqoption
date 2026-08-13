@@ -90,6 +90,37 @@ class SharedAI:
             "vsa": {"status": "inference_ok" if "vsa" in analysis else "blocked", "reason": None if "vsa" in analysis else "VSA_NOT_RUN"},
         }
 
+    @staticmethod
+    def _fuse_agent_evidence(technical_score: float, direction: str, component_status: dict[str, Any], advisory: dict[str, Any], symbol: str) -> tuple[float, dict[str, Any]]:
+        """Fuse verified model evidence without treating missing models as zero."""
+        parts = [("technical", max(0.0, min(100.0, technical_score)), 0.60)]
+        direction = direction.upper()
+        def report_item(filename: str):
+            try:
+                report = json.loads((Path("reports") / filename).read_text())
+                item = (report.get("components") or {}).get(symbol)
+                return item if isinstance(item, dict) else {}
+            except (OSError, json.JSONDecodeError):
+                return {}
+        xgb = report_item("xgboost_inference.json")
+        if component_status.get("xgboost", {}).get("status") == "inference_ok" and xgb.get("probability_up") is not None:
+            p = float(xgb["probability_up"]) * 100.0
+            parts.append(("xgboost", p if direction in ("CALL", "BUY") else 100.0 - p, 0.20))
+        times = report_item("timesfm_inference.json")
+        if component_status.get("timesfm", {}).get("status") == "inference_ok":
+            td = str((times.get("forecast") or times).get("direction", "")).upper()
+            conf = float((times.get("forecast") or times).get("confidence", 0.5) or 0.5)
+            aligned = td in (("UP",) if direction in ("CALL", "BUY") else ("DOWN",))
+            parts.append(("timesfm", 50.0 + (conf * 50.0 if aligned else -conf * 50.0), 0.10))
+        darts = report_item("darts_inference.json")
+        if component_status.get("darts", {}).get("status") == "inference_ok":
+            scan = darts.get("scan") or {}
+            anomaly = float(scan.get("anomaly_score", scan.get("score", 0)) or 0)
+            parts.append(("darts_safety", max(0.0, 100.0 - anomaly), 0.10))
+        total_weight = sum(weight for _, _, weight in parts)
+        fused = round(sum(value * weight for _, value, weight in parts) / total_weight, 1)
+        return fused, {name: {"value": round(value, 2), "weight": weight, "status": "inference_ok"} for name, value, weight in parts}
+
     def consult(self, request: MarketRequest) -> AIConsultation:
         if request.market not in _ALLOWED_MARKETS:
             return AIConsultation(False, 0, 0, 100, vetoes=["UNKNOWN_MARKET"])
@@ -187,8 +218,14 @@ class SharedAI:
             analysis["shared_advisory"] = advisory
             analysis["symbol"] = request.symbol
             component_status = self._component_status(analysis, advisory)
+            direction = str(analysis.get("direction", "NEUTRAL")).upper()
+            technical_score = float(analysis.get("score", 0) or 0)
+            score, fused_components = self._fuse_agent_evidence(technical_score, direction, component_status, advisory, request.symbol)
+            analysis["technical_score"] = round(technical_score, 1)
+            analysis["score"] = score
+            analysis["normalized_score"] = score
+            analysis["score_fusion"] = fused_components
             approved, reason = engine.is_supreme_approved(analysis)
-            score = float(analysis.get("score", 0) or 0)
             anomaly = self._anomaly_score(analysis)
             vetoes = []
             if analysis.get("veto"):
