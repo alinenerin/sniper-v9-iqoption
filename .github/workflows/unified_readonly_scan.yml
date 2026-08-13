@@ -82,6 +82,8 @@ jobs:
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
       - name: Generate unified report from Railway candles
         run: python scripts/generate_scan_report.py
+      - name: Run TradingAgents shadow committee
+        run: python scripts/run_tradingagents_shadow.py
       - name: Evaluate hypothetical result after expiration
         env:
           # Do not spend the workflow timeout waiting for a future candle;
@@ -148,5 +150,6 @@ jobs:
           name: latest-scan-${{ github.run_id }}
           path: |
             reports/latest_scan.json
+            reports/tradingagents_shadow.json
             reports/darts_inference.json
             reports/finbert_inference.json
