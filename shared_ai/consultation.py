@@ -91,9 +91,16 @@ class SharedAI:
         }
 
     @staticmethod
-    def _fuse_agent_evidence(technical_score: float, direction: str, component_status: dict[str, Any], advisory: dict[str, Any], symbol: str) -> tuple[float, dict[str, Any]]:
-        """Fuse verified model evidence without treating missing models as zero."""
-        parts = [("technical", max(0.0, min(100.0, technical_score)), 0.60)]
+    def _fuse_agent_evidence(technical_score: float, direction: str, component_status: dict[str, Any], advisory: dict[str, Any], symbol: str, core_components: dict[str, Any] | None = None) -> tuple[float, dict[str, Any]]:
+        """Central evidence fusion; unavailable components are excluded, not zeroed."""
+        cfg = TRADING_CONFIG
+        parts = []
+        for name, weight in (("technical_core", cfg.technical_core_weight), ("smc", cfg.smc_weight), ("vsa", cfg.vsa_weight), ("sentiment", cfg.sentiment_weight)):
+            item = (core_components or {}).get(name) if isinstance(core_components, dict) else None
+            if isinstance(item, dict) and item.get("value") is not None:
+                parts.append((name, max(0.0, min(100.0, float(item["value"]))), weight, "evidence"))
+        if not parts:
+            parts.append(("technical_core", max(0.0, min(100.0, technical_score)), cfg.technical_core_weight, "fallback"))
         direction = direction.upper()
         def report_item(filename: str):
             try:
@@ -105,21 +112,23 @@ class SharedAI:
         xgb = report_item("xgboost_inference.json")
         if component_status.get("xgboost", {}).get("status") == "inference_ok" and xgb.get("probability_up") is not None:
             p = float(xgb["probability_up"]) * 100.0
-            parts.append(("xgboost", p if direction in ("CALL", "BUY") else 100.0 - p, 0.20))
+            parts.append(("xgboost", p if direction in ("CALL", "BUY") else 100.0 - p, cfg.ai_ensemble_weight * 0.50, "ai"))
         times = report_item("timesfm_inference.json")
         if component_status.get("timesfm", {}).get("status") == "inference_ok":
             td = str((times.get("forecast") or times).get("direction", "")).upper()
             conf = float((times.get("forecast") or times).get("confidence", 0.5) or 0.5)
             aligned = td in (("UP",) if direction in ("CALL", "BUY") else ("DOWN",))
-            parts.append(("timesfm", 50.0 + (conf * 50.0 if aligned else -conf * 50.0), 0.10))
+            parts.append(("timesfm", 50.0 + (conf * 50.0 if aligned else -conf * 50.0), cfg.ai_ensemble_weight * 0.50, "ai"))
         darts = report_item("darts_inference.json")
         if component_status.get("darts", {}).get("status") == "inference_ok":
             scan = darts.get("scan") or {}
             anomaly = float(scan.get("anomaly_score", scan.get("score", 0)) or 0)
-            parts.append(("darts_safety", max(0.0, 100.0 - anomaly), 0.10))
-        total_weight = sum(weight for _, _, weight in parts)
-        fused = round(sum(value * weight for _, value, weight in parts) / total_weight, 1)
-        return fused, {name: {"value": round(value, 2), "weight": weight, "status": "inference_ok"} for name, value, weight in parts}
+            # Darts is a safety/veto signal, not a bullish score contributor.
+            if anomaly > 85:
+                return 0.0, {"darts_safety": {"value": round(anomaly, 2), "weight": 0.0, "status": "hard_veto"}}
+        total_weight = sum(weight for _, _, weight, _ in parts)
+        fused = round(sum(value * weight for _, value, weight, _ in parts) / total_weight, 1)
+        return fused, {name: {"value": round(value, 2), "weight": weight, "role": role, "status": "inference_ok"} for name, value, weight, role in parts}
 
     def consult(self, request: MarketRequest) -> AIConsultation:
         if request.market not in _ALLOWED_MARKETS:
@@ -220,7 +229,7 @@ class SharedAI:
             component_status = self._component_status(analysis, advisory)
             direction = str(analysis.get("direction", "NEUTRAL")).upper()
             technical_score = float(analysis.get("score", 0) or 0)
-            score, fused_components = self._fuse_agent_evidence(technical_score, direction, component_status, advisory, request.symbol)
+            score, fused_components = self._fuse_agent_evidence(technical_score, direction, component_status, advisory, request.symbol, analysis.get("score_components"))
             analysis["technical_score"] = round(technical_score, 1)
             analysis["score"] = score
             analysis["normalized_score"] = score
