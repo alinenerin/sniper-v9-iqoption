@@ -13,9 +13,21 @@ requested = __import__('os').getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').re
 if __import__('os').getenv('INCLUDE_OTC', 'false').lower() == 'true':
     requested += [s if s.endswith('-OTC') else s + '-OTC' for s in requested if not s.endswith('-OTC')]
 results = {}
+def candle_rows(payload):
+    # Current gateway contract stores M1 under m1; retain legacy fallback.
+    value = payload.get('m1')
+    if isinstance(value, list) and value:
+        return value
+    if isinstance(value, dict) and value.get('candles'):
+        return value['candles']
+    legacy = payload.get('candles')
+    if isinstance(legacy, list):
+        return legacy
+    return (legacy or {}).get('candles', []) if isinstance(legacy, dict) else []
+
 for symbol in requested:
     payload = market.get('symbols', {}).get(symbol, {})
-    rows = (payload.get('candles') or {}).get('candles', [])
+    rows = candle_rows(payload)
     evidence = {'symbol': symbol, 'samples': len(rows), 'role': 'auxiliary_only', 'veto_authority': 'chart_only'}
     if len(rows) < 1000:
         evidence.update(status='insufficient-data', reason='INSUFFICIENT_CANDLES_FOR_DARTS_TRAINING')
