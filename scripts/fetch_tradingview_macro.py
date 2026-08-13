@@ -1,6 +1,9 @@
 """Write the canonical TradingView DXY/VIX source for GitHub scans."""
-import json
+import json, sys
 from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 from macro_source import fetch_macro
 
 out = fetch_macro()
