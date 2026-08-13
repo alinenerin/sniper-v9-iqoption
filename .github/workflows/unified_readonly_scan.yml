@@ -49,6 +49,8 @@ jobs:
         env:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: python scripts/fetch_railway_market.py
+      - name: Fetch canonical DXY/VIX macro snapshot
+        run: python scripts/fetch_tradingview_macro.py
       - name: Install Darts runtime
         run: pip install 'Darts>=0.30,<1.0'
       - name: Run Darts anomaly inference
@@ -90,6 +92,10 @@ jobs:
           python - <<'PY'
           import json
           r=json.load(open('reports/latest_scan.json'))
+          macro=r.get('macro_data') or {}
+          if not r.get('inputs', {}).get('otc_only'):
+              assert macro.get('ok') is True, macro.get('reason')
+              assert all((macro.get('symbols') or {}).get(k, {}).get('status') == 'ok' for k in ('dxy','vix'))
           finbert=json.load(open('reports/finbert_inference.json'))
           assert 'Finnhub' in str(finbert.get('provider', ''))
           assert finbert['read_only'] is True
@@ -134,22 +140,6 @@ jobs:
               assert set(('darts', 'finbert')).issubset(item.get('components', {}))
           print('unified_report=OK; component_statuses=OK; execution=BLOCKED')
           PY
-      - name: Run TradingAgents-compatible shadow committee
-        run: python scripts/run_tradingagents_shadow.py
-      - name: Validate TradingAgents shadow contract
-        run: |
-          python - <<'PY'
-          import json
-          r=json.load(open('reports/tradingagents_shadow.json'))
-          assert r['read_only'] is True
-          assert r['execution_allowed'] is False
-          assert r['mode'] == 'read_only_shadow'
-          for item in r.get('analyses', []):
-              assert item['execution_allowed'] is False
-              assert item['read_only'] is True
-              assert item['decision_impact'] == 'advisory_only'
-          print('tradingagents_shadow=OK; execution=BLOCKED')
-          PY
       - name: Upload latest scan
         uses: actions/upload-artifact@v4
         with:
@@ -158,4 +148,3 @@ jobs:
             reports/latest_scan.json
             reports/darts_inference.json
             reports/finbert_inference.json
-            reports/tradingagents_shadow.json
