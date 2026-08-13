@@ -11,7 +11,9 @@ from zoneinfo import ZoneInfo
 
 REPORT = Path("reports/latest_scan.json")
 BASE = os.getenv("RAILWAY_GATEWAY_URL", "https://trader-analysis-api-production-82ba.up.railway.app").rstrip("/")
-MAX_AGE = float(os.getenv("FINAL_PREFLIGHT_MAX_AGE_SECONDS", "30"))
+# M1 candles are closed on minute boundaries; a 60s-old last closed candle
+# can still be the current operational candle. Keep a safety margin below 2m.
+MAX_AGE = float(os.getenv("FINAL_PREFLIGHT_MAX_AGE_SECONDS", "75"))
 
 def get(path):
     with urllib.request.urlopen(BASE + path, timeout=35) as response:
