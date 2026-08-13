@@ -44,8 +44,12 @@ def _is_relevant(article: dict[str, Any], symbol: str) -> bool:
     ).upper()
     # Prefer Finnhub's related field; if it is empty, use currency mentions.
     if related:
-        return base in related or quote in related or symbol in related
-    return base in text or quote in text
+        compact = re.sub(r"[^A-Z]", "", related)
+        pair = base + quote
+        # A single shared currency (e.g. USD) is not enough to map news to
+        # every USD pair. Require the pair or both currencies.
+        return pair in compact or (base in related and quote in related)
+    return base in text and quote in text
 
 
 FETCH_DIAGNOSTICS: dict[str, Any] = {
