@@ -264,6 +264,7 @@ def main() -> int:
         "forex": {"status": "completed", "analyses": forex},
         "binary": {"status": "completed", "analyses": binary},
         "market_data": market_data,
+        "macro_data": macro_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
         "pipeline_dashboard": {
