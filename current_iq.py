@@ -460,8 +460,13 @@ class IQOptionReadonly:
             row = {}
             for kind in ('binary', 'turbo'):
                 for _, active in (snap.get(kind, {}).get('actives', {}) or {}).items():
-                    name = str(active.get('name','')).split('.')[-1]
-                    if name == symbol or name == symbol.replace('-OTC', '_OTC'):
+                    name = str(active.get('name','')).split('.')[-1].upper()
+                    aliases = {symbol, symbol.replace('-OTC', '_OTC'), symbol.replace('-OTC', '_OTC').replace('-', '_')}
+                    # IQ Option labels real binary/turbo instruments with -op
+                    # in the asset catalog (e.g. AUDUSD-op), while candles use
+                    # the canonical AUDUSD symbol.
+                    canonical_name = name.removesuffix('-OP').removesuffix('_OP')
+                    if name in aliases or canonical_name in aliases:
                         option = active.get('option', {}).get('profit', {})
                         if 'commission' in option: row[kind] = (100.0 - float(option['commission'])) / 100.0
             if not row:
@@ -472,7 +477,7 @@ class IQOptionReadonly:
                     if isinstance(profits, dict):
                         # iqoptionapi normally returns {SYMBOL: {turbo: ..., binary: ...}},
                         # while some gateway builds return the inverse orientation.
-                        orientations = [profits.get(symbol), profits.get(symbol.replace('-OTC', '_OTC'))]
+                        orientations = [profits.get(symbol), profits.get(symbol + '-op'), profits.get(symbol.replace('-OTC', '_OTC')), profits.get(symbol.replace('-OTC', '_OTC') + '-op')]
                         for kind in ('binary', 'turbo'):
                             candidate = None
                             for container in orientations:
