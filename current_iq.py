@@ -465,6 +465,19 @@ class IQOptionReadonly:
                         option = active.get('option', {}).get('profit', {})
                         if 'commission' in option: row[kind] = (100.0 - float(option['commission'])) / 100.0
             if not row:
+                # Some IQ sessions expose real binary/turbo profit through
+                # get_all_profit instead of the init snapshot.
+                try:
+                    profits = self.api.get_all_profit() if callable(getattr(self.api, 'get_all_profit', None)) else {}
+                    for kind in ('binary', 'turbo'):
+                        value = (profits.get(kind, {}) if isinstance(profits, dict) else {}).get(symbol)
+                        if isinstance(value, dict):
+                            value = value.get('profit') or value.get('value')
+                        if value is not None:
+                            value = float(value); row[kind] = value / 100.0 if value > 1 else value
+                except Exception:
+                    pass
+            if not row:
                 return {'ok': False, 'symbol': symbol, 'reason': 'ASSET_NOT_IN_PROFIT_SNAPSHOT', 'read_only': True}
             key = 'turbo' if instrument in ('turbo', 'turbo-option') else 'binary'
             value = row.get(key)
