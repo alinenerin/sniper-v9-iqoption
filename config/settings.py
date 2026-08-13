@@ -86,10 +86,14 @@ class TradingConfig:
     diamond_threshold: float = 80.0   # DIAMOND (80-87) → Execução Padrão
     noise_threshold: float = 75.0     # Abaixo disso = RUÍDO → SILÊNCIO
     
-    # Pesos do Score
-    smc_weight: float = 0.4       # SMC (ICT Concepts)
-    vsa_weight: float = 0.3       # VSA (Volume Spread)
-    sentiment_weight: float = 0.3    # NLP Sentiment
+    # Pesos centrais do Evidence/Fusion Score (soma = 1.0).
+    # A ausência de evidência é excluída e os pesos disponíveis são
+    # renormalizados; nunca é convertida em score zero.
+    technical_core_weight: float = 0.35
+    smc_weight: float = 0.20
+    vsa_weight: float = 0.15
+    sentiment_weight: float = 0.10
+    ai_ensemble_weight: float = 0.20
     
     # =========================================================================
     # 🛡️ DARTS ANOMALY SHIELD — CAMADA 0
