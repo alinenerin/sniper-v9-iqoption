@@ -167,6 +167,7 @@ for symbol in SYMBOLS:
         results[symbol] = {
             "symbol": symbol,
             "status": "inference_ok",
+            "evidence_status": "AVAILABLE" if labels else "NO_RELEVANT_NEWS",
             "provider": "Finnhub",
             "model": "ProsusAI/finbert",
             "articles": len(labels),
