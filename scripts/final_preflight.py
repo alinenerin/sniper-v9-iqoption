@@ -43,6 +43,7 @@ if include_otc:
 targets = sorted(set(symbols))
 observed = datetime.now(timezone.utc)
 checks = {}
+fresh_rows = {}
 chunks = [targets[start:start + 2] for start in range(0, len(targets), 2)]
 def fetch_chunk(chunk):
     return chunk, get("/api/market/snapshot_batch?" + urllib.parse.urlencode({"pairs": ",".join(chunk)}))
@@ -57,6 +58,7 @@ with ThreadPoolExecutor(max_workers=min(5, max(1, len(chunks)))) as pool:
             for symbol in chunk:
                 data = (payload.get("symbols") or {}).get(symbol) or {}
                 rows = rows_of(data.get("m1"))
+                fresh_rows[symbol] = rows
                 last = rows[-1] if rows else None
                 stamp = ts_of(last)
                 age = max(0.0, checked_at.timestamp() - stamp) if stamp is not None else None
@@ -74,7 +76,35 @@ with ThreadPoolExecutor(max_workers=min(5, max(1, len(chunks)))) as pool:
 
 observed = datetime.now(timezone.utc)
 expiry = observed + timedelta(seconds=120)
+# Recompute the binary decision on the final M1 snapshot. The initial heavy
+# analysis is never allowed to survive as a signal if its candles are stale.
 for book in (report.get("binary"),):
+    for item in (book or {}).get("analyses", []):
+        symbol = item.get("symbol")
+        rows = fresh_rows.get(symbol) or []
+        if not rows:
+            continue
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from config.markets.contracts import MarketRequest
+            from shared_ai.consultation import SharedAI
+            consultation = SharedAI(score_minimum=80.0).consult(MarketRequest(
+                market="binary", symbol=symbol, timeframe="M1", candles=rows,
+                account_mode="PRACTICE", metadata={"source": "FINAL_PREFLIGHT"}))
+            item["score"] = round(float(consultation.score), 1)
+            item["probability"] = round(float(consultation.probability), 4)
+            item["approved"] = bool(consultation.approved)
+            item["direction_calculated"] = consultation.direction
+            item["final_score_reanalysis"] = True
+            core = consultation.components.get("core_analysis", {}) if isinstance(consultation.components, dict) else {}
+            item["score_fusion"] = core.get("score_fusion", {})
+            item["score_components"] = core.get("score_components", {})
+            item["final_analysis_snapshot"] = {"candle_count": len(rows), "observed_at_utc": observed.isoformat(), "read_only": True}
+            item["vetoes"] = list(consultation.vetoes or [])
+        except Exception as exc:
+            item["approved"] = False
+            item.setdefault("vetoes", []).append("FINAL_REANALYSIS_" + type(exc).__name__)
     for item in (book or {}).get("analyses", []):
         symbol = item.get("symbol")
         check = checks.get(symbol, {"ok": False, "reason": "FINAL_PREFLIGHT_SYMBOL_MISSING"})
