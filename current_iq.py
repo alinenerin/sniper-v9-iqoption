@@ -469,12 +469,23 @@ class IQOptionReadonly:
                 # get_all_profit instead of the init snapshot.
                 try:
                     profits = self.api.get_all_profit() if callable(getattr(self.api, 'get_all_profit', None)) else {}
-                    for kind in ('binary', 'turbo'):
-                        value = (profits.get(kind, {}) if isinstance(profits, dict) else {}).get(symbol)
-                        if isinstance(value, dict):
-                            value = value.get('profit') or value.get('value')
-                        if value is not None:
-                            value = float(value); row[kind] = value / 100.0 if value > 1 else value
+                    if isinstance(profits, dict):
+                        # iqoptionapi normally returns {SYMBOL: {turbo: ..., binary: ...}},
+                        # while some gateway builds return the inverse orientation.
+                        orientations = [profits.get(symbol), profits.get(symbol.replace('-OTC', '_OTC'))]
+                        for kind in ('binary', 'turbo'):
+                            candidate = None
+                            for container in orientations:
+                                if isinstance(container, dict):
+                                    candidate = container.get(kind)
+                                    if candidate is not None: break
+                            if candidate is None:
+                                candidate = profits.get(kind, {}).get(symbol) if isinstance(profits.get(kind), dict) else None
+                            if isinstance(candidate, dict):
+                                candidate = candidate.get('profit') or candidate.get('value') or candidate.get('commission')
+                            if candidate is not None:
+                                value = float(candidate)
+                                row[kind] = (100.0 - value) / 100.0 if value > 1 and value <= 100 else (value / 100.0 if value > 1 else value)
                 except Exception:
                     pass
             if not row:
