@@ -51,24 +51,26 @@ with ThreadPoolExecutor(max_workers=min(5, max(1, len(chunks)))) as pool:
         try:
             chunk, payload = future.result()
             payouts = payload.get("payouts") or {}
+            checked_at = datetime.now(timezone.utc)
             for symbol in chunk:
                 data = (payload.get("symbols") or {}).get(symbol) or {}
                 rows = rows_of(data.get("m1"))
                 last = rows[-1] if rows else None
                 stamp = ts_of(last)
-                age = max(0.0, observed.timestamp() - stamp) if stamp is not None else None
+                age = max(0.0, checked_at.timestamp() - stamp) if stamp is not None else None
                 payout = payouts.get(symbol)
                 if not isinstance(payout, dict): payout = (report.get("market_data") or {}).get("payouts", {}).get(symbol)
                 payout_ok = bool(isinstance(payout, dict) and payout.get("ok") and payout.get("payout") is not None)
                 checks[symbol] = {"ok": bool(age is not None and age <= MAX_AGE and payout_ok),
                                   "candle_age_seconds": round(age, 3) if age is not None else None,
                                   "last_candle_timestamp_utc": datetime.fromtimestamp(stamp, timezone.utc).isoformat() if stamp else None,
-                                  "payout": payout, "observed_at_utc": observed.isoformat(),
+                                  "payout": payout, "observed_at_utc": checked_at.isoformat(),
                                   "max_age_seconds": MAX_AGE, "read_only": True}
         except Exception as exc:
             for symbol in chunk:
                 checks[symbol] = {"ok": False, "reason": "FINAL_PREFLIGHT_" + type(exc).__name__, "read_only": True}
 
+observed = datetime.now(timezone.utc)
 expiry = observed + timedelta(seconds=120)
 for book in (report.get("binary"),):
     for item in (book or {}).get("analyses", []):
