@@ -109,7 +109,7 @@ class SupremeIntelligence:
         # Pesos: SMC (40%), VSA (30%), Sentimento (30%)
         # =============================================
         score_parts = [("smc", float(smc_score), 0.4), ("vsa", float(vsa_score), 0.3)]
-        if sent_score is not None and isinstance(sent_details, dict) and sent_details.get("status") == "executed":
+        if sent_score is not None and isinstance(sent_details, dict) and sent_details.get("status") in ("inference_ok", "executed"):
             score_parts.append(("sentiment", float(sent_score), 0.3))
         weight_total = sum(weight for _, _, weight in score_parts)
         final_score = sum(value * weight for _, value, weight in score_parts) / weight_total if weight_total else 0.0
