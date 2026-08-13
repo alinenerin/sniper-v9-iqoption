@@ -108,6 +108,9 @@ else:
 # websocket session and avoids 2 HTTP reconnect-sensitive calls per symbol.
 collected = {s: {'m1': {'candles': []}, 'm3': {'candles': []}, 'm5': {'candles': []}} for s in symbols}
 errors = {}
+# Payouts returned by the same persistent snapshot are preferred; this avoids
+# one expensive IQ init request per symbol.
+batch_payouts = {}
 # Establish a fresh baseline from the four liquid OTC charts before the
 # broad catalog scan; this prevents a transient catalog batch from producing
 # a false global "no candles" result.
@@ -129,6 +132,9 @@ for start in range(0, len(symbols), 2):
     path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
     try:
         payload = get(path, timeout=120, attempts=3)
+        for symbol, values in (payload.get('payouts') or {}).items():
+            if isinstance(values, dict):
+                batch_payouts[symbol] = values
         for symbol, data in (payload.get('symbols') or {}).items():
             if symbol not in collected or not isinstance(data, dict):
                 continue
@@ -269,7 +275,8 @@ if not fresh:
     raise RuntimeError(f'NO_FRESH_RAILWAY_CANDLES:age_seconds={max(ages) if ages else None}:max_age_seconds={max_age}')
 
 # Payout is current binary metadata and must travel with the same scan snapshot.
-payouts = {}
+payouts = {symbol: {'ok': True, 'symbol': symbol, 'payout': values.get('binary') or values.get('turbo'), 'source': 'IQ_OPTION_DIRECT_SNAPSHOT', 'read_only': True}
+           for symbol, values in batch_payouts.items() if values.get('binary') is not None or values.get('turbo') is not None}
 for payout_attempt in range(1, 7):
     missing = [s for s in symbols if not (payouts.get(s) or {}).get('ok') or (payouts.get(s) or {}).get('payout') is None]
     if not missing:
