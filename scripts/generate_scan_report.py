@@ -147,12 +147,12 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
     expiry_seconds = 120 if market in ('binary', 'otc') else 60
     expiry_from_send = observed_at + timedelta(seconds=expiry_seconds)
     age = timing.get('candle_age_seconds')
-    timing_valid = market not in ('binary', 'otc') or (age is not None and age <= 30.0)
+    timing_valid = market not in ('binary', 'otc') or (age is not None and age <= 75.0)
     brt = ZoneInfo('America/Sao_Paulo')
     return {'direction_calculated': direction, 'direction_source': source, 'candle_timing': timing,
             'timing_policy': {'timezone': 'America/Sao_Paulo', 'manual_delivery': True,
                               'required_future_expiry_seconds': expiry_seconds,
-                              'max_candle_age_seconds': 30.0 if market in ('binary', 'otc') else None,
+                              'max_candle_age_seconds': 75.0 if market in ('binary', 'otc') else None,
                               'valid': timing_valid,
                               'observed_at_brt': observed_at.astimezone(brt).isoformat(),
                               'expiry_at_brt': expiry_from_send.astimezone(brt).isoformat()},
