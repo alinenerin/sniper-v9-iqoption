@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from config.settings import TRADING_CONFIG
 
 # GitHub invokes this file by path; make repository imports deterministic.
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,6 +180,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         ))
         chart_components = consultation.components.get("component_status", {})
+        core_analysis = consultation.components.get("core_analysis", {})
         if market == "otc":
             # OTC IQ chart is authoritative; Darts/FinBERT are context only.
             chart_components.update(_auxiliary(symbol))
@@ -193,6 +195,8 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                                "wick_rejection": "engine", "previous_candle": "engine",
                                "vsa": "engine", "m5_confirmation": "engine"} if market == "otc" else {},
             "components": chart_components,
+            "score_components": core_analysis.get("score_components", {}),
+            "score_fusion": core_analysis.get("score_fusion", {}),
             "execution_allowed": False,
             **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at),
         }
