@@ -186,36 +186,45 @@ if empty_symbols:
 # A non-empty response is not necessarily sufficient. Recover every symbol
 # whose batch/direct response is below the contract threshold, including
 # partial payloads such as 30 M1 candles for GBPUSD.
-short_symbols = [
-    s for s, item in collected.items()
-    if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
-    or len((item.get('m3') or {}).get('candles') or []) < MIN_M3
-    or len((item.get('m5') or {}).get('candles') or []) < MIN_M5
-]
-for symbol in short_symbols:
-    for interval, key, target, minimum in (
-        (60, 'm1', REQUEST_M1, MIN_M1),
-        (180, 'm3', REQUEST_M5, MIN_M3),
-        (300, 'm5', REQUEST_M5, MIN_M5),
-    ):
-        current = (collected[symbol].get(key) or {}).get('candles') or []
-        if len(current) >= minimum:
-            continue
-        try:
-            direct = get('/api/market/candles?' + urllib.parse.urlencode({
-                'symbol': symbol, 'interval': interval, 'count': target}),
-                timeout=90, attempts=3)
-            rows = direct.get('candles') or []
-            if isinstance(rows, list) and len(rows) > len(current):
-                collected[symbol][key] = {
-                    'candles': rows, 'source': direct.get('source'),
-                    'symbol': symbol, 'interval_seconds': interval,
-                    'read_only': True,
-                }
-            if len(rows) < minimum:
-                errors[f'short:{symbol}:{interval}'] = f'{len(rows)}<{minimum}'
-        except Exception as exc:
-            errors[f'recovery:{symbol}:{interval}'] = type(exc).__name__
+for recovery_attempt in range(1, 7):
+    short_symbols = [
+        s for s, item in collected.items()
+        if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
+        or len((item.get('m3') or {}).get('candles') or []) < MIN_M3
+        or len((item.get('m5') or {}).get('candles') or []) < MIN_M5
+    ]
+    if not short_symbols:
+        break
+    # Refresh the persistent gateway state before recovering missing pieces.
+    try:
+        health = get('/health', timeout=15, attempts=1)
+    except Exception as exc:
+        errors[f'health_recovery:{recovery_attempt}'] = type(exc).__name__
+    for symbol in short_symbols:
+        for interval, key, target, minimum in (
+            (60, 'm1', REQUEST_M1, MIN_M1),
+            (180, 'm3', REQUEST_M5, MIN_M3),
+            (300, 'm5', REQUEST_M5, MIN_M5),
+        ):
+            current = (collected[symbol].get(key) or {}).get('candles') or []
+            if len(current) >= minimum:
+                continue
+            try:
+                direct = get('/api/market/candles?' + urllib.parse.urlencode({
+                    'symbol': symbol, 'interval': interval, 'count': target}),
+                    timeout=90, attempts=3)
+                rows = direct.get('candles') or []
+                if isinstance(rows, list) and len(rows) > len(current):
+                    collected[symbol][key] = {
+                        'candles': rows, 'source': direct.get('source'),
+                        'symbol': symbol, 'interval_seconds': interval,
+                        'read_only': True,
+                    }
+                if len(rows) < minimum:
+                    errors[f'short:{symbol}:{interval}'] = f'{len(rows)}<{minimum}'
+            except Exception as exc:
+                errors[f'recovery:{symbol}:{interval}'] = type(exc).__name__
+    time.sleep(min(2 * recovery_attempt, 10))
 
 remaining_short = [s for s, item in collected.items()
                   if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
@@ -245,12 +254,18 @@ if not fresh:
 
 # Payout is current binary metadata and must travel with the same scan snapshot.
 payouts = {}
-for symbol in symbols:
-    try:
-        payout = get('/api/market/payout?' + urllib.parse.urlencode({'symbol': symbol, 'instrument': 'binary'}), timeout=30, attempts=2)
-        payouts[symbol] = payout
-    except Exception as exc:
-        payouts[symbol] = {'ok': False, 'reason': 'PAYOUT_FETCH_ERROR:' + type(exc).__name__, 'read_only': True}
+for payout_attempt in range(1, 7):
+    missing = [s for s in symbols if not (payouts.get(s) or {}).get('ok') or (payouts.get(s) or {}).get('payout') is None]
+    if not missing:
+        break
+    for symbol in missing:
+        try:
+            payout = get('/api/market/payout?' + urllib.parse.urlencode({'symbol': symbol, 'instrument': 'binary'}), timeout=30, attempts=3)
+            payouts[symbol] = payout
+        except Exception as exc:
+            payouts[symbol] = {'ok': False, 'reason': 'PAYOUT_FETCH_ERROR:' + type(exc).__name__, 'read_only': True}
+    if any(not (payouts.get(s) or {}).get('ok') for s in symbols):
+        time.sleep(min(2 * payout_attempt, 10))
 missing_payout = [s for s in symbols if not (payouts.get(s) or {}).get('ok') or (payouts.get(s) or {}).get('payout') is None]
 if missing_payout:
     raise RuntimeError('PAYOUT_DATA_INCOMPLETE:' + ','.join(missing_payout))
