@@ -250,13 +250,18 @@ def main() -> int:
             symbols = [x if x.upper().endswith("-OTC") else x.upper() + "-OTC" for x in symbols]
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
+    requested_market = os.getenv('MARKET', 'unified').lower()
+    run_forex = requested_market in ('unified', 'forex') and not otc_only
+    run_binary = requested_market in ('unified', 'binary', 'otc')
     if otc_only:
         for symbol in symbols:
             binary.append(_analyse("otc", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
     else:
         for symbol in symbols:
-            forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-            binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            if run_forex:
+                forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            if run_binary:
+                binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
             if include_otc:
                 otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
                 binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
@@ -285,8 +290,8 @@ def main() -> int:
         "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
         "mode": "read_only", "execution_allowed": False,
-        "forex": {"status": "completed", "analyses": forex},
-        "binary": {"status": "completed", "analyses": binary},
+        "forex": {"status": "completed" if run_forex else "not_requested", "analyses": forex},
+        "binary": {"status": "completed" if run_binary else "not_requested", "analyses": binary},
         "market_data": market_data,
         "macro_data": macro_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
