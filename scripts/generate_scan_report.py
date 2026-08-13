@@ -7,12 +7,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from config.settings import TRADING_CONFIG
 
 # GitHub invokes this file by path; make repository imports deterministic.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from config.settings import TRADING_CONFIG
 
 
 def _candles(payload: Any) -> list[dict[str, Any]]:
