@@ -2,6 +2,8 @@
 """Guarded read-only scan entrypoint for Binary/OTC workflows."""
 from __future__ import annotations
 import argparse, json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from zapia_github_bridge import GitHubScanBridge
 
 def main() -> int:
