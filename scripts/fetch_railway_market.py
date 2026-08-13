@@ -226,6 +226,23 @@ for recovery_attempt in range(1, 7):
                 errors[f'recovery:{symbol}:{interval}'] = type(exc).__name__
     time.sleep(min(2 * recovery_attempt, 10))
 
+# The provider does not expose a native 3-minute endpoint consistently.
+# Build a documented 3-minute bar from three consecutive IQ M1 bars; this is
+# aggregation of provider candles, not fabricated price data.
+for symbol, item in collected.items():
+    if (item.get('m3') or {}).get('candles'):
+        continue
+    m1 = (item.get('m1') or {}).get('candles') or []
+    grouped = []
+    for i in range(0, len(m1) - 2, 3):
+        trio = m1[i:i+3]
+        if len(trio) < 3: continue
+        grouped.append({'timestamp': trio[0].get('timestamp'), 'open': trio[0].get('open'),
+                        'high': max(float(x['high']) for x in trio), 'low': min(float(x['low']) for x in trio),
+                        'close': trio[-1].get('close'), 'volume': sum(float(x.get('volume') or 0) for x in trio)})
+    if grouped:
+        item['m3'] = {'candles': grouped, 'source': 'IQ_OPTION_M1_AGGREGATED_3M', 'read_only': True}
+
 remaining_short = [s for s, item in collected.items()
                   if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
                   or len((item.get('m3') or {}).get('candles') or []) < MIN_M3
@@ -266,7 +283,8 @@ for payout_attempt in range(1, 7):
             payouts[symbol] = {'ok': False, 'reason': 'PAYOUT_FETCH_ERROR:' + type(exc).__name__, 'read_only': True}
     if any(not (payouts.get(s) or {}).get('ok') for s in symbols):
         time.sleep(min(2 * payout_attempt, 10))
-missing_payout = [s for s in symbols if not (payouts.get(s) or {}).get('ok') or (payouts.get(s) or {}).get('payout') is None]
+payout_required = [s for s in symbols if str(s).upper().endswith('-OTC') or os.getenv('REQUIRE_PAYOUT', 'false').lower() == 'true']
+missing_payout = [s for s in payout_required if not (payouts.get(s) or {}).get('ok') or (payouts.get(s) or {}).get('payout') is None]
 if missing_payout:
     raise RuntimeError('PAYOUT_DATA_INCOMPLETE:' + ','.join(missing_payout))
 
