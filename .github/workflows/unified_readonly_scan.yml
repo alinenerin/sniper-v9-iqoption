@@ -104,7 +104,7 @@ jobs:
       - name: Validate report contract and component evidence
         run: |
           python - <<'PY'
-          import json
+          import json, os
           r=json.load(open('reports/latest_scan.json'))
           macro=r.get('macro_data') or {}
           if not r.get('inputs', {}).get('otc_only'):
