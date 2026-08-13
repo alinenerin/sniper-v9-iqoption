@@ -105,16 +105,26 @@ class SupremeIntelligence:
         sent_score, sent_details = self.sentiment.get_sentiment(self.symbol)
 
         # =============================================
-        # 💎 SCORE DIAMANTE SUPREME (0-100)
-        # Pesos: SMC (40%), VSA (30%), Sentimento (30%)
+        # 💎 CENTRAL EVIDENCE SCORE (0-100)
+        # Technical Core 35%, SMC 20%, VSA 15%, sentiment 10%.
+        # The AI/ML ensemble is added once in SharedAI (20%).
+        # Unavailable evidence is excluded and weights are renormalized.
         # =============================================
-        score_parts = [("smc", float(smc_score), 0.4), ("vsa", float(vsa_score), 0.3)]
-        if sent_score is not None and isinstance(sent_details, dict) and sent_details.get("status") in ("inference_ok", "executed"):
-            score_parts.append(("sentiment", float(sent_score), 0.3))
-        weight_total = sum(weight for _, _, weight in score_parts)
-        final_score = sum(value * weight for _, value, weight in score_parts) / weight_total if weight_total else 0.0
-        analysis_completeness = round(100.0 * weight_total / 1.0, 1)
         smc_direction = str(smc_details.get("direction", "NEUTRAL")).upper()
+        close = pd.to_numeric(ohlcv_df["close"], errors="coerce").dropna()
+        technical_core = 50.0
+        if len(close) >= 21:
+            momentum = float(close.iloc[-1] - close.iloc[-min(21, len(close))])
+            direction_sign = 1.0 if smc_direction == "CALL" else -1.0 if smc_direction == "PUT" else 0.0
+            technical_core = max(0.0, min(100.0, 50.0 + direction_sign * (50.0 if momentum != 0 else 0.0)))
+        score_parts = [("technical_core", technical_core, TRADING_CONFIG.technical_core_weight),
+                       ("smc", float(smc_score), TRADING_CONFIG.smc_weight),
+                       ("vsa", float(vsa_score), TRADING_CONFIG.vsa_weight)]
+        if sent_score is not None and isinstance(sent_details, dict) and sent_details.get("status") in ("inference_ok", "executed"):
+            score_parts.append(("sentiment", float(sent_score), TRADING_CONFIG.sentiment_weight))
+        weight_total = sum(weight for _, _, weight in score_parts)
+        final_score = sum(value * weight for _, value, weight in score_parts) / weight_total if weight_total else 50.0
+        analysis_completeness = round(100.0 * weight_total / (TRADING_CONFIG.technical_core_weight + TRADING_CONFIG.smc_weight + TRADING_CONFIG.vsa_weight + TRADING_CONFIG.sentiment_weight), 1)
         analysis = {
             "symbol": self.symbol,
             "direction": smc_direction,
