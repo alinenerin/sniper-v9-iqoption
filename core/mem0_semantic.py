@@ -9,7 +9,15 @@ class Mem0Semantic:
     def __init__(self, user_id: str = "aline_tofoli", timeout: float = 8.0):
         self.user_id = user_id
         self.timeout = timeout
-        self.base_url = os.getenv("MEM0_API_URL", "https://api.mem0.ai").rstrip("/")
+        configured = os.getenv("MEM0_API_URL", "").strip().rstrip("/")
+        # An empty value uses the service default; malformed values are
+        # rejected before requests so MissingSchema becomes actionable.
+        self.base_url = configured or "https://api.mem0.ai"
+        if not self.base_url.startswith(("http://", "https://")):
+            self.base_url = "https://api.mem0.ai"
+            self.url_config_warning = "MEM0_API_URL_INVALID_USING_DEFAULT"
+        else:
+            self.url_config_warning = None
 
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         key = os.getenv("MEM0_API_KEY")
