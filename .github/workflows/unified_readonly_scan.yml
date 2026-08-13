@@ -33,6 +33,7 @@ jobs:
       INCLUDE_OTC: ${{ inputs.include_otc }}
       OTC_ONLY: ${{ inputs.otc_only }}
       SYMBOLS: ${{ inputs.symbols }}
+      MARKET: 'binary'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -103,7 +104,7 @@ jobs:
       - name: Validate report contract and component evidence
         run: |
           python - <<'PY'
-          import json
+          import json, os
           r=json.load(open('reports/latest_scan.json'))
           macro=r.get('macro_data') or {}
           if not r.get('inputs', {}).get('otc_only'):
@@ -121,8 +122,9 @@ jobs:
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
           assert 'binary' in r and 'forex' in r
-          assert r['forex']['status'] == 'completed'
-          assert r['binary']['status'] == 'completed'
+          expected_market=os.environ.get('MARKET', 'unified')
+          assert r['forex']['status'] == ('completed' if expected_market in ('forex', 'unified') and not r.get('inputs', {}).get('otc_only') else 'not_requested')
+          assert r['binary']['status'] == ('completed' if expected_market in ('binary', 'otc', 'unified') else 'not_requested')
           if r.get('inputs', {}).get('otc_only'):
               assert r.get('inputs', {}).get('include_otc') is True
               assert not r['forex'].get('analyses')
