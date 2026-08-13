@@ -190,7 +190,6 @@ for recovery_attempt in range(1, 7):
     short_symbols = [
         s for s, item in collected.items()
         if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
-        or len((item.get('m3') or {}).get('candles') or []) < MIN_M3
         or len((item.get('m5') or {}).get('candles') or []) < MIN_M5
     ]
     if not short_symbols:
