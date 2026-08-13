@@ -18,15 +18,6 @@ on:
         required: true
         default: false
         type: boolean
-      market:
-        description: 'Mercado do pipeline: binary, forex ou unified'
-        required: true
-        default: 'binary'
-        type: choice
-        options:
-          - binary
-          - forex
-          - unified
 
 jobs:
   unified-scan:
@@ -39,9 +30,6 @@ jobs:
       INCLUDE_OTC: ${{ inputs.include_otc }}
       OTC_ONLY: ${{ inputs.otc_only }}
       SYMBOLS: ${{ inputs.symbols }}
-      MARKET: ${{ inputs.market }}
-      LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
-      MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -49,23 +37,10 @@ jobs:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: requirements.txt
-      - name: Restore persistent Python intelligence environment
-        id: python-env-cache
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: v16-python311-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-intelligence-v3
-      - name: Prepare Python intelligence environment
-        if: steps.python-env-cache.outputs.cache-hit != 'true'
+      - name: Install light analysis stack
         run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install -r requirements.txt
-          .venv/bin/pip install 'Darts>=0.30,<1.0' 'timesfm>=1.3.0'
-          .venv/bin/pip install 'torch>=2.2' 'transformers>=4.40' sentencepiece requests
-          .venv/bin/pip install 'xgboost>=2.0' scikit-learn
-      - name: Activate cached Python environment
-        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
       - name: Architecture guard
         run: |
           python audit_architecture.py
@@ -76,34 +51,35 @@ jobs:
         run: python scripts/fetch_railway_market.py
       - name: Fetch canonical DXY/VIX macro snapshot
         run: python scripts/fetch_tradingview_macro.py
+      - name: Install Darts runtime
+        run: pip install 'Darts>=0.30,<1.0'
+      - name: Run Darts anomaly inference
+        run: python scripts/run_darts_inference.py
+      - name: Install TimesFM runtime
+        run: pip install 'timesfm>=1.3.0'
+      - name: Run real TimesFM inference
+        run: python scripts/run_timesfm_inference.py
+      - name: Install FinBERT runtime
+        run: pip install 'torch>=2.2' 'transformers>=4.40' sentencepiece requests
       - name: Cache FinBERT model
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
           key: finbert-prosusai-${{ runner.os }}-v1
-      - name: Run intelligence modules in parallel (read-only)
+      - name: Run real FinBERT inference
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           HF_HOME: ~/.cache/huggingface
           TRANSFORMERS_CACHE: ~/.cache/huggingface
-        shell: bash
-        run: |
-          set +e
-          mkdir -p reports/module-logs
-          python scripts/run_darts_inference.py > reports/module-logs/darts.log 2>&1 & p1=$!
-          python scripts/run_timesfm_inference.py > reports/module-logs/timesfm.log 2>&1 & p2=$!
-          python scripts/run_finbert_inference.py > reports/module-logs/finbert.log 2>&1 & p3=$!
-          python scripts/train_xgboost_inference.py > reports/module-logs/xgboost.log 2>&1 & p4=$!
-          wait $p1; r1=$?; wait $p2; r2=$?; wait $p3; r3=$?; wait $p4; r4=$?
-          echo "module_exit_codes darts=$r1 timesfm=$r2 finbert=$r3 xgboost=$r4"
-          # Modules are advisory/read-only; their evidence is inspected by the report.
-          exit 0
+        run: python scripts/run_finbert_inference.py
+      - name: Install XGBoost runtime
+        run: pip install 'xgboost>=2.0' scikit-learn
+      - name: Train and run XGBoost inference
+        run: python scripts/train_xgboost_inference.py
       - name: Compile read-only analysis modules
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
       - name: Generate unified report from Railway candles
         run: python scripts/generate_scan_report.py
-      - name: Run TradingAgents shadow committee
-        run: python scripts/run_tradingagents_shadow.py
       - name: Evaluate hypothetical result after expiration
         env:
           # Do not spend the workflow timeout waiting for a future candle;
@@ -114,28 +90,26 @@ jobs:
       - name: Validate report contract and component evidence
         run: |
           python - <<'PY'
-          import json, os
+          import json
           r=json.load(open('reports/latest_scan.json'))
           macro=r.get('macro_data') or {}
-          # External macro/news outages are data-quality vetoes, not workflow crashes.
-          # The report remains valid read-only, but no signal may be treated as
-          # operationally approved while macro/news evidence is unavailable.
-          if not r.get('inputs', {}).get('otc_only') and macro.get('ok') is not True:
-              print('macro_evidence=BLOCKED:', macro.get('reason'))
+          if not r.get('inputs', {}).get('otc_only'):
+              assert macro.get('ok') is True, macro.get('reason')
+              assert all((macro.get('symbols') or {}).get(k, {}).get('status') == 'ok' for k in ('dxy','vix'))
           finbert=json.load(open('reports/finbert_inference.json'))
-          assert finbert.get('read_only') is True
-          assert finbert.get('execution_allowed') is False
-          assert finbert.get('status') in ('ok', 'blocked', 'error'), finbert.get('status')
-          if finbert.get('status') != 'ok':
+          assert 'Finnhub' in str(finbert.get('provider', ''))
+          assert finbert['read_only'] is True
+          assert finbert['execution_allowed'] is False
+          assert finbert['status'] in ('ok', 'blocked', 'error'), finbert.get('status')
+          if finbert['status'] != 'ok':
               print('news_evidence=BLOCKED:', finbert.get('fetch_error') or finbert.get('reason'))
-          assert finbert.get('fetch_diagnostics', {}).get('valid_json') is True
+          else:
+              assert finbert.get('fetch_diagnostics', {}).get('valid_json') is True
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
           assert 'binary' in r and 'forex' in r
-          assert r['binary']['status'] == ('completed' if os.environ.get('MARKET') in ('binary', 'unified') else 'not_requested')
-          assert r['forex']['status'] == ('completed' if os.environ.get('MARKET') in ('forex', 'unified') else 'not_requested')
-          if os.environ.get('MARKET') == 'binary': assert not r['forex'].get('analyses')
-          if os.environ.get('MARKET') == 'forex': assert not r['binary'].get('analyses')
+          assert r['forex']['status'] == 'completed'
+          assert r['binary']['status'] == 'completed'
           if r.get('inputs', {}).get('otc_only'):
               assert r.get('inputs', {}).get('include_otc') is True
               assert not r['forex'].get('analyses')
@@ -175,6 +149,5 @@ jobs:
           name: latest-scan-${{ github.run_id }}
           path: |
             reports/latest_scan.json
-            reports/tradingagents_shadow.json
             reports/darts_inference.json
             reports/finbert_inference.json
