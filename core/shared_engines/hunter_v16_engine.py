@@ -1,4 +1,5 @@
 import asyncio
+from config.settings import TRADING_CONFIG
 
 class HunterEngine:
     """
@@ -9,7 +10,7 @@ class HunterEngine:
         self.rules = {
             "payout_min": 80,
             "spread_max": 2.0,  # Multiplicador do spread médio
-            "min_score": 95
+            "min_score": float(TRADING_CONFIG.diamond_threshold)
         }
 
     async def generate_supreme_prompt(self, market_data, news_data):
