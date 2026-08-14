@@ -21,7 +21,7 @@ MIN_M1 = int(os.getenv('MIN_M1_CANDLES', '1000'))
 MIN_M3 = int(os.getenv('MIN_M3_CANDLES', '30'))
 MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
 # Darts requires >=1000 M1 candles for its training window.
-REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '1200'))
+REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '1000'))
 REQUEST_M5 = int(os.getenv('REQUEST_M5_CANDLES', '100'))
 
 
@@ -194,7 +194,8 @@ if empty_symbols:
 # A non-empty response is not necessarily sufficient. Recover every symbol
 # whose batch/direct response is below the contract threshold, including
 # partial payloads such as 30 M1 candles for GBPUSD.
-for recovery_attempt in range(1, 7):
+# Bound recovery to keep a live scan within its operational latency budget.
+for recovery_attempt in range(1, 3):
     short_symbols = [
         s for s, item in collected.items()
         if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
