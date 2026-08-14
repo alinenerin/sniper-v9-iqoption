@@ -251,6 +251,16 @@ class SharedAI:
             analysis["score_fusion"] = fused_components
             approved, reason = engine.is_supreme_approved(analysis)
             anomaly = self._anomaly_score(analysis)
+            # Final authority for the anomaly field is the dedicated Darts
+            # agent artifact, not a CI-local fallback inside SupremeIntelligence.
+            try:
+                darts_check = json.loads((Path("reports") / "darts_inference.json").read_text())
+                darts_check_item = (darts_check.get("components") or {}).get(request.symbol, {})
+                if darts_check_item.get("status") == "inference_ok":
+                    dscan = darts_check_item.get("scan") or {}
+                    anomaly = float(dscan.get("anomaly_score", dscan.get("score", 0)) or 0)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                pass
             vetoes = []
             if analysis.get("veto"):
                 vetoes.append(str(analysis.get("veto_reason") or "CORE_VETO"))
