@@ -7,6 +7,12 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+import sys
+
+# Make root-level market_data_contract import reliable in GitHub Actions.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import requests
 try:
