@@ -57,7 +57,12 @@ for book_name in ("binary",):
         else: item["approved"]=False; item["vetoes"].append("FINAL_PREFLIGHT_INVALID")
         timing=plan_sniper_window(time.time(),tf or "M1") if valid else {"valid":False,"reason":"FRESH_QUOTE_OR_TIMING_UNAVAILABLE","execution_allowed":False}
         item["timing_policy"]=timing; item["exact_second"]=timing.get("exact_second"); item["execution_sniper_at"]=timing.get("execution_sniper_at")
-        item["expiration"]={"duration_seconds":timing.get("expiration_duration_seconds"),"status":"pending_expiration" if timing.get("valid") else "blocked_timing"}
+        item["expiration"]={"duration_seconds":timing.get("expiration_duration_seconds"),
+                             "entry_at_brt":timing.get("entry_at_brt"),
+                             "expected_timestamp_utc":datetime.fromtimestamp(timing.get("expiry_timestamp"),timezone.utc).isoformat() if timing.get("expiry_timestamp") else None,
+                             "status":"pending_expiration" if timing.get("valid") else "blocked_timing",
+                             "hypothetical_result":None,
+                             "result_reason":"Future candle required; no outcome fabricated."}
         item["execution_allowed"]=False
 report["final_preflight"]={"status":"completed","checks":checks,"all_valid":bool(checks) and all(x.get("ok") for x in checks.values()),"read_only":True,"execution_allowed":False}
 report["analysis_only"]=True; report["executor_enabled"]=False
