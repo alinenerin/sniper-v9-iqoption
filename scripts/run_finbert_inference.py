@@ -46,8 +46,12 @@ def _is_relevant(article: dict[str, Any], symbol: str) -> bool:
     if related:
         compact = re.sub(r"[^A-Z]", "", related)
         pair = base + quote
-        # A single shared currency (e.g. USD) is not enough to map news to
-        # every USD pair. Require the pair or both currencies.
+        # Calendar events are natively tagged to one currency, so a direct
+        # country/currency tag is relevant. For general news, require the
+        # pair or both currencies to avoid broadcasting one headline to every
+        # pair that shares USD.
+        if str(article.get("source", "")).upper() == "FOREXFACTORY":
+            return base in compact or quote in compact or pair in compact
         return pair in compact or (base in related and quote in related)
     return base in text and quote in text
 
