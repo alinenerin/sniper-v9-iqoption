@@ -186,6 +186,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             result.update(_analysis_timing(market, result, candles, observed_at))
             return result
         m3_candles = m3_candles or []
+        from core.trading_crew import crew_v16
         consultation = SharedAI(score_minimum=TRADING_CONFIG.diamond_threshold).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
@@ -294,6 +295,9 @@ def main() -> int:
 
     # Explicit pipeline dashboard: blocked intelligence is metadata, never a score zero.
     all_items = forex + binary
+    from core.trading_crew import crew_v16
+    for item in all_items:
+        item["committee_report"] = crew_v16.evaluate(item.get("symbol"), item.get("components") or {}, market_snapshot_id, item.get("timeframe"))
     intelligence_status = {}
     for item in all_items:
         for name, component in (item.get("components") or {}).items():
