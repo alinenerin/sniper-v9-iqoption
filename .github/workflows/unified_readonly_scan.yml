@@ -86,7 +86,9 @@ jobs:
       - name: Train and run XGBoost inference
         run: python scripts/train_xgboost_inference.py
       - name: Compile read-only analysis modules
-        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
+        run: |
+          python -m py_compile market_data_contract.py shared_ai/consultation.py scripts/generate_scan_report.py scripts/final_preflight.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
+          python -m unittest -v tests.test_experimental_score_fusion_contract
       - name: Generate unified report from Railway candles
         run: python scripts/generate_scan_report.py
       - name: Final M1 and payout preflight before signal exposure
