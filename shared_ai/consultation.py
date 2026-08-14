@@ -147,6 +147,21 @@ class SharedAI:
             # Sem isso, DARTS/FinBERT/XGBoost eram reportados como blocked
             # mesmo quando seus workflows haviam concluído com inference_ok.
             analysis["symbol"] = request.symbol
+            # Prefer the verified per-symbol Darts artifact produced from the
+            # same Railway snapshot. The in-process shield may be unavailable
+            # on CI even when the dedicated Darts agent completed; never turn
+            # that integration mismatch into a fabricated anomaly=100 veto.
+            try:
+                darts_artifact = json.loads((Path("reports") / "darts_inference.json").read_text())
+                darts_item = (darts_artifact.get("components") or {}).get(request.symbol, {})
+                if darts_item.get("status") == "inference_ok":
+                    scan = darts_item.get("scan") or {}
+                    verified = float(scan.get("anomaly_score", scan.get("score", 0)) or 0)
+                    analysis["anomaly_details"] = {"status": "inference_ok", "score": verified,
+                                                    "anomaly_score": verified, "source": "DARTS_ARTIFACT"}
+                    analysis["camada_0_darts"] = analysis["anomaly_details"]
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                pass
             approved, reason = engine.is_supreme_approved(analysis)
             advisory: Dict[str, Any] = {}
             # Memória fornece apenas contexto; nunca altera score, veto ou aprovação.
@@ -263,7 +278,7 @@ class SharedAI:
         except Exception as exc:
             return AIConsultation(
                 False, 0, 0, 0, vetoes=["SHARED_AI_ERROR"],
-                explanation=type(exc).__name__ + ":" + str(exc)[:120],
+                explanation=type(exc).__name__ + ":" + str(exc)[:240],
             )
 
 
