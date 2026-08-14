@@ -4,13 +4,20 @@ This module is deliberately provider-agnostic: it validates data received from
 IQ Option (or another adapter) without inventing candles or executing orders.
 """
 from __future__ import annotations
-import math, time
+import math, time, hashlib, json
 from dataclasses import dataclass, asdict
 from typing import Any
+
+
+def snapshot_id(payload: Any) -> str:
+    """Stable hash of one market snapshot (timestamps/OHLC/quotes/payouts)."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 # IQ Option candle sizes, in seconds.
 TIMEFRAME_NAMES = {
     60: "M1",
+    180: "M3",
     300: "M5",
     900: "M15",
     3600: "H1",
@@ -20,6 +27,7 @@ TIMEFRAME_NAMES = {
 # Local minimums required by the temporal contract. These are NOT provider limits.
 MINIMUMS = {
     60: 120,
+    180: 40,
     300: 30,
     900: 30,
     3600: 30,
