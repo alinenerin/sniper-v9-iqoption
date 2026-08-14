@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 ROOT=Path(__file__).resolve().parents[1]; sys.path.insert(0,str(ROOT))
-from market_data_contract import validate_candles
+from market_data_contract import validate_candles, snapshot_id
 from engines.binary.sniper_timing import plan_sniper_window
 REPORT=Path("reports/latest_scan.json")
 BASE=os.getenv("RAILWAY_GATEWAY_URL", "https://trader-analysis-api-production-82ba.up.railway.app").rstrip("/")
@@ -24,6 +24,11 @@ def ts(row):
         except (KeyError,TypeError,ValueError): pass
     return None
 report=json.loads(REPORT.read_text()); inputs=report.get("inputs") or {}
+expected_snapshot = report.get("snapshot_id")
+artifact_snapshot_ids = {}
+for name in ("darts_inference.json", "timesfm_inference.json", "finbert_inference.json", "xgboost_inference.json"):
+    try: artifact_snapshot_ids[name] = json.loads(Path("reports", name).read_text()).get("snapshot_id")
+    except (OSError, json.JSONDecodeError): artifact_snapshot_ids[name] = None
 symbols=[str(x) for x in inputs.get("symbols") or []]
 targets=sorted(set(symbols+([s+"-OTC" for s in symbols if not s.endswith("-OTC")] if inputs.get("include_otc") else [])))
 checks={}; fresh={}
@@ -36,7 +41,10 @@ for start in range(0,len(targets),2):
             last=ts(m1[-1] if m1 else None); now=datetime.now(timezone.utc); age=now.timestamp()-last if last else None
             v1=validate_candles(m1,60,10,now=now.timestamp(),max_age=int(MAX_AGE)); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=int(MAX_AGE))
             payout=(payload.get("payouts") or {}).get(symbol) or (report.get("market_data") or {}).get("payouts",{}).get(symbol)
-            checks[symbol]={"ok":bool(last is not None and age is not None and age<=MAX_AGE and isinstance(q,(int,float)) and isinstance(payout,dict) and payout.get("ok") and payout.get("payout") is not None and v1.status=="PASS" and v1.gaps==0 and v3.status=="PASS" and v3.gaps==0),"candle_age_seconds":round(age,3) if age is not None else None,"quote":q,"payout":payout,"m1_contract":v1.to_dict(),"m3_contract":v3.to_dict(),"read_only":True}
+            quote_ok = isinstance(q, (int, float)) and float(q) > 0
+            payout_ok = isinstance(payout, dict) and payout.get("ok") is True and payout.get("payout") is not None
+            snapshot_ok = bool(expected_snapshot) and all(v in (None, expected_snapshot) for v in artifact_snapshot_ids.values())
+            checks[symbol]={"ok":bool(last is not None and age is not None and age<=MAX_AGE and quote_ok and payout_ok and v1.status=="PASS" and v1.gaps==0 and v3.status=="PASS" and v3.gaps==0 and snapshot_ok),"candle_age_seconds":round(age,3) if age is not None else None,"quote":q,"quote_valid":quote_ok,"payout":payout,"m1_contract":v1.to_dict(),"m3_contract":v3.to_dict(),"snapshot_id":expected_snapshot,"snapshot_consistent":snapshot_ok,"read_only":True}
             fresh[symbol]={"m1":m1,"m3":m3}
     except Exception as exc:
         for symbol in chunk: checks[symbol]={"ok":False,"reason":"FINAL_PREFLIGHT_"+type(exc).__name__,"read_only":True}
@@ -46,8 +54,10 @@ for book_name in ("binary",):
     for item in book.get("analyses",[]):
         symbol=item.get("symbol"); lane=item.get("market") or ("otc" if str(symbol).upper().endswith("-OTC") else "binary"); fs=fresh.get(symbol,{})
         tf=item.get("timeframe") or (item.get("timeframe_decision") or {}).get("selected")
+        lane_valid = lane in ("binary", "otc") and ((lane == "otc") == str(symbol).upper().endswith("-OTC"))
         item["market"]=lane; item["final_preflight"]=checks.get(symbol,{"ok":False}); item.setdefault("vetoes",[])
-        valid=bool(item["final_preflight"].get("ok")) and tf in ("M1","M3")
+        if not lane_valid: item["vetoes"].append("LANE_PURITY_VIOLATION")
+        valid=bool(item["final_preflight"].get("ok")) and lane_valid and tf in ("M1","M3")
         if valid:
             from shared_ai.consultation import SharedAI
             from config.markets.contracts import MarketRequest
