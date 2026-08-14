@@ -16,11 +16,7 @@ if str(ROOT) not in sys.path:
 from config.settings import TRADING_CONFIG
 from engines.binary.timeframe_selector import select_timeframe
 from engines.binary.sniper_timing import plan_sniper_window
-from market_data_contract import validate_candles
-from runtime_agent_registry import evidence_manifest
-from engines.binary.timeframe_selector import select_timeframe
-from engines.binary.sniper_timing import plan_sniper_window
-from market_data_contract import validate_candles
+from market_data_contract import validate_candles, snapshot_id
 from runtime_agent_registry import evidence_manifest
 
 
@@ -266,6 +262,8 @@ def main() -> int:
             symbols = [x if x.upper().endswith("-OTC") else x.upper() + "-OTC" for x in symbols]
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
+    # Every lane and specialist artifact must bind to this immutable input snapshot.
+    market_snapshot_id = snapshot_id(market_data)
     requested_market = os.getenv('MARKET', 'unified').lower()
     run_forex = requested_market in ('unified', 'forex') and not otc_only
     run_binary = requested_market in ('unified', 'binary', 'otc')
@@ -295,6 +293,7 @@ def main() -> int:
     for item in all_items:
         symbol_data = (market_data.get("symbols") or {}).get(item.get("symbol"), {})
         item["payout"] = (market_data.get("payouts") or {}).get(item.get("symbol"))
+        item["snapshot_id"] = market_snapshot_id
         item["snapshot_observed_at_utc"] = market_data.get("observed_at_utc")
         item["snapshot_latency_ms"] = market_data.get("latency_ms")
         components = item.get("components") or {}
@@ -303,7 +302,8 @@ def main() -> int:
         item["data_completeness"] = 100.0 if item.get("candle_timing", {}).get("candle_count", 0) >= 120 else 0.0
 
     result = {
-        "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "schema_version": "2.2", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "snapshot_id": market_snapshot_id,
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
         "mode": "read_only", "execution_allowed": False,
         "forex": {"status": "completed" if run_forex else "not_requested", "analyses": forex},
