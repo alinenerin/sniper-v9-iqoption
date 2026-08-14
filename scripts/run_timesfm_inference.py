@@ -5,8 +5,10 @@ from pathlib import Path
 # Make repository-root imports deterministic when executed as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.forecasting.google_timesfm_bridge import TimesFMBridge
+from market_data_contract import snapshot_id
 
 market=json.loads(Path('reports/market_data.json').read_text())
+market_snapshot_id = snapshot_id(market)
 results={}
 for symbol,payload in market.get('symbols',{}).items():
     m1 = payload.get('m1')
@@ -26,5 +28,5 @@ for symbol,payload in market.get('symbols',{}).items():
         results[symbol]={'status':'inference_ok' if ok else 'blocked','reason':None if ok else 'TIMESFM_REAL_WEIGHTS_NOT_USED','forecast':out,'samples':len(prices)}
     except Exception as exc:
         results[symbol]={'status':'blocked','reason':f'{type(exc).__name__}: {exc}','samples':len(prices)}
-Path('reports/timesfm_inference.json').write_text(json.dumps({'status':'ok','components':results,'read_only':True},ensure_ascii=False,indent=2)+'\n')
+Path('reports/timesfm_inference.json').write_text(json.dumps({'status':'ok','components':results,'snapshot_id':market_snapshot_id,'read_only':True,'execution_allowed':False},ensure_ascii=False,indent=2)+'\n')
 print('timesfm_inference_complete',len(results))
