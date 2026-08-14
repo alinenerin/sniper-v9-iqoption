@@ -49,6 +49,22 @@ jobs:
         run: |
           python audit_architecture.py
           python audit_readonly_validation.py
+      - name: Clean-checkout import and offline contract smoke test
+        run: |
+          python -m py_compile market_data_contract.py runtime_agent_registry.py \
+            shared_ai/consultation.py scripts/generate_scan_report.py scripts/final_preflight.py \
+            scripts/run_finbert_inference.py scripts/run_timesfm_inference.py
+          python - <<'PY'
+          from market_data_contract import snapshot_id, validate_candles
+          from runtime_agent_registry import evidence_manifest, plan_sniper_window
+          from engines.binary.timeframe_selector import select_timeframe
+          assert callable(snapshot_id) and callable(validate_candles)
+          assert callable(evidence_manifest) and callable(plan_sniper_window)
+          assert plan_sniper_window(1000.0, 'M1')['execution_allowed'] is False
+          assert plan_sniper_window(1000.0, 'M3')['expiration_duration_seconds'] == 180
+          print('clean_imports=OK; timing_contract=OK; execution=BLOCKED')
+          PY
+          python -m unittest -v tests/test_experimental_score_fusion_contract.py
       - name: Fetch live market data from Railway
         env:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
