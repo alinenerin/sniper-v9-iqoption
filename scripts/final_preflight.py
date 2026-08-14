@@ -75,7 +75,10 @@ with ThreadPoolExecutor(max_workers=min(5, max(1, len(chunks)))) as pool:
                 checks[symbol] = {"ok": False, "reason": "FINAL_PREFLIGHT_" + type(exc).__name__, "read_only": True}
 
 observed = datetime.now(timezone.utc)
-expiry = observed + timedelta(seconds=120)
+lead_seconds = 120
+operation_seconds = 60
+entry_at = observed + timedelta(seconds=lead_seconds)
+expiry = entry_at + timedelta(seconds=operation_seconds)
 # Recompute the binary decision on the final M1 snapshot. The initial heavy
 # analysis is never allowed to survive as a signal if its candles are stale.
 for book in (report.get("binary"),):
@@ -116,7 +119,10 @@ for book in (report.get("binary"),):
             item["operational_status"] = "REJECTED_FINAL_PREFLIGHT"
         item.setdefault("timing_policy", {}).update({
             "timezone": "America/Sao_Paulo", "manual_delivery": True,
-            "required_future_expiry_seconds": 120,
+            "lead_time_seconds": lead_seconds,
+            "entry_at_utc": entry_at.isoformat(),
+            "entry_at_brt": entry_at.astimezone(ZoneInfo("America/Sao_Paulo")).isoformat(),
+            "expiration_duration_seconds": operation_seconds,
             "final_preflight_valid": bool(check.get("ok")),
             "final_observed_at_utc": observed.isoformat(),
             "final_expiry_at_utc": expiry.isoformat(),
@@ -125,6 +131,8 @@ for book in (report.get("binary"),):
 report["final_preflight"] = {"status": "completed", "max_age_seconds": MAX_AGE,
                               "observed_at_utc": observed.isoformat(), "checks": checks,
                               "all_valid": bool(checks) and all(x.get("ok") for x in checks.values()),
-                              "expiry_seconds": 120, "timezone": "America/Sao_Paulo", "read_only": True}
+                              "lead_time_seconds": lead_seconds, "entry_at_brt": entry_at.astimezone(ZoneInfo("America/Sao_Paulo")).isoformat(),
+                              "expiration_duration_seconds": operation_seconds, "expiry_at_brt": expiry.astimezone(ZoneInfo("America/Sao_Paulo")).isoformat(),
+                              "timezone": "America/Sao_Paulo", "read_only": True}
 REPORT.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
 print("final_preflight_complete", len(checks), "all_valid=" + str(report["final_preflight"]["all_valid"]))
