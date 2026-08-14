@@ -54,7 +54,7 @@ for start in range(0,len(targets),2):
     try:
         payload=get("/api/market/snapshot_batch?"+urllib.parse.urlencode({"pairs":",".join(chunk)}))
         for symbol in chunk:
-            data=(payload.get("symbols") or {}).get(symbol) or {}; m1=rows(data.get("m1")); native_m3=rows(data.get("m3")); m3=native_m3 or aggregate_m3(m1)
+            data=(payload.get("symbols") or {}).get(symbol) or {}; m1=rows(data.get("m1") or data.get("candles")); native_m3=rows(data.get("m3") or data.get("m3_candles")); m3=native_m3 or aggregate_m3(m1)
             q=data.get("quote") or data.get("price") or data.get("last_price")
             if isinstance(q,dict): q=q.get("mid") or q.get("price") or q.get("last") or q.get("close")
             last=ts(m1[-1] if m1 else None); now=datetime.now(timezone.utc); age=now.timestamp()-last if last else None
