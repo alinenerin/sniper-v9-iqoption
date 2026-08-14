@@ -297,7 +297,17 @@ def main() -> int:
     all_items = forex + binary
     from core.trading_crew import crew_v16
     for item in all_items:
-        item["committee_report"] = crew_v16.evaluate(item.get("symbol"), item.get("components") or {}, market_snapshot_id, item.get("timeframe"))
+        committee_components = dict(item.get("components") or {})
+        symbol_data = (market_data.get("symbols") or {}).get(item.get("symbol"), {})
+        m1_rows = _candles(symbol_data.get("m1") or symbol_data.get("candles") or {})
+        m3_rows = _candles(symbol_data.get("m3") or symbol_data.get("m3_candles") or {})
+        m5_rows = _candles(symbol_data.get("m5") or symbol_data.get("m5_candles") or {})
+        committee_components.update({
+            "m1": {"status": "inference_ok" if len(m1_rows) >= 50 else "blocked", "reason": None if len(m1_rows) >= 50 else "INSUFFICIENT_M1"},
+            "m3": {"status": "inference_ok" if len(m3_rows) >= 10 else "blocked", "reason": None if len(m3_rows) >= 10 else "INSUFFICIENT_M3"},
+            "m5": {"status": "inference_ok" if len(m5_rows) >= 10 else "blocked", "reason": None if len(m5_rows) >= 10 else "INSUFFICIENT_M5"},
+        })
+        item["committee_report"] = crew_v16.evaluate(item.get("symbol"), committee_components, market_snapshot_id, item.get("timeframe"))
     intelligence_status = {}
     for item in all_items:
         for name, component in (item.get("components") or {}).items():
