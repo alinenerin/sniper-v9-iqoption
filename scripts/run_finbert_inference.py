@@ -106,6 +106,37 @@ def _fetch_forex_news() -> list[dict[str, Any]]:
             last_error = RuntimeError("FINNHUB_EMPTY_NEWS_PAYLOAD")
         except requests.RequestException as exc:
             last_error = exc
+    # Public calendar fallback keeps FinBERT operational when Finnhub returns
+    # an empty/non-JSON/free-plan response. It is still read-only evidence;
+    # the provider remains identified and the source is recorded explicitly.
+    fallback_url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+    try:
+        response = requests.get(fallback_url, timeout=(5, 15))
+        attempt = {"endpoint": fallback_url, "http_status": response.status_code,
+                   "content_type": response.headers.get("content-type", ""),
+                   "response_bytes": len(response.content), "fallback": True}
+        FETCH_DIAGNOSTICS["attempts"].append(attempt)
+        payload = response.json()
+        FETCH_DIAGNOSTICS.update({"endpoint": fallback_url, "http_status": response.status_code,
+                                  "content_type": response.headers.get("content-type", ""),
+                                  "response_bytes": len(response.content), "valid_json": True,
+                                  "fallback_used": True})
+        if response.status_code >= 400 or not isinstance(payload, list):
+            raise RuntimeError("FOREXFACTORY_INVALID_CALENDAR")
+        normalized = []
+        for event in payload:
+            if not isinstance(event, dict):
+                continue
+            normalized.append({"headline": event.get("title") or event.get("event") or "",
+                               "summary": event.get("forecast") or event.get("previous") or "",
+                               "source": "ForexFactory", "related": event.get("country") or "",
+                               "datetime": event.get("date") or event.get("timestamp")})
+        if normalized:
+            FETCH_DIAGNOSTICS["provider"] = "Finnhub (ForexFactory fallback)"
+            return normalized[:NEWS_LIMIT]
+        raise RuntimeError("FOREXFACTORY_EMPTY_CALENDAR")
+    except Exception as exc:
+        last_error = exc
     raise last_error or RuntimeError("FINNHUB_NEWS_UNAVAILABLE")
 
 
@@ -220,7 +251,7 @@ Path("reports/finbert_inference.json").write_text(
         {
             "status": report_status,
             "purpose": "Finnhub Forex news classified by FinBERT; OTC receives base-pair context only",
-            "provider": "Finnhub",
+            "provider": FETCH_DIAGNOSTICS.get("provider", "Finnhub"),
             "fetch_diagnostics": FETCH_DIAGNOSTICS,
             "fetch_error": fetch_error,
             "components": results,
