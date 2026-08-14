@@ -14,6 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from config.settings import TRADING_CONFIG
+from engines.binary.timeframe_selector import select_timeframe
+from engines.binary.sniper_timing import plan_sniper_window
+from market_data_contract import validate_candles
+from runtime_agent_registry import evidence_manifest
+from engines.binary.timeframe_selector import select_timeframe
+from engines.binary.sniper_timing import plan_sniper_window
+from market_data_contract import validate_candles
+from runtime_agent_registry import evidence_manifest
 
 
 def _candles(payload: Any) -> list[dict[str, Any]]:
@@ -138,36 +146,27 @@ def _shadow_policy(market: str, score: float | None, direction: str | None, cand
             "reason": "SCORE_90_94_REQUIRES_LIVE_TIMING" if eligible else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION"}
 
 
-def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
+def _analysis_timing(market: str, result: dict, candles: list[dict], observed_at: datetime, timeframe: str = "M1") -> dict[str, Any]:
     direction, source = _direction(market, result, candles)
     timing = _timing_fields(candles, observed_at)
-    last_ts = candles[-1].get('timestamp') if candles else None
-    # Manual delivery requires a two-minute future expiry measured from the
-    # report/send timestamp, not from an already-stale candle timestamp.
-    lead_seconds = 120 if market in ('binary', 'otc') else 0
-    expiry_seconds = 60
-    entry_at = observed_at + timedelta(seconds=lead_seconds)
-    expiry_from_entry = entry_at + timedelta(seconds=expiry_seconds)
-    age = timing.get('candle_age_seconds')
-    timing_valid = market not in ('binary', 'otc') or (age is not None and age <= 75.0)
-    brt = ZoneInfo('America/Sao_Paulo')
-    return {'direction_calculated': direction, 'direction_source': source, 'candle_timing': timing,
-            'timing_policy': {'timezone': 'America/Sao_Paulo', 'manual_delivery': True,
-                              'lead_time_seconds': lead_seconds,
-                              'entry_at_brt': entry_at.astimezone(brt).isoformat(),
-                              'expiration_duration_seconds': expiry_seconds,
-                              'max_candle_age_seconds': 75.0 if market in ('binary', 'otc') else None,
-                              'valid': timing_valid,
-                              'observed_at_brt': observed_at.astimezone(brt).isoformat(),
-                              'expiry_at_brt': expiry_from_entry.astimezone(brt).isoformat()},
-            'expiration': {'duration_seconds': expiry_seconds, 'entry_at_utc': entry_at.isoformat(), 'expected_timestamp_utc': expiry_from_entry.isoformat(),
-                           'status': 'pending_expiration' if timing_valid else 'blocked_stale_candle',
-                           'hypothetical_result': None,
-                           'result_reason': 'Future candle required; no outcome fabricated.'}}
+    policy = plan_sniper_window(observed_at.timestamp(), timeframe) if market in ("binary", "otc") else {"valid": True, "execution_allowed": False}
+    age = timing.get("candle_age_seconds")
+    timing_valid = market not in ("binary", "otc") or (age is not None and age <= 75 and policy.get("valid", False))
+    policy.update({"timezone": "America/Sao_Paulo", "manual_delivery": True, "valid": timing_valid,
+                   "observed_at_brt": observed_at.astimezone(ZoneInfo("America/Sao_Paulo")).isoformat()})
+    entry = policy.get("entry_timestamp")
+    expiry = (datetime.fromtimestamp(entry, timezone.utc).isoformat() if entry else None)
+    return {"direction_calculated": direction, "direction_source": source, "candle_timing": timing,
+            "timing_policy": policy,
+            "exact_second": policy.get("exact_second"), "execution_sniper_at": policy.get("execution_sniper_at"),
+            "expiration": {"duration_seconds": policy.get("expiration_duration_seconds"), "entry_at_utc": datetime.fromtimestamp(entry, timezone.utc).isoformat() if entry else None,
+                           "expected_timestamp_utc": datetime.fromtimestamp(policy["expiry_timestamp"], timezone.utc).isoformat() if policy.get("expiry_timestamp") else None,
+                           "status": "pending_expiration" if timing_valid else "blocked_stale_or_unavailable_timing",
+                           "hypothetical_result": None, "result_reason": "Future candle required; no outcome fabricated."}}
 
 
-def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
-    timing = _analysis_timing(market, {}, candles, observed_at)
+def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime, m3_candles: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    timing = _analysis_timing(market, {}, candles, observed_at, "M1")
     from config.markets.contracts import MarketRequest
     from engines.forex.operational import ForexV16ReadOnly
     from shared_ai.consultation import SharedAI
@@ -190,10 +189,22 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             result["market"] = market
             result.update(_analysis_timing(market, result, candles, observed_at))
             return result
+        m3_candles = m3_candles or []
         consultation = SharedAI(score_minimum=TRADING_CONFIG.diamond_threshold).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         ))
+        m3_consultation = SharedAI(score_minimum=TRADING_CONFIG.diamond_threshold).consult(MarketRequest(
+            market=market, symbol=symbol, timeframe="M3", candles=m3_candles,
+            account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
+        )) if m3_candles else None
+        tf_decision = select_timeframe(candles, m3_candles, consultation, m3_consultation, is_otc=(market == "otc"))
+        selected_tf = tf_decision.get("selected")
+        if not selected_tf:
+            return {"market": market, "symbol": symbol, "status": "blocked", "reason": tf_decision.get("reason"),
+                    "timeframe_decision": tf_decision, "execution_allowed": False, **_analysis_timing(market, {}, candles, observed_at, "M1")}
+        selected_candles = candles if selected_tf == "M1" else m3_candles
+        if selected_tf == "M3": consultation = m3_consultation
         chart_components = consultation.components.get("component_status", {})
         core_analysis = consultation.components.get("core_analysis", {})
         if market == "otc":
@@ -213,7 +224,8 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             "score_components": core_analysis.get("score_components", {}),
             "score_fusion": core_analysis.get("score_fusion", {}),
             "execution_allowed": False,
-            **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at),
+            **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, selected_candles, observed_at, selected_tf),
+            "timeframe": selected_tf, "timeframe_decision": tf_decision, "m1_candles": candles, "m3_candles": m3_candles,
         }
         result.update(_score_separation(market, consultation.score, chart_components,
                                         candles, result.get("direction_calculated")))
@@ -259,16 +271,16 @@ def main() -> int:
     run_binary = requested_market in ('unified', 'binary', 'otc')
     if otc_only:
         for symbol in symbols:
-            binary.append(_analyse("otc", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            binary.append(_analyse("otc", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or {}))))
     else:
         for symbol in symbols:
             if run_forex:
                 forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
             if run_binary:
-                binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+                binary.append(_analyse("binary", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or {}))))
             if include_otc:
                 otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
-                binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
+                binary.append(_analyse("otc", otc_symbol, _candles((by_symbol.get(otc_symbol, {}).get("m1") or {})), observed_at, _candles((by_symbol.get(otc_symbol, {}).get("m3") or {}))))
 
     # Explicit pipeline dashboard: blocked intelligence is metadata, never a score zero.
     all_items = forex + binary
@@ -300,6 +312,7 @@ def main() -> int:
         "macro_data": macro_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
+        "evidence_manifest": evidence_manifest({name: comp for item in all_items for name, comp in (item.get("components") or {}).items()}),
         "pipeline_dashboard": {
             "data": {"candles": "OK" if len(market_data.get("fresh_symbols") or []) == len(symbols) else "ERROR", "pairs_fresh": len(market_data.get("fresh_symbols") or []), "pairs_expected": len(symbols)},
             "intelligence": intelligence_status,
