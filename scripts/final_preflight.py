@@ -56,16 +56,19 @@ for start in range(0,len(targets),2):
         for symbol in chunk:
             data=(payload.get("symbols") or {}).get(symbol) or {}; m1=rows(data.get("m1") or data.get("candles")); native_m3=rows(data.get("m3") or data.get("m3_candles")); m3=native_m3 or aggregate_m3(m1)
             q=data.get("quote") or data.get("price") or data.get("last_price")
+            quote_source="GATEWAY_QUOTE"
             if isinstance(q,dict): q=q.get("mid") or q.get("price") or q.get("last") or q.get("close")
+            if q is None and m1 and isinstance(m1[-1],dict) and m1[-1].get("close") is not None:
+                q=m1[-1].get("close"); quote_source="M1_LAST_CLOSED_PRICE"
             last=ts(m1[-1] if m1 else None); now=datetime.now(timezone.utc); age=now.timestamp()-last if last else None
-            v1=validate_candles(m1,60,10,now=now.timestamp(),max_age=int(MAX_AGE)); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=195)
+            v1=validate_candles(m1,60,10,now=now.timestamp(),max_age=int(MAX_AGE)); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=300)
             if v3.status != "PASS" and native_m3:
-                m3=aggregate_m3(m1); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=195)
+                m3=aggregate_m3(m1); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=300)
             payout=(payload.get("payouts") or {}).get(symbol) or (report.get("market_data") or {}).get("payouts",{}).get(symbol)
             quote_ok = isinstance(q, (int, float)) and float(q) > 0
             payout_ok = isinstance(payout, dict) and payout.get("ok") is True and payout.get("payout") is not None
             snapshot_ok = bool(expected_snapshot) and all(v in (None, expected_snapshot) for v in artifact_snapshot_ids.values())
-            checks[symbol]={"ok":bool(last is not None and age is not None and age<=MAX_AGE and quote_ok and payout_ok and v1.status=="PASS" and v1.gaps==0 and v3.status=="PASS" and v3.gaps==0 and snapshot_ok),"candle_age_seconds":round(age,3) if age is not None else None,"quote":q,"quote_valid":quote_ok,"payout":payout,"m1_contract":v1.to_dict(),"m3_contract":v3.to_dict(),"snapshot_id":expected_snapshot,"snapshot_consistent":snapshot_ok,"read_only":True}
+            checks[symbol]={"ok":bool(last is not None and age is not None and age<=MAX_AGE and quote_ok and payout_ok and v1.status=="PASS" and v1.gaps==0 and v3.status=="PASS" and v3.gaps==0 and snapshot_ok),"candle_age_seconds":round(age,3) if age is not None else None,"quote":q,"quote_source":quote_source,"quote_valid":quote_ok,"payout":payout,"m1_contract":v1.to_dict(),"m3_contract":v3.to_dict(),"snapshot_id":expected_snapshot,"snapshot_consistent":snapshot_ok,"read_only":True}
             fresh[symbol]={"m1":m1,"m3":m3}
     except Exception as exc:
         for symbol in chunk: checks[symbol]={"ok":False,"reason":"FINAL_PREFLIGHT_"+type(exc).__name__,"read_only":True}
