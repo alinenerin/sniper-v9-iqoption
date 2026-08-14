@@ -269,16 +269,16 @@ def main() -> int:
     run_binary = requested_market in ('unified', 'binary', 'otc')
     if otc_only:
         for symbol in symbols:
-            binary.append(_analyse("otc", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or {}))))
+            binary.append(_analyse("otc", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or by_symbol.get(symbol, {}).get("candles") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or by_symbol.get(symbol, {}).get("m3_candles") or {}))))
     else:
         for symbol in symbols:
             if run_forex:
                 forex.append(_analyse("forex", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or by_symbol.get(symbol, {}).get("candles") or {})), observed_at))
             if run_binary:
-                binary.append(_analyse("binary", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or {}))))
+                binary.append(_analyse("binary", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or by_symbol.get(symbol, {}).get("candles") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or by_symbol.get(symbol, {}).get("m3_candles") or {}))))
             if include_otc:
                 otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
-                binary.append(_analyse("otc", otc_symbol, _candles((by_symbol.get(otc_symbol, {}).get("m1") or {})), observed_at, _candles((by_symbol.get(otc_symbol, {}).get("m3") or {}))))
+                binary.append(_analyse("otc", otc_symbol, _candles((by_symbol.get(otc_symbol, {}).get("m1") or by_symbol.get(otc_symbol, {}).get("candles") or {})), observed_at, _candles((by_symbol.get(otc_symbol, {}).get("m3") or by_symbol.get(otc_symbol, {}).get("m3_candles") or {}))))
 
     # Explicit pipeline dashboard: blocked intelligence is metadata, never a score zero.
     all_items = forex + binary
