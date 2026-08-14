@@ -13,6 +13,7 @@ try:
     from transformers import pipeline
 except ImportError:
     pipeline = None
+from market_data_contract import snapshot_id
 
 
 SYMBOLS = [
@@ -22,6 +23,8 @@ SYMBOLS = [
 INCLUDE_OTC = os.getenv("INCLUDE_OTC", "false").lower() == "true"
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
 NEWS_LIMIT = max(1, min(int(os.getenv("FINNHUB_NEWS_LIMIT", "30")), 100))
+_market_path = Path("reports/market_data.json")
+MARKET_SNAPSHOT_ID = snapshot_id(json.loads(_market_path.read_text())) if _market_path.exists() else None
 
 
 def _clean_text(value: Any) -> str:
@@ -155,7 +158,7 @@ if not FINNHUB_KEY or pipeline is None:
         }
     Path("reports/finbert_inference.json").parent.mkdir(parents=True, exist_ok=True)
     Path("reports/finbert_inference.json").write_text(json.dumps({
-        "provider": "Finnhub", "read_only": True, "execution_allowed": False,
+        "provider": "Finnhub", "snapshot_id": MARKET_SNAPSHOT_ID, "read_only": True, "execution_allowed": False,
         "status": "blocked", "reason": reason, "fetch_diagnostics": FETCH_DIAGNOSTICS,
         "results": results,
     }, indent=2))
@@ -254,6 +257,7 @@ Path("reports/finbert_inference.json").write_text(
     json.dumps(
         {
             "status": report_status,
+            "snapshot_id": MARKET_SNAPSHOT_ID,
             "purpose": "Finnhub Forex news classified by FinBERT; OTC receives base-pair context only",
             "provider": FETCH_DIAGNOSTICS.get("provider", "Finnhub"),
             "fetch_diagnostics": FETCH_DIAGNOSTICS,
