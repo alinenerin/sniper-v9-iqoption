@@ -197,8 +197,20 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         tf_decision = select_timeframe(candles, m3_candles, consultation, m3_consultation, is_otc=(market == "otc"))
         selected_tf = tf_decision.get("selected")
         if not selected_tf:
+            # Preserve every specialist report even when the committee decides
+            # WAIT. A timeframe veto must not erase evidence from the artifact.
+            m1_components = consultation.components.get("component_status", {}) if consultation else {}
+            m3_components = m3_consultation.components.get("component_status", {}) if m3_consultation else {}
+            merged_components = dict(m1_components)
+            for name, value in m3_components.items():
+                merged_components.setdefault(name, value)
             return {"market": market, "symbol": symbol, "status": "blocked", "reason": tf_decision.get("reason"),
-                    "timeframe_decision": tf_decision, "execution_allowed": False, **_analysis_timing(market, {}, candles, observed_at, "M1")}
+                    "timeframe_decision": tf_decision, "agent_reports": {
+                        "M1": {"score": consultation.score, "probability": consultation.probability,
+                                "anomaly_score": consultation.anomaly_score, "vetoes": consultation.vetoes},
+                        "M3": {"score": m3_consultation.score, "probability": m3_consultation.probability,
+                                "anomaly_score": m3_consultation.anomaly_score, "vetoes": m3_consultation.vetoes} if m3_consultation else {"status": "blocked", "reason": "INSUFFICIENT_CANDLES"}},
+                    "components": merged_components, "execution_allowed": False, **_analysis_timing(market, {}, candles, observed_at, "M1")}
         selected_candles = candles if selected_tf == "M1" else m3_candles
         if selected_tf == "M3": consultation = m3_consultation
         chart_components = consultation.components.get("component_status", {})
