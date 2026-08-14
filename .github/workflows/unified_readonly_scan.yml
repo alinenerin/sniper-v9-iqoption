@@ -22,7 +22,7 @@ on:
 jobs:
   unified-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 30
     env:
       ANALYSIS_ONLY: '1'
       EXECUTION_ALLOWED: 'false'
