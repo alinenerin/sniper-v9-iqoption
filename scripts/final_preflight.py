@@ -23,6 +23,23 @@ def ts(row):
             x=float(row[k]); return x/1000 if x>10_000_000_000 else x
         except (KeyError,TypeError,ValueError): pass
     return None
+
+def aggregate_m3(m1):
+    """Build only complete epoch-aligned M3 candles when gateway omits native M3."""
+    groups={}
+    for row in sorted((x for x in m1 if isinstance(x,dict)), key=lambda x: ts(x) or 0):
+        t=ts(row)
+        if t is None: continue
+        groups.setdefault(int(t)//180, []).append(row)
+    out=[]
+    for bucket, group in sorted(groups.items()):
+        group=sorted(group,key=lambda x:ts(x) or 0)
+        times=[ts(x) for x in group]
+        if len(group)!=3 or any(times[i+1]-times[i] != 60 for i in range(2)): continue
+        out.append({"timestamp":bucket*180,"open":group[0].get("open"),"high":max(float(x["high"]) for x in group),
+                    "low":min(float(x["low"]) for x in group),"close":group[-1].get("close"),
+                    "volume":sum(float(x.get("volume") or 0) for x in group)})
+    return out
 report=json.loads(REPORT.read_text()); inputs=report.get("inputs") or {}
 expected_snapshot = report.get("snapshot_id")
 artifact_snapshot_ids = {}
@@ -37,7 +54,9 @@ for start in range(0,len(targets),2):
     try:
         payload=get("/api/market/snapshot_batch?"+urllib.parse.urlencode({"pairs":",".join(chunk)}))
         for symbol in chunk:
-            data=(payload.get("symbols") or {}).get(symbol) or {}; m1=rows(data.get("m1")); m3=rows(data.get("m3")); q=data.get("quote") or data.get("price")
+            data=(payload.get("symbols") or {}).get(symbol) or {}; m1=rows(data.get("m1")); m3=rows(data.get("m3")) or aggregate_m3(m1)
+            q=data.get("quote") or data.get("price") or data.get("last_price")
+            if isinstance(q,dict): q=q.get("mid") or q.get("price") or q.get("last") or q.get("close")
             last=ts(m1[-1] if m1 else None); now=datetime.now(timezone.utc); age=now.timestamp()-last if last else None
             v1=validate_candles(m1,60,10,now=now.timestamp(),max_age=int(MAX_AGE)); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=int(MAX_AGE))
             payout=(payload.get("payouts") or {}).get(symbol) or (report.get("market_data") or {}).get("payouts",{}).get(symbol)
