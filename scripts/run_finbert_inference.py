@@ -212,7 +212,9 @@ if INCLUDE_OTC:
         }
 
 Path("reports").mkdir(exist_ok=True)
-report_status = "ok" if fetch_error is None else "degraded"
+# A successful HTTP/model path is not enough: the evidence is usable only
+# when at least one Finnhub response was parsed as valid JSON.
+report_status = "ok" if fetch_error is None and FETCH_DIAGNOSTICS.get("valid_json") is True else "degraded"
 Path("reports/finbert_inference.json").write_text(
     json.dumps(
         {
