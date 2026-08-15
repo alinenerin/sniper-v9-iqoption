@@ -338,7 +338,10 @@ def main() -> int:
         "macro_data": macro_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
-        "evidence_manifest": evidence_manifest({name: comp for item in all_items for name, comp in (item.get("components") or {}).items()}),
+        "evidence_manifest": evidence_manifest({
+            **{name: comp for item in all_items for name, comp in (item.get("components") or {}).items()},
+            **{name: report for item in all_items for name, report in ((item.get("committee_report") or {}).get("reports") or {}).items()},
+        }),
         "pipeline_dashboard": {
             "data": {"candles": "OK" if len(market_data.get("fresh_symbols") or []) == len(symbols) else "ERROR", "pairs_fresh": len(market_data.get("fresh_symbols") or []), "pairs_expected": len(symbols)},
             "intelligence": intelligence_status,
