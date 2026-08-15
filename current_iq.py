@@ -551,9 +551,15 @@ class IQOptionReadonly:
         for start in range(0, len(symbols), 2):
             for symbol in symbols[start:start+2]:
                 kind = 'OTC' if str(symbol).upper().endswith('-OTC') else 'REAL'
+                realtime = self.realtime_candles(symbol, 60, 20)
+                realtime_rows = realtime.get('candles', []) if isinstance(realtime, dict) else []
+                live_quote = realtime_rows[-1].get('close') if realtime_rows else None
                 data[symbol]={'m1':self.candles(symbol,60,120,kind),
                              'm3':self.candles(symbol,180,120,kind),
-                             'm5':self.candles(symbol,300,30,kind)}
+                             'm5':self.candles(symbol,300,30,kind),
+                             'realtime': realtime_rows,
+                             'quote': live_quote,
+                             'quote_source': 'IQ_OPTION_REALTIME_CANDLE' if live_quote is not None else 'UNAVAILABLE'}
         return {'ok':True,'assets':assets,'payouts':payouts,'symbols':data,'source':'IQ_OPTION_DIRECT','read_only':True}
 
     def snapshot(self, symbol, interval=60):
