@@ -10,6 +10,9 @@ from market_data_contract import snapshot_id
 market=json.loads(Path('reports/market_data.json').read_text())
 market_snapshot_id = snapshot_id(market)
 results={}
+# Load the heavyweight real model exactly once per workflow. Recreating it for
+# every symbol caused repeated memory spikes and runner exit 137.
+bridge = TimesFMBridge()
 for symbol,payload in market.get('symbols',{}).items():
     m1 = payload.get('m1')
     if isinstance(m1, dict):
@@ -23,7 +26,7 @@ for symbol,payload in market.get('symbols',{}).items():
     if len(prices)<100:
         results[symbol]={'status':'blocked','reason':'INSUFFICIENT_CANDLES','samples':len(prices)}; continue
     try:
-        out=TimesFMBridge().forecast_next_candle(prices)
+        out=bridge.forecast_next_candle(prices)
         ok=out.get('source')=='TIMESFM_REAL'
         results[symbol]={'status':'inference_ok' if ok else 'blocked','reason':None if ok else 'TIMESFM_REAL_WEIGHTS_NOT_USED','forecast':out,'samples':len(prices)}
     except Exception as exc:
