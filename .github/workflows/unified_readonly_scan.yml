@@ -119,6 +119,18 @@ jobs:
           # no post-decision candle exists yet.
           PAPER_EXPIRATION_WAIT_SECONDS: 0
         run: python scripts/evaluate_hypothetical_expiration.py
+      - name: Upload diagnostic report before contract validation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-scan-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            reports/latest_scan.json
+            reports/darts_inference.json
+            reports/finbert_inference.json
+            reports/timesfm_inference.json
+
       - name: Validate report contract and component evidence
         run: |
           python - <<'PY'
