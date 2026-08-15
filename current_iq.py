@@ -559,7 +559,7 @@ class IQOptionReadonly:
                 realtime = self.realtime_candles(symbol, 60, 20)
                 realtime_rows = realtime.get('candles', []) if isinstance(realtime, dict) else []
                 live_quote = realtime_rows[-1].get('close') if realtime_rows else None
-                data[symbol]={'m1':self.candles(symbol,60,1200,kind),
+                data[symbol]={'m1':self.candles(symbol,60,1000,kind),
                              'm3':self.candles(symbol,180,120,kind),
                              'm5':self.candles(symbol,300,30,kind),
                              'realtime': realtime_rows,
