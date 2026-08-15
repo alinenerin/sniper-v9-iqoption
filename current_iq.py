@@ -511,7 +511,12 @@ class IQOptionReadonly:
             candles = []
             for ts, c in data.items():
                 candles.append({'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)})
-            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': sorted(candles, key=lambda x: x['timestamp']), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
+            result = {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': sorted(candles, key=lambda x: x['timestamp'])[-2:], 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
+            stop = getattr(self.api, 'stop_candles_stream', None)
+            if callable(stop):
+                try: stop(symbol, int(interval))
+                except Exception: pass
+            return result
         except Exception: return {'ok': False, 'reason': 'IQ_OPTION_REALTIME_STREAM_UNAVAILABLE', 'read_only': True}
 
     def digital_strike(self, symbol, duration=60):
