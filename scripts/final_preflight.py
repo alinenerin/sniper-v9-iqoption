@@ -58,6 +58,18 @@ for start in range(0,len(targets),2):
             q=data.get("quote") or data.get("price") or data.get("last_price")
             quote_source="GATEWAY_QUOTE"
             if isinstance(q,dict): q=q.get("mid") or q.get("price") or q.get("last") or q.get("close")
+            if q is None:
+                # The deployed Railway gateway exposes realtime candles through
+                # the single-symbol snapshot route even when batch payloads omit
+                # the quote field. Use that read-only source before any candle
+                # close fallback.
+                try:
+                    live = get("/api/market/snapshot?" + urllib.parse.urlencode({"symbol": symbol}))
+                    live_rows = rows((live.get("realtime") or {}).get("candles") if isinstance(live, dict) else [])
+                    if live_rows and isinstance(live_rows[-1], dict) and live_rows[-1].get("close") is not None:
+                        q=live_rows[-1].get("close"); quote_source="IQ_OPTION_REALTIME_CANDLE"
+                except Exception:
+                    pass
             if q is None and m1 and isinstance(m1[-1],dict) and m1[-1].get("close") is not None:
                 q=m1[-1].get("close"); quote_source="M1_LAST_CLOSED_PRICE"
             last=ts(m1[-1] if m1 else None); now=datetime.now(timezone.utc); age=now.timestamp()-last if last else None
