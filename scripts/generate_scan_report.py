@@ -195,6 +195,17 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             market=market, symbol=symbol, timeframe="M3", candles=m3_candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         )) if m3_candles else None
+        # Dedicated Darts artifact is authoritative before timeframe selection.
+        try:
+            d_art = json.loads((Path("reports") / "darts_inference.json").read_text())
+            d_item = (d_art.get("components") or {}).get(symbol, {})
+            d_scan = d_item.get("scan") or {}
+            if d_item.get("status") == "inference_ok":
+                verified_anomaly = float(d_scan.get("anomaly_score", d_scan.get("score", 0)) or 0)
+                consultation.anomaly_score = verified_anomaly
+                if m3_consultation is not None: m3_consultation.anomaly_score = verified_anomaly
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            pass
         tf_decision = select_timeframe(candles, m3_candles, consultation, m3_consultation, is_otc=(market == "otc"))
         selected_tf = tf_decision.get("selected")
         if not selected_tf:
