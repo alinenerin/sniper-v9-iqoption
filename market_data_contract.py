@@ -4,7 +4,7 @@ This module is deliberately provider-agnostic: it validates data received from
 IQ Option (or another adapter) without inventing candles or executing orders.
 """
 from __future__ import annotations
-import math, time
+import math, time, json, hashlib
 from dataclasses import dataclass, asdict
 from typing import Any
 
