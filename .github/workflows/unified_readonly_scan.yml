@@ -96,6 +96,8 @@ jobs:
           python scripts/train_xgboost_inference.py > reports/module-logs/xgboost.log 2>&1 & p4=$!
           wait $p1; r1=$?; wait $p2; r2=$?; wait $p3; r3=$?; wait $p4; r4=$?
           echo "module_exit_codes darts=$r1 timesfm=$r2 finbert=$r3 xgboost=$r4"
+          echo "--- xgboost.log ---"; cat reports/module-logs/xgboost.log || true
+          echo "--- timesfm.log ---"; tail -80 reports/module-logs/timesfm.log || true
           # Modules are advisory/read-only; their evidence is inspected by the report.
           exit 0
       - name: Compile read-only analysis modules
