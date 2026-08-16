@@ -167,7 +167,9 @@ class SharedAI:
             # Memória fornece apenas contexto; nunca altera score, veto ou aprovação.
             try:
                 from shared_ai.memory_service import ZapiaMemoryService
-                advisory["memory_context"] = ZapiaMemoryService().context_for(request.symbol, request.market, limit=5)
+                # One bounded semantic lookup per market lane avoids hammering Mem0
+                # once for every symbol; the local SQLite context remains per-symbol.
+                advisory["memory_context"] = ZapiaMemoryService().context_for(request.market, limit=5)
             except Exception as exc:
                 advisory["memory_context"] = {"active": False, "error": type(exc).__name__}
             # Regime é determinístico e consultivo; não altera aprovação sozinho.
