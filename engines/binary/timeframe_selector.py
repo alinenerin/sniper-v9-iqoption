@@ -18,7 +18,7 @@ def _quality(candles) -> float:
         return 0.0
 
 
-def select_timeframe(m1_candles, m3_candles, m1_ai: Any, m3_ai: Any, is_otc: bool = False) -> Dict[str, Any]:
+def select_timeframe(m1_candles, m3_candles, m1_ai: Any, m3_ai: Any, is_otc: bool = False, verified_anomaly: float | None = None) -> Dict[str, Any]:
     """Escolhe M1 ou M3 por consenso AI + qualidade do candle.
 
     A escolha é consultiva e fail-closed: empate, dados insuficientes ou
@@ -30,7 +30,7 @@ def select_timeframe(m1_candles, m3_candles, m1_ai: Any, m3_ai: Any, is_otc: boo
             continue
         score = float(getattr(ai, "score", 0) or 0)
         probability = float(getattr(ai, "probability", 0) or 0)
-        anomaly = float(getattr(ai, "anomaly_score", 100) or 100)
+        anomaly = float(verified_anomaly if verified_anomaly is not None else (getattr(ai, "anomaly_score", 100) or 100))
         quality = _quality(candles)
         # Score AI domina; qualidade do timeframe desempata. Anomalia é veto.
         composite = score * 0.65 + probability * 100 * 0.20 + quality * 100 * 0.15
