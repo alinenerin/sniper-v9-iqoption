@@ -6,29 +6,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import pandas as pd
 from core.integrations.darts_anomaly_shield import DartsAnomalyShield
+from market_data_contract import snapshot_id
 
 market_path = Path('reports/market_data.json')
 market = json.loads(market_path.read_text()) if market_path.exists() else {}
+MARKET_SNAPSHOT_ID = snapshot_id(market)
 requested = __import__('os').getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
 if __import__('os').getenv('INCLUDE_OTC', 'false').lower() == 'true':
     requested += [s if s.endswith('-OTC') else s + '-OTC' for s in requested if not s.endswith('-OTC')]
 results = {}
-def candle_rows(payload):
-    # Current gateway contract stores M1 under m1; retain legacy fallback.
-    value = payload.get('m1')
-    if isinstance(value, list) and value:
-        return value
-    if isinstance(value, dict) and value.get('candles'):
-        return value['candles']
-    legacy = payload.get('candles')
-    if isinstance(legacy, list):
-        return legacy
-    return (legacy or {}).get('candles', []) if isinstance(legacy, dict) else []
-
 for symbol in requested:
     payload = market.get('symbols', {}).get(symbol, {})
-    rows = candle_rows(payload)
-    evidence = {'symbol': symbol, 'samples': len(rows), 'role': 'auxiliary_only', 'veto_authority': 'chart_only'}
+    rows = (payload.get('candles') or {}).get('candles', [])
+    evidence = {'symbol': symbol, 'samples': len(rows), 'snapshot_id': MARKET_SNAPSHOT_ID, 'role': 'auxiliary_only', 'veto_authority': 'chart_only'}
     if len(rows) < 1000:
         evidence.update(status='insufficient-data', reason='INSUFFICIENT_CANDLES_FOR_DARTS_TRAINING')
     else:
