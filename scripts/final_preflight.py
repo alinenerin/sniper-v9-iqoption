@@ -73,9 +73,9 @@ for start in range(0,len(targets),2):
             if q is None and m1 and isinstance(m1[-1],dict) and m1[-1].get("close") is not None:
                 q=m1[-1].get("close"); quote_source="M1_LAST_CLOSED_PRICE"
             last=ts(m1[-1] if m1 else None); now=datetime.now(timezone.utc); age=now.timestamp()-last if last else None
-            v1=validate_candles(m1,60,10,now=now.timestamp(),max_age=int(MAX_AGE)); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=300)
+            v1=validate_candles(m1,60,10,now=now.timestamp(),max_age=int(MAX_AGE)); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=360)
             if v3.status != "PASS" and native_m3:
-                m3=aggregate_m3(m1); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=300)
+                m3=aggregate_m3(m1); v3=validate_candles(m3,180,10,now=now.timestamp(),max_age=360)
             payout=(payload.get("payouts") or {}).get(symbol) or (report.get("market_data") or {}).get("payouts",{}).get(symbol)
             quote_ok = isinstance(q, (int, float)) and float(q) > 0
             payout_ok = isinstance(payout, dict) and payout.get("ok") is True and payout.get("payout") is not None
