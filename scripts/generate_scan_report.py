@@ -211,7 +211,10 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                                 "anomaly_score": consultation.anomaly_score, "vetoes": consultation.vetoes},
                         "M3": {"score": m3_consultation.score, "probability": m3_consultation.probability,
                                 "anomaly_score": m3_consultation.anomaly_score, "vetoes": m3_consultation.vetoes} if m3_consultation else {"status": "blocked", "reason": "INSUFFICIENT_CANDLES"}},
-                    "components": merged_components, "execution_allowed": False, **_analysis_timing(market, {}, candles, observed_at, "M1")}
+                    "components": merged_components,
+                    "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "MISSING_INVALID_CANDLES",
+                    "chart_evidence": {"ema_cascade": "engine" if market == "otc" else "blocked", "algorithmic_cycle": "blocked"},
+                    "execution_allowed": False, **_analysis_timing(market, {}, candles, observed_at, "M1")}
         selected_candles = candles if selected_tf == "M1" else m3_candles
         if selected_tf == "M3": consultation = m3_consultation
         chart_components = consultation.components.get("component_status", {})
