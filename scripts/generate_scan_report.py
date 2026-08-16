@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from config.settings import TRADING_CONFIG
+from engines.binary.timeframe_selector import select_timeframe
+from engines.binary.sniper_timing import plan_sniper_window
+from market_data_contract import validate_candles, snapshot_id
+from runtime_agent_registry import evidence_manifest
 
 
 def _candles(payload: Any) -> list[dict[str, Any]]:
@@ -98,25 +104,29 @@ def _score_separation(market: str, score: float | None, components: dict[str, An
                      components[name].get("status") == "inference_ok"
                      for name in ("smc", "vsa")) if components else False
     confidence = "FULL" if core_ready and not blocked else "PARTIAL" if core_ready else "INSUFFICIENT"
-    if value >= 95:
+    supreme = float(TRADING_CONFIG.supreme_threshold)
+    qualified = float(TRADING_CONFIG.diamond_threshold)
+    noise = float(TRADING_CONFIG.noise_threshold)
+    if value >= supreme:
         band = "SUPREME"
-    elif value >= 85:
-        band = "STRONG_SHADOW"
-    elif value >= 75:
+    elif value >= qualified:
+        band = "QUALIFIED"
+    elif value >= noise:
         band = "TECHNICAL_SHADOW"
     else:
         band = "REJECTED"
-    shadow_eligible = bool(candles) and value >= 75.0 and value < 95.0 and direction in ("CALL", "PUT")
+    shadow_eligible = bool(candles) and value >= qualified and direction in ("CALL", "PUT")
     return {"technical_score": value,
             "data_confidence": {"status": confidence, "executed_components": executed,
                                 "blocked_components": blocked, "core_chart_ready": core_ready},
             "operational_status": band,
             "shadow_policy": {"lane": "shadow", "eligible": shadow_eligible,
-                               "official_minimum_score": 95.0,
+                               "qualification_threshold": float(TRADING_CONFIG.diamond_threshold),
+                               "supreme_threshold": float(TRADING_CONFIG.supreme_threshold),
                                "execution_allowed": False,
                                "approval_unchanged": True,
-                               "reason": "TECHNICAL_SCORE_REQUIRES_RESEARCH_VALIDATION" if shadow_eligible
-                                         else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION"}}
+                               "reason": "QUALIFIED_IN_SHADOW_MODE" if shadow_eligible
+                                         else "OUTSIDE_QUALIFICATION_BAND_OR_MISSING_DIRECTION"}}
 
 
 def _shadow_policy(market: str, score: float | None, direction: str | None, candles: list[dict[str, Any]]) -> dict[str, Any]:
@@ -124,29 +134,35 @@ def _shadow_policy(market: str, score: float | None, direction: str | None, cand
     if market != "otc":
         return {}
     value = float(score or 0)
-    eligible = bool(candles) and 90.0 <= value < 95.0 and direction in ("CALL", "PUT")
-    return {"lane": "shadow", "minimum_score": 90.0, "official_minimum_score": 95.0,
+    minimum = float(TRADING_CONFIG.diamond_threshold)
+    eligible = bool(candles) and value >= minimum and direction in ("CALL", "PUT")
+    return {"lane": "shadow", "minimum_score": minimum,
             "eligible": eligible, "requires_live_timing": True,
             "execution_allowed": False,
             "reason": "SCORE_90_94_REQUIRES_LIVE_TIMING" if eligible else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION"}
 
 
-def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
+def _analysis_timing(market: str, result: dict, candles: list[dict], observed_at: datetime, timeframe: str = "M1") -> dict[str, Any]:
     direction, source = _direction(market, result, candles)
     timing = _timing_fields(candles, observed_at)
-    last_ts = candles[-1].get('timestamp') if candles else None
-    expiry_seconds = 60
-    expiry_ts = None
-    try: expiry_ts = float(last_ts) + expiry_seconds if last_ts is not None else None
-    except (TypeError, ValueError): pass
-    return {'direction_calculated': direction, 'direction_source': source, 'candle_timing': timing,
-            'expiration': {'duration_seconds': expiry_seconds, 'expected_timestamp_utc': _iso(expiry_ts),
-                           'status': 'pending_expiration', 'hypothetical_result': None,
-                           'result_reason': 'Future candle required; no outcome fabricated.'}}
+    policy = plan_sniper_window(observed_at.timestamp(), timeframe) if market in ("binary", "otc") else {"valid": True, "execution_allowed": False}
+    age = timing.get("candle_age_seconds")
+    timing_valid = market not in ("binary", "otc") or (age is not None and age <= 75 and policy.get("valid", False))
+    policy.update({"timezone": "America/Sao_Paulo", "manual_delivery": True, "valid": timing_valid,
+                   "observed_at_brt": observed_at.astimezone(ZoneInfo("America/Sao_Paulo")).isoformat()})
+    entry = policy.get("entry_timestamp")
+    expiry = (datetime.fromtimestamp(entry, timezone.utc).isoformat() if entry else None)
+    return {"direction_calculated": direction, "direction_source": source, "candle_timing": timing,
+            "timing_policy": policy,
+            "exact_second": policy.get("exact_second"), "execution_sniper_at": policy.get("execution_sniper_at"),
+            "expiration": {"duration_seconds": policy.get("expiration_duration_seconds"), "entry_at_utc": datetime.fromtimestamp(entry, timezone.utc).isoformat() if entry else None,
+                           "expected_timestamp_utc": datetime.fromtimestamp(policy["expiry_timestamp"], timezone.utc).isoformat() if policy.get("expiry_timestamp") else None,
+                           "status": "pending_expiration" if timing_valid else "blocked_stale_or_unavailable_timing",
+                           "hypothetical_result": None, "result_reason": "Future candle required; no outcome fabricated."}}
 
 
-def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
-    timing = _analysis_timing(market, {}, candles, observed_at)
+def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime, m3_candles: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    timing = _analysis_timing(market, {}, candles, observed_at, "M1")
     from config.markets.contracts import MarketRequest
     from engines.forex.operational import ForexV16ReadOnly
     from shared_ai.consultation import SharedAI
@@ -169,11 +185,52 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             result["market"] = market
             result.update(_analysis_timing(market, result, candles, observed_at))
             return result
+        m3_candles = m3_candles or []
+        from core.trading_crew import crew_v16
         consultation = SharedAI(score_minimum=TRADING_CONFIG.diamond_threshold).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         ))
+        m3_consultation = SharedAI(score_minimum=TRADING_CONFIG.diamond_threshold).consult(MarketRequest(
+            market=market, symbol=symbol, timeframe="M3", candles=m3_candles,
+            account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
+        )) if m3_candles else None
+        # Dedicated Darts artifact is authoritative before timeframe selection.
+        verified_anomaly = None
+        try:
+            d_art = json.loads((Path("reports") / "darts_inference.json").read_text())
+            d_item = (d_art.get("components") or {}).get(symbol, {})
+            d_scan = d_item.get("scan") or {}
+            if d_item.get("status") == "inference_ok":
+                verified_anomaly = float(d_scan.get("anomaly_score", d_scan.get("score", 0)) or 0)
+                object.__setattr__(consultation, "anomaly_score", verified_anomaly)
+                if m3_consultation is not None: object.__setattr__(m3_consultation, "anomaly_score", verified_anomaly)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            pass
+        tf_decision = select_timeframe(candles, m3_candles, consultation, m3_consultation, is_otc=(market == "otc"), verified_anomaly=verified_anomaly)
+        selected_tf = tf_decision.get("selected")
+        if not selected_tf:
+            # Preserve every specialist report even when the committee decides
+            # WAIT. A timeframe veto must not erase evidence from the artifact.
+            m1_components = consultation.components.get("component_status", {}) if consultation else {}
+            m3_components = m3_consultation.components.get("component_status", {}) if m3_consultation else {}
+            merged_components = dict(m1_components)
+            for name, value in m3_components.items():
+                merged_components.setdefault(name, value)
+            return {"market": market, "symbol": symbol, "status": "blocked", "reason": tf_decision.get("reason"),
+                    "timeframe_decision": tf_decision, "agent_reports": {
+                        "M1": {"score": consultation.score, "probability": consultation.probability,
+                                "anomaly_score": consultation.anomaly_score, "vetoes": consultation.vetoes},
+                        "M3": {"score": m3_consultation.score, "probability": m3_consultation.probability,
+                                "anomaly_score": m3_consultation.anomaly_score, "vetoes": m3_consultation.vetoes} if m3_consultation else {"status": "blocked", "reason": "INSUFFICIENT_CANDLES"}},
+                    "components": merged_components,
+                    "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "MISSING_INVALID_CANDLES",
+                    "chart_evidence": {"ema_cascade": "engine" if market == "otc" else "blocked", "algorithmic_cycle": "blocked"},
+                    "execution_allowed": False, **_analysis_timing(market, {}, candles, observed_at, "M1")}
+        selected_candles = candles if selected_tf == "M1" else m3_candles
+        if selected_tf == "M3": consultation = m3_consultation
         chart_components = consultation.components.get("component_status", {})
+        core_analysis = consultation.components.get("core_analysis", {})
         if market == "otc":
             # OTC IQ chart is authoritative; Darts/FinBERT are context only.
             chart_components.update(_auxiliary(symbol))
@@ -188,11 +245,18 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                                "wick_rejection": "engine", "previous_candle": "engine",
                                "vsa": "engine", "m5_confirmation": "engine"} if market == "otc" else {},
             "components": chart_components,
+            "score_components": core_analysis.get("score_components", {}),
+            "score_fusion": core_analysis.get("score_fusion", {}),
             "execution_allowed": False,
-            **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at),
+            **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, selected_candles, observed_at, selected_tf),
+            "timeframe": selected_tf, "timeframe_decision": tf_decision, "m1_candles": candles, "m3_candles": m3_candles,
         }
         result.update(_score_separation(market, consultation.score, chart_components,
                                         candles, result.get("direction_calculated")))
+        if market in ('binary', 'otc') and not result.get('timing_policy', {}).get('valid', False):
+            result.setdefault('vetoes', []).append('STALE_CANDLE_FOR_2M_MANUAL_EXPIRY')
+            result['approved'] = False
+            result['operational_status'] = 'REJECTED_STALE_TIMING'
         if market == "otc":
 
             direction = result.get("direction_calculated")
@@ -209,7 +273,6 @@ def main() -> int:
     requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
-    market_mode = os.getenv("MARKET", "unified").lower()
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
     macro_path = Path("reports/macro_data.json")
@@ -227,21 +290,39 @@ def main() -> int:
             symbols = [x if x.upper().endswith("-OTC") else x.upper() + "-OTC" for x in symbols]
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
+    # Every lane and specialist artifact must bind to this immutable input snapshot.
+    market_snapshot_id = snapshot_id(market_data)
+    requested_market = os.getenv('MARKET', 'unified').lower()
+    run_forex = requested_market in ('unified', 'forex') and not otc_only
+    run_binary = requested_market in ('unified', 'binary', 'otc')
     if otc_only:
         for symbol in symbols:
-            binary.append(_analyse("otc", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            binary.append(_analyse("otc", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or by_symbol.get(symbol, {}).get("candles") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or by_symbol.get(symbol, {}).get("m3_candles") or {}))))
     else:
         for symbol in symbols:
-            if market_mode in ("unified", "forex"):
-                forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-            if market_mode in ("unified", "binary"):
-                binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
+            if run_forex:
+                forex.append(_analyse("forex", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or by_symbol.get(symbol, {}).get("candles") or {})), observed_at))
+            if run_binary:
+                binary.append(_analyse("binary", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or by_symbol.get(symbol, {}).get("candles") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or by_symbol.get(symbol, {}).get("m3_candles") or {}))))
             if include_otc:
                 otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
-                binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
+                binary.append(_analyse("otc", otc_symbol, _candles((by_symbol.get(otc_symbol, {}).get("m1") or by_symbol.get(otc_symbol, {}).get("candles") or {})), observed_at, _candles((by_symbol.get(otc_symbol, {}).get("m3") or by_symbol.get(otc_symbol, {}).get("m3_candles") or {}))))
 
     # Explicit pipeline dashboard: blocked intelligence is metadata, never a score zero.
     all_items = forex + binary
+    from core.trading_crew import crew_v16
+    for item in all_items:
+        committee_components = dict(item.get("components") or {})
+        symbol_data = (market_data.get("symbols") or {}).get(item.get("symbol"), {})
+        m1_rows = _candles(symbol_data.get("m1") or symbol_data.get("candles") or {})
+        m3_rows = _candles(symbol_data.get("m3") or symbol_data.get("m3_candles") or {})
+        m5_rows = _candles(symbol_data.get("m5") or symbol_data.get("m5_candles") or {})
+        committee_components.update({
+            "m1": {"status": "inference_ok" if len(m1_rows) >= 50 else "blocked", "reason": None if len(m1_rows) >= 50 else "INSUFFICIENT_M1"},
+            "m3": {"status": "inference_ok" if len(m3_rows) >= 10 else "blocked", "reason": None if len(m3_rows) >= 10 else "INSUFFICIENT_M3"},
+            "m5": {"status": "inference_ok" if len(m5_rows) >= 10 else "blocked", "reason": None if len(m5_rows) >= 10 else "INSUFFICIENT_M5"},
+        })
+        item["committee_report"] = crew_v16.evaluate(item.get("symbol"), committee_components, market_snapshot_id, item.get("timeframe"))
     intelligence_status = {}
     for item in all_items:
         for name, component in (item.get("components") or {}).items():
@@ -253,6 +334,7 @@ def main() -> int:
     for item in all_items:
         symbol_data = (market_data.get("symbols") or {}).get(item.get("symbol"), {})
         item["payout"] = (market_data.get("payouts") or {}).get(item.get("symbol"))
+        item["snapshot_id"] = market_snapshot_id
         item["snapshot_observed_at_utc"] = market_data.get("observed_at_utc")
         item["snapshot_latency_ms"] = market_data.get("latency_ms")
         components = item.get("components") or {}
@@ -260,16 +342,55 @@ def main() -> int:
         item.setdefault("analysis_completeness", round(100.0 * len(executed) / max(1, len(components)), 1))
         item["data_completeness"] = 100.0 if item.get("candle_timing", {}).get("candle_count", 0) >= 120 else 0.0
 
+    def _agent_dashboard(items, lane):
+        rows = []
+        for item in items:
+            components = item.get("components") or {}
+            statuses = {
+                name: value.get("status", "blocked")
+                for name, value in components.items() if isinstance(value, dict)
+            }
+            rows.append({
+                "symbol": item.get("symbol"),
+                "market": lane,
+                "score": item.get("score", 0),
+                "approved": bool(item.get("approved", False)),
+                "vetoes": item.get("vetoes", []),
+                "specialists_executed": sorted(name for name, status in statuses.items()
+                                               if status in ("inference_ok", "executed", "completed")),
+                "specialists_blocked": sorted(name for name, status in statuses.items()
+                                              if status not in ("inference_ok", "executed", "completed")),
+                "read_only": True,
+                "execution_allowed": False,
+            })
+        return {
+            "lane": lane,
+            "mode": "read_only",
+            "execution_allowed": False,
+            "analyses": rows,
+            "specialist_names": sorted({n for row in rows for n in row["specialists_executed"]}),
+        }
+
     result = {
-        "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "schema_version": "2.2", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "snapshot_id": market_snapshot_id,
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
         "mode": "read_only", "execution_allowed": False,
-        "forex": {"status": "completed" if forex else "not_requested", "analyses": forex},
-        "binary": {"status": "completed" if binary else "not_requested", "analyses": binary},
+        "forex": {"status": "completed" if run_forex else "not_requested", "analyses": forex},
+        "binary": {"status": "completed" if run_binary else "not_requested", "analyses": binary},
+        "agent_dashboard": {
+            "forex": _agent_dashboard(forex, "forex"),
+            "binary": _agent_dashboard([x for x in binary if x.get("market") == "binary"], "binary"),
+            "otc": _agent_dashboard([x for x in binary if x.get("market") == "otc"], "otc"),
+        },
         "market_data": market_data,
         "macro_data": macro_data,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "market": market_mode, "source": "Railway"},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
+        "evidence_manifest": evidence_manifest({
+            **{name: comp for item in all_items for name, comp in (item.get("components") or {}).items()},
+            **{name: report for item in all_items for name, report in ((item.get("committee_report") or {}).get("reports") or {}).items()},
+        }),
         "pipeline_dashboard": {
             "data": {"candles": "OK" if len(market_data.get("fresh_symbols") or []) == len(symbols) else "ERROR", "pairs_fresh": len(market_data.get("fresh_symbols") or []), "pairs_expected": len(symbols)},
             "intelligence": intelligence_status,
