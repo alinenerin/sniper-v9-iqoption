@@ -8,6 +8,13 @@ import math, time
 from dataclasses import dataclass, asdict
 from typing import Any
 
+
+def snapshot_id(payload: Any) -> str:
+    """Stable hash for the immutable market snapshot shared by agents."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 # IQ Option candle sizes, in seconds.
 TIMEFRAME_NAMES = {
     60: "M1",
