@@ -1,6 +1,11 @@
 """Train/evaluate XGBoost on labeled live candle history, then run read-only inference."""
-import json, os, pickle
+import json, os, pickle, sys
 from pathlib import Path
+
+# Ensure root-level contracts are importable when launched as a script from CI.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
