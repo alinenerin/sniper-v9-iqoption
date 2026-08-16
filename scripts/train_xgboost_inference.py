@@ -4,10 +4,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
+from market_data_contract import snapshot_id
 
 FEATURES=['ret1','range','body','volatility','ema_fast_gap','ema_slow_gap']
 all_rows=[]
 market=json.loads(Path('reports/market_data.json').read_text())
+MARKET_SNAPSHOT_ID = snapshot_id(market)
 def candle_rows(payload):
     # Railway snapshots use m1/m5; retain compatibility with the legacy
     # candles.candles shape. Prefer M1 for training and inference.
@@ -42,6 +44,6 @@ results={}
 for symbol,payload in market.get('symbols',{}).items():
     rows=candle_rows(payload); df=pd.DataFrame(rows)
     if len(df)<60: results[symbol]={'status':'blocked','reason':'INSUFFICIENT_CANDLES'}; continue
-    close=pd.to_numeric(df['close']); high=pd.to_numeric(df['high']); low=pd.to_numeric(df['low']); op=pd.to_numeric(df['open']); z=pd.DataFrame({'ret1':close.pct_change(),'range':(high-low)/close,'body':(close-op)/op,'volatility':close.pct_change().rolling(20).std(),'ema_fast_gap':close/close.ewm(span=9).mean()-1,'ema_slow_gap':close/close.ewm(span=50).mean()-1}).dropna().iloc[-1:][FEATURES]; p=float(model.predict_proba(z)[0,1]); results[symbol]={'status':'inference_ok','probability_up':round(p,6),'direction':'UP' if p>=.5 else 'DOWN'}
+    close=pd.to_numeric(df['close']); high=pd.to_numeric(df['high']); low=pd.to_numeric(df['low']); op=pd.to_numeric(df['open']); z=pd.DataFrame({'ret1':close.pct_change(),'range':(high-low)/close,'body':(close-op)/op,'volatility':close.pct_change().rolling(20).std(),'ema_fast_gap':close/close.ewm(span=9).mean()-1,'ema_slow_gap':close/close.ewm(span=50).mean()-1}).dropna().iloc[-1:][FEATURES]; p=float(model.predict_proba(z)[0,1]); results[symbol]={'status':'inference_ok','snapshot_id':MARKET_SNAPSHOT_ID,'probability_up':round(p,6),'direction':'UP' if p>=.5 else 'DOWN'}
 Path('reports/xgboost_inference.json').write_text(json.dumps({'status':'ok','training_samples':len(data),'holdout_accuracy':accuracy,'features':FEATURES,'components':results,'read_only':True},indent=2)+'\n')
 print('xgboost_inference_complete',len(data),accuracy)
