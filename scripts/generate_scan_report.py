@@ -202,8 +202,8 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             d_scan = d_item.get("scan") or {}
             if d_item.get("status") == "inference_ok":
                 verified_anomaly = float(d_scan.get("anomaly_score", d_scan.get("score", 0)) or 0)
-                consultation.anomaly_score = verified_anomaly
-                if m3_consultation is not None: m3_consultation.anomaly_score = verified_anomaly
+                object.__setattr__(consultation, "anomaly_score", verified_anomaly)
+                if m3_consultation is not None: object.__setattr__(m3_consultation, "anomaly_score", verified_anomaly)
         except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
             pass
         tf_decision = select_timeframe(candles, m3_candles, consultation, m3_consultation, is_otc=(market == "otc"))
