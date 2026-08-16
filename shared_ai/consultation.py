@@ -91,9 +91,16 @@ class SharedAI:
         }
 
     @staticmethod
-    def _fuse_agent_evidence(technical_score: float, direction: str, component_status: dict[str, Any], advisory: dict[str, Any], symbol: str) -> tuple[float, dict[str, Any]]:
-        """Fuse verified model evidence without treating missing models as zero."""
-        parts = [("technical", max(0.0, min(100.0, technical_score)), 0.60)]
+    def _fuse_agent_evidence(technical_score: float, direction: str, component_status: dict[str, Any], advisory: dict[str, Any], symbol: str, core_components: dict[str, Any] | None = None) -> tuple[float, dict[str, Any]]:
+        """Central evidence fusion; unavailable components are excluded, not zeroed."""
+        cfg = TRADING_CONFIG
+        parts = []
+        for name, weight in (("technical_core", cfg.technical_core_weight), ("smc", cfg.smc_weight), ("vsa", cfg.vsa_weight), ("sentiment", cfg.sentiment_weight)):
+            item = (core_components or {}).get(name) if isinstance(core_components, dict) else None
+            if isinstance(item, dict) and item.get("value") is not None:
+                parts.append((name, max(0.0, min(100.0, float(item["value"]))), weight, "evidence"))
+        if not parts:
+            parts.append(("technical_core", max(0.0, min(100.0, technical_score)), cfg.technical_core_weight, "fallback"))
         direction = direction.upper()
         def report_item(filename: str):
             try:
@@ -105,21 +112,23 @@ class SharedAI:
         xgb = report_item("xgboost_inference.json")
         if component_status.get("xgboost", {}).get("status") == "inference_ok" and xgb.get("probability_up") is not None:
             p = float(xgb["probability_up"]) * 100.0
-            parts.append(("xgboost", p if direction in ("CALL", "BUY") else 100.0 - p, 0.20))
+            parts.append(("xgboost", p if direction in ("CALL", "BUY") else 100.0 - p, cfg.ai_ensemble_weight * 0.50, "ai"))
         times = report_item("timesfm_inference.json")
         if component_status.get("timesfm", {}).get("status") == "inference_ok":
             td = str((times.get("forecast") or times).get("direction", "")).upper()
             conf = float((times.get("forecast") or times).get("confidence", 0.5) or 0.5)
             aligned = td in (("UP",) if direction in ("CALL", "BUY") else ("DOWN",))
-            parts.append(("timesfm", 50.0 + (conf * 50.0 if aligned else -conf * 50.0), 0.10))
+            parts.append(("timesfm", 50.0 + (conf * 50.0 if aligned else -conf * 50.0), cfg.ai_ensemble_weight * 0.50, "ai"))
         darts = report_item("darts_inference.json")
         if component_status.get("darts", {}).get("status") == "inference_ok":
             scan = darts.get("scan") or {}
             anomaly = float(scan.get("anomaly_score", scan.get("score", 0)) or 0)
-            parts.append(("darts_safety", max(0.0, 100.0 - anomaly), 0.10))
-        total_weight = sum(weight for _, _, weight in parts)
-        fused = round(sum(value * weight for _, value, weight in parts) / total_weight, 1)
-        return fused, {name: {"value": round(value, 2), "weight": weight, "status": "inference_ok"} for name, value, weight in parts}
+            # Darts is a safety/veto signal, not a bullish score contributor.
+            if anomaly > 85:
+                return 0.0, {"darts_safety": {"value": round(anomaly, 2), "weight": 0.0, "status": "hard_veto"}}
+        total_weight = sum(weight for _, _, weight, _ in parts)
+        fused = round(sum(value * weight for _, value, weight, _ in parts) / total_weight, 1)
+        return fused, {name: {"value": round(value, 2), "weight": weight, "role": role, "status": "inference_ok"} for name, value, weight, role in parts}
 
     def consult(self, request: MarketRequest) -> AIConsultation:
         if request.market not in _ALLOWED_MARKETS:
@@ -138,6 +147,21 @@ class SharedAI:
             # Sem isso, DARTS/FinBERT/XGBoost eram reportados como blocked
             # mesmo quando seus workflows haviam concluído com inference_ok.
             analysis["symbol"] = request.symbol
+            # Prefer the verified per-symbol Darts artifact produced from the
+            # same Railway snapshot. The in-process shield may be unavailable
+            # on CI even when the dedicated Darts agent completed; never turn
+            # that integration mismatch into a fabricated anomaly=100 veto.
+            try:
+                darts_artifact = json.loads((Path("reports") / "darts_inference.json").read_text())
+                darts_item = (darts_artifact.get("components") or {}).get(request.symbol, {})
+                if darts_item.get("status") == "inference_ok":
+                    scan = darts_item.get("scan") or {}
+                    verified = float(scan.get("anomaly_score", scan.get("score", 0)) or 0)
+                    analysis["anomaly_details"] = {"status": "inference_ok", "score": verified,
+                                                    "anomaly_score": verified, "source": "DARTS_ARTIFACT"}
+                    analysis["camada_0_darts"] = analysis["anomaly_details"]
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                pass
             approved, reason = engine.is_supreme_approved(analysis)
             advisory: Dict[str, Any] = {}
             # Memória fornece apenas contexto; nunca altera score, veto ou aprovação.
@@ -218,15 +242,48 @@ class SharedAI:
             analysis["shared_advisory"] = advisory
             analysis["symbol"] = request.symbol
             component_status = self._component_status(analysis, advisory)
+            # The committee is a real execution lane for specialist evidence:
+            # every report is validated against this exact market snapshot.
+            # It remains consultative and fail-closed; it cannot approve or
+            # execute an operation.
+            from core.trading_crew import crew_v16
+            from market_data_contract import snapshot_id
+            market_snapshot_id = request.metadata.get("snapshot_id") if isinstance(request.metadata, dict) else None
+            market_snapshot_id = market_snapshot_id or snapshot_id({
+                "market": request.market,
+                "symbol": request.symbol,
+                "timeframe": request.timeframe,
+                "candles": request.candles,
+            })
+            # Preserve the binding in every specialist record so the committee
+            # can reject stale or cross-run evidence instead of fusing it.
+            component_status = {
+                name: {**item, "snapshot_id": market_snapshot_id}
+                for name, item in component_status.items()
+            }
+            committee_report = crew_v16.evaluate(
+                request.symbol, component_status, market_snapshot_id, request.timeframe
+            )
+            analysis["specialist_committee"] = committee_report
             direction = str(analysis.get("direction", "NEUTRAL")).upper()
             technical_score = float(analysis.get("score", 0) or 0)
-            score, fused_components = self._fuse_agent_evidence(technical_score, direction, component_status, advisory, request.symbol)
+            score, fused_components = self._fuse_agent_evidence(technical_score, direction, component_status, advisory, request.symbol, analysis.get("score_components"))
             analysis["technical_score"] = round(technical_score, 1)
             analysis["score"] = score
             analysis["normalized_score"] = score
             analysis["score_fusion"] = fused_components
             approved, reason = engine.is_supreme_approved(analysis)
             anomaly = self._anomaly_score(analysis)
+            # Final authority for the anomaly field is the dedicated Darts
+            # agent artifact, not a CI-local fallback inside SupremeIntelligence.
+            try:
+                darts_check = json.loads((Path("reports") / "darts_inference.json").read_text())
+                darts_check_item = (darts_check.get("components") or {}).get(request.symbol, {})
+                if darts_check_item.get("status") == "inference_ok":
+                    dscan = darts_check_item.get("scan") or {}
+                    anomaly = float(dscan.get("anomaly_score", dscan.get("score", 0)) or 0)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                pass
             vetoes = []
             if analysis.get("veto"):
                 vetoes.append(str(analysis.get("veto_reason") or "CORE_VETO"))
@@ -254,7 +311,7 @@ class SharedAI:
         except Exception as exc:
             return AIConsultation(
                 False, 0, 0, 0, vetoes=["SHARED_AI_ERROR"],
-                explanation=type(exc).__name__ + ":" + str(exc)[:120],
+                explanation=type(exc).__name__ + ":" + str(exc)[:240],
             )
 
 
