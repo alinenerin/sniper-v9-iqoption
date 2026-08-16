@@ -21,7 +21,7 @@ MIN_M1 = int(os.getenv('MIN_M1_CANDLES', '1000'))
 MIN_M3 = int(os.getenv('MIN_M3_CANDLES', '30'))
 MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
 # Darts requires >=1000 M1 candles for its training window.
-REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '1200'))
+REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '1000'))
 REQUEST_M5 = int(os.getenv('REQUEST_M5_CANDLES', '100'))
 
 
@@ -167,6 +167,22 @@ for start in range(0, len(symbols), 2):
         for symbol in chunk:
             errors[symbol] = type(exc).__name__
 
+# A successful batch response can still be an old gateway cache. Treat stale
+# candles exactly like an empty response so the per-symbol direct endpoint is
+# attempted before the scan is rejected. Never pass stale evidence downstream.
+def fresh_enough(rows):
+    timestamps = [float(row.get('timestamp')) for row in rows
+                  if isinstance(row, dict) and row.get('timestamp') is not None]
+    return bool(timestamps) and (time.time() - max(timestamps)) <= max_age
+
+for symbol, item in collected.items():
+    rows = (item.get('m1') or {}).get('candles') or []
+    if rows and not fresh_enough(rows):
+        errors[f'stale_batch:{symbol}'] = 'FORCED_DIRECT_REFRESH'
+        for key in ('m1', 'm3', 'm5'):
+            item[key] = {'candles': [], 'source': 'STALE_BATCH_REJECTED',
+                         'symbol': symbol, 'read_only': True}
+
 # Retry only symbols that remained empty after the first sweep. This is a
 # bounded recovery mode: it improves resilience without inventing candles.
 empty_symbols = [s for s, item in collected.items()
@@ -194,7 +210,8 @@ if empty_symbols:
 # A non-empty response is not necessarily sufficient. Recover every symbol
 # whose batch/direct response is below the contract threshold, including
 # partial payloads such as 30 M1 candles for GBPUSD.
-for recovery_attempt in range(1, 7):
+# Bound recovery to keep a live scan within its operational latency budget.
+for recovery_attempt in range(1, 3):
     short_symbols = [
         s for s, item in collected.items()
         if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
