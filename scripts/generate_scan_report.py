@@ -196,6 +196,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         )) if m3_candles else None
         # Dedicated Darts artifact is authoritative before timeframe selection.
+        verified_anomaly = None
         try:
             d_art = json.loads((Path("reports") / "darts_inference.json").read_text())
             d_item = (d_art.get("components") or {}).get(symbol, {})
@@ -206,7 +207,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 if m3_consultation is not None: object.__setattr__(m3_consultation, "anomaly_score", verified_anomaly)
         except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
             pass
-        tf_decision = select_timeframe(candles, m3_candles, consultation, m3_consultation, is_otc=(market == "otc"))
+        tf_decision = select_timeframe(candles, m3_candles, consultation, m3_consultation, is_otc=(market == "otc"), verified_anomaly=verified_anomaly)
         selected_tf = tf_decision.get("selected")
         if not selected_tf:
             # Preserve every specialist report even when the committee decides
