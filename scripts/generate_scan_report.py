@@ -253,6 +253,19 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         }
         result.update(_score_separation(market, consultation.score, chart_components,
                                         candles, result.get("direction_calculated")))
+        # Do not discard the 70-79 tier: label it CONDITIONAL for review.
+        # Final approval still requires the configured Diamond threshold and
+        # all hard vetoes to be clear.
+        conditional_min = float(getattr(TRADING_CONFIG, "conditional_threshold", 70.0))
+        diamond_min = float(getattr(TRADING_CONFIG, "diamond_threshold", 80.0))
+        hard_vetoes = {"DIRECTION_UNCONFIRMED", "STALE_CANDLE_FOR_2M_MANUAL_EXPIRY", "TIMEFRAME_AI_VETO"}
+        if conditional_min <= float(consultation.score or 0) < diamond_min and not (set(consultation.vetoes or []) & hard_vetoes):
+            result["status"] = "conditional"
+            result["operational_status"] = "CONDITIONAL_REQUIRES_MANUAL_REVIEW"
+            result["conditional"] = True
+            result["approved"] = False
+            result["vetoes"] = [v for v in result.get("vetoes", []) if not str(v).startswith("SCORE_BELOW_MINIMUM")]
+
         if market in ('binary', 'otc') and not result.get('timing_policy', {}).get('valid', False):
             result.setdefault('vetoes', []).append('STALE_CANDLE_FOR_2M_MANUAL_EXPIRY')
             result['approved'] = False
