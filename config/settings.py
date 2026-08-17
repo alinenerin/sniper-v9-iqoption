@@ -83,6 +83,8 @@ class TradingConfig:
     # 💰 SCORE DIAMANTE — LIMIARES
     # =========================================================================
     supreme_threshold: float = 88.0   # SUPREME (88-100) → Execução Pesada
+    candidate_threshold: float = 65.0  # Triagem mínima antes da confirmação pesada
+    conditional_threshold: float = 70.0  # Candidato condicional
     diamond_threshold: float = 80.0   # DIAMOND (80-87) → Execução Padrão
     noise_threshold: float = 75.0     # Abaixo disso = RUÍDO → SILÊNCIO
     
