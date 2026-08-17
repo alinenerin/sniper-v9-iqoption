@@ -17,7 +17,7 @@ class GitHubScanBridge:
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json"})
 
-    def dispatch(self, symbols: list[str], include_otc: bool = False, otc_only: bool = False, ref: str = "main") -> Dict[str, Any]:
+    def dispatch(self, symbols: list[str], include_otc: bool = False, otc_only: bool = False, fast: bool = False, ref: str = "main") -> Dict[str, Any]:
         safe_symbols = [s.upper() for s in symbols if s and s.replace("-", "").isalnum()][:20]
         if not safe_symbols:
             raise ValueError("SYMBOLS_REQUIRED")
@@ -27,11 +27,11 @@ class GitHubScanBridge:
         dispatched_at = time.time()
         response = self.session.post(
             f"{API}/repos/{self.repo}/actions/workflows/{WORKFLOW}/dispatches",
-            json={"ref": ref, "inputs": {"symbols": " ".join(safe_symbols), "include_otc": str(bool(include_otc)).lower(), "otc_only": str(bool(otc_only)).lower()}},
+            json={"ref": ref, "inputs": {"symbols": " ".join(safe_symbols), "include_otc": str(bool(include_otc)).lower(), "otc_only": str(bool(otc_only)).lower(), "fast_mode": str(bool(fast)).lower()}},
             timeout=30,
         )
         response.raise_for_status()
-        return {"dispatched": True, "workflow": WORKFLOW, "repo": self.repo, "ref": ref, "dispatched_at": dispatched_at, "symbols": safe_symbols, "include_otc": include_otc, "otc_only": otc_only, "execution_allowed": False}
+        return {"dispatched": True, "workflow": WORKFLOW, "repo": self.repo, "ref": ref, "dispatched_at": dispatched_at, "symbols": safe_symbols, "include_otc": include_otc, "otc_only": otc_only, "fast": fast, "execution_allowed": False}
 
     def run_after(self, dispatched_at: float, timeout_seconds: int = 120) -> Dict[str, Any]:
         deadline = time.time() + timeout_seconds
