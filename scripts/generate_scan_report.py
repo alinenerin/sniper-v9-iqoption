@@ -273,6 +273,7 @@ def main() -> int:
     requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
+    fast_mode = os.getenv("FAST_MODE", "false").lower() == "true"
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
     macro_path = Path("reports/macro_data.json")
@@ -385,7 +386,7 @@ def main() -> int:
         },
         "market_data": market_data,
         "macro_data": macro_data,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "fast_mode": fast_mode, "source": "IQ_OPTION_RAILWAY_READ_ONLY"},
         "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
         "evidence_manifest": evidence_manifest({
             **{name: comp for item in all_items for name, comp in (item.get("components") or {}).items()},
@@ -397,6 +398,7 @@ def main() -> int:
             "analysis": {"blocked_is_not_zero": True, "score_policy": "normalized_over_executed_components_only"}
         },
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
+        "lane": "fast_read_only" if fast_mode else "full_read_only",
     }
     Path("reports").mkdir(exist_ok=True)
     Path("reports/latest_scan.json").write_text(json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n")
