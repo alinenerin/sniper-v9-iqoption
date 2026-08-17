@@ -14,7 +14,7 @@ def main() -> int:
     parser.add_argument("--fast", action="store_true", help="fast IQ read-only lane; heavy agents remain advisory")
     args = parser.parse_args()
     bridge = GitHubScanBridge()
-    result = bridge.dispatch(args.symbols, include_otc=args.otc, otc_only=args.otc, fast=args.fast)
+    result = bridge.dispatch(args.symbols, include_otc=args.otc, otc_only=args.otc, fast=(not args.full or args.fast))
     if not args.wait:
         print(json.dumps(result, ensure_ascii=False)); return 0
     run = bridge.run_after(result["dispatched_at"])
