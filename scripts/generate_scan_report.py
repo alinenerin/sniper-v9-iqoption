@@ -274,6 +274,8 @@ def main() -> int:
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
     fast_mode = os.getenv("FAST_MODE", "false").lower() == "true"
+    requested_symbols = os.getenv("REQUESTED_SYMBOLS", " ".join(symbols))
+    selected_symbols = os.getenv("SELECTED_SYMBOLS", " ".join(symbols))
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
     macro_path = Path("reports/macro_data.json")
@@ -386,7 +388,7 @@ def main() -> int:
         },
         "market_data": market_data,
         "macro_data": macro_data,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "fast_mode": fast_mode, "source": "IQ_OPTION_RAILWAY_READ_ONLY"},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "fast_mode": fast_mode, "requested_symbols": requested_symbols.split(), "selected_symbols": selected_symbols.split(), "source": "IQ_OPTION_RAILWAY_READ_ONLY"},
         "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
         "evidence_manifest": evidence_manifest({
             **{name: comp for item in all_items for name, comp in (item.get("components") or {}).items()},
