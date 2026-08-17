@@ -48,7 +48,7 @@ def select_timeframe(m1_candles, m3_candles, m1_ai: Any, m3_ai: Any, is_otc: boo
         return {"selected": None, "decision": "WAIT", "reason": "TIMEFRAME_DATA_INSUFFICIENT", "candidates": []}
     candidates.sort(key=lambda x: x["composite"], reverse=True)
     best = candidates[0]
-    if best["composite"] < 0 or best["ai_score"] < TRADING_CONFIG.diamond_threshold or best["anomaly"] > 85:
+    if best["composite"] < 0 or best["ai_score"] < getattr(TRADING_CONFIG, "candidate_threshold", 65.0) or best["anomaly"] > 85:
         return {"selected": None, "decision": "WAIT", "reason": "TIMEFRAME_AI_VETO", "candidates": candidates}
     if len(candidates) > 1 and abs(best["composite"] - candidates[1]["composite"]) < 2:
         return {"selected": None, "decision": "WAIT", "reason": "TIMEFRAME_CONSENSUS_TIE", "candidates": candidates}
