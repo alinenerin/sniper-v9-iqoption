@@ -274,8 +274,6 @@ def main() -> int:
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
     fast_mode = os.getenv("FAST_MODE", "false").lower() == "true"
-    requested_symbols = os.getenv("REQUESTED_SYMBOLS", " ".join(symbols))
-    selected_symbols = os.getenv("SELECTED_SYMBOLS", " ".join(symbols))
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
     macro_path = Path("reports/macro_data.json")
@@ -291,6 +289,8 @@ def main() -> int:
         symbols = requested
         if otc_only:
             symbols = [x if x.upper().endswith("-OTC") else x.upper() + "-OTC" for x in symbols]
+    requested_symbols = os.getenv("REQUESTED_SYMBOLS", " ".join(requested))
+    selected_symbols = os.getenv("SELECTED_SYMBOLS", " ".join(symbols))
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
     # Every lane and specialist artifact must bind to this immutable input snapshot.
