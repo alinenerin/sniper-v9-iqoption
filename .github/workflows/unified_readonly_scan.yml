@@ -41,11 +41,11 @@ jobs:
       ANALYSIS_ONLY: '1'
       EXECUTION_ALLOWED: 'false'
       EXECUTOR_ENABLED: 'false'
-      INCLUDE_OTC: ${{ inputs.include_otc }}
-      OTC_ONLY: ${{ inputs.otc_only }}
-      SYMBOLS: ${{ inputs.symbols }}
-      MARKET: ${{ inputs.market }}
-      FAST_MODE: ${{ inputs.fast_mode }}
+      INCLUDE_OTC: ${{ github.event.inputs.include_otc }}
+      OTC_ONLY: ${{ github.event.inputs.otc_only }}
+      SYMBOLS: ${{ github.event.inputs.symbols }}
+      MARKET: ${{ github.event.inputs.market }}
+      FAST_MODE: ${{ github.event.inputs.fast_mode }}
       LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
       MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
     steps:
@@ -81,10 +81,10 @@ jobs:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: python scripts/fetch_railway_market.py
       - name: Fetch canonical DXY/VIX macro snapshot
-        if: inputs.fast_mode != true
+        if: github.event.inputs.fast_mode != 'true'
         run: python scripts/fetch_tradingview_macro.py
       - name: Prepare fast lane advisory artifacts
-        if: inputs.fast_mode == true
+        if: github.event.inputs.fast_mode == 'true'
         run: |
           mkdir -p reports
           python - <<'PY'
@@ -102,7 +102,7 @@ jobs:
           path: ~/.cache/huggingface
           key: finbert-prosusai-${{ runner.os }}-v1
       - name: Run intelligence modules in parallel (read-only)
-        if: inputs.fast_mode != true
+        if: github.event.inputs.fast_mode != 'true'
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           HF_HOME: ~/.cache/huggingface
