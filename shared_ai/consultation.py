@@ -116,9 +116,30 @@ class SharedAI:
         times = report_item("timesfm_inference.json")
         if component_status.get("timesfm", {}).get("status") == "inference_ok":
             td = str((times.get("forecast") or times).get("direction", "")).upper()
-            conf = float((times.get("forecast") or times).get("confidence", 0.5) or 0.5)
+            conf = max(0.0, min(1.0, float((times.get("forecast") or times).get("confidence", 0.5) or 0.5)))
             aligned = td in (("UP",) if direction in ("CALL", "BUY") else ("DOWN",))
             parts.append(("timesfm", 50.0 + (conf * 50.0 if aligned else -conf * 50.0), cfg.ai_ensemble_weight * 0.50, "ai"))
+
+        # FinBERT is a real specialist input.  Previously its dedicated
+        # artifact was only reported in component_status while the fusion
+        # engine silently ignored it whenever the legacy MarketAux adapter
+        # had no score.  Convert the strongest verified label into a bounded,
+        # direction-relative evidence value; absence remains unavailable and
+        # is never converted to zero.
+        finbert = report_item("finbert_inference.json")
+        if ("sentiment" not in {name for name, *_ in parts}
+                and component_status.get("finbert", {}).get("status") == "inference_ok"
+                and isinstance(finbert.get("labels"), list) and finbert.get("labels")):
+            label = max(finbert["labels"], key=lambda item: float(item.get("score", 0.0) or 0.0))
+            polarity = str(label.get("label", "")).upper()
+            confidence = max(0.0, min(1.0, float(label.get("score", 0.0) or 0.0)))
+            positive = any(token in polarity for token in ("POS", "POSITIVE", "BULL"))
+            negative = any(token in polarity for token in ("NEG", "NEGATIVE", "BEAR"))
+            if positive or negative:
+                aligned = positive == (direction in ("CALL", "BUY"))
+                finbert_value = 50.0 + (confidence * 50.0 if aligned else -confidence * 50.0)
+                parts.append(("finbert", finbert_value, cfg.sentiment_weight, "news_sentiment"))
+
         darts = report_item("darts_inference.json")
         if component_status.get("darts", {}).get("status") == "inference_ok":
             scan = darts.get("scan") or {}
