@@ -30,7 +30,8 @@ def select_timeframe(m1_candles, m3_candles, m1_ai: Any, m3_ai: Any, is_otc: boo
             continue
         score = float(getattr(ai, "score", 0) or 0)
         probability = float(getattr(ai, "probability", 0) or 0)
-        anomaly = float(getattr(ai, "anomaly_score", 100) or 100)
+        raw_anomaly = getattr(ai, "anomaly_score", None)
+        anomaly = 100.0 if raw_anomaly is None else float(raw_anomaly)
         # Prefer the verified per-symbol Darts result from the same snapshot.
         # The report generator passes this value to avoid using a stale/default
         # in-process anomaly score during timeframe selection.
