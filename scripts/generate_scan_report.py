@@ -402,7 +402,7 @@ def main() -> int:
         "market_data": market_data,
         "macro_data": macro_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "fast_mode": fast_mode, "requested_symbols": requested_symbols.split(), "selected_symbols": selected_symbols.split(), "source": "IQ_OPTION_RAILWAY_READ_ONLY"},
-        "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
+        "filters": {"candidate_threshold": 65, "conditional_threshold": 70, "score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
         "evidence_manifest": evidence_manifest({
             **{name: comp for item in all_items for name, comp in (item.get("components") or {}).items()},
             **{name: report for item in all_items for name, report in ((item.get("committee_report") or {}).get("reports") or {}).items()},
