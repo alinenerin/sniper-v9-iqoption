@@ -11,9 +11,10 @@ def main() -> int:
     parser.add_argument("--symbols", nargs="+", required=True)
     parser.add_argument("--otc", action="store_true", help="OTC-only scan")
     parser.add_argument("--wait", action="store_true")
+    parser.add_argument("--fast", action="store_true", help="fast IQ read-only lane; heavy agents remain advisory")
     args = parser.parse_args()
     bridge = GitHubScanBridge()
-    result = bridge.dispatch(args.symbols, include_otc=args.otc, otc_only=args.otc)
+    result = bridge.dispatch(args.symbols, include_otc=args.otc, otc_only=args.otc, fast=args.fast)
     if not args.wait:
         print(json.dumps(result, ensure_ascii=False)); return 0
     run = bridge.run_after(result["dispatched_at"])
