@@ -80,11 +80,14 @@ jobs:
         env:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: python scripts/fetch_railway_market.py
+      - name: Select top three fast candidates
+        if: github.event.inputs.fast_mode == 'true'
+        run: python scripts/select_fast_candidates.py
       - name: Fetch canonical DXY/VIX macro snapshot
         if: github.event.inputs.fast_mode != 'true'
         run: python scripts/fetch_tradingview_macro.py
-      - name: Prepare fast lane advisory artifacts
-        if: github.event.inputs.fast_mode == 'true'
+      - name: Prepare fast lane advisory artifacts (disabled; heavy confirmation runs on top three)
+        if: false
         run: |
           mkdir -p reports
           python - <<'PY'
@@ -102,7 +105,6 @@ jobs:
           path: ~/.cache/huggingface
           key: finbert-prosusai-${{ runner.os }}-v1
       - name: Run intelligence modules in parallel (read-only)
-        if: github.event.inputs.fast_mode != 'true'
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           HF_HOME: ~/.cache/huggingface
