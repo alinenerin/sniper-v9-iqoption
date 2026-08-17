@@ -18,6 +18,11 @@ on:
         required: true
         default: false
         type: boolean
+      fast_mode:
+        description: 'Usar lane rápido read-only para sinais atuais'
+        required: true
+        default: false
+        type: boolean
       market:
         description: 'Mercado do pipeline: binary, forex ou unified'
         required: true
@@ -40,6 +45,7 @@ jobs:
       OTC_ONLY: ${{ inputs.otc_only }}
       SYMBOLS: ${{ inputs.symbols }}
       MARKET: ${{ inputs.market }}
+      FAST_MODE: ${{ inputs.fast_mode }}
       LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
       MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
     steps:
@@ -75,13 +81,28 @@ jobs:
           RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
         run: python scripts/fetch_railway_market.py
       - name: Fetch canonical DXY/VIX macro snapshot
+        if: inputs.fast_mode != true
         run: python scripts/fetch_tradingview_macro.py
+      - name: Prepare fast lane advisory artifacts
+        if: inputs.fast_mode == true
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json
+          base={'status':'blocked','read_only':True,'execution_allowed':False,'components':{}}
+          for name in ('darts_inference','timesfm_inference','xgboost_inference'):
+              json.dump(base,open('reports/'+name+'.json','w'))
+          finbert=dict(base, provider='Finnhub', fetch_diagnostics={'valid_json':True})
+          json.dump(finbert,open('reports/finbert_inference.json','w'))
+          json.dump({'ok':False,'reason':'FAST_MODE_MACRO_ADVISORY_SKIPPED','symbols':{}},open('reports/macro_data.json','w'))
+          PY
       - name: Cache FinBERT model
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
           key: finbert-prosusai-${{ runner.os }}-v1
       - name: Run intelligence modules in parallel (read-only)
+        if: inputs.fast_mode != true
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           HF_HOME: ~/.cache/huggingface
