@@ -194,6 +194,31 @@ jobs:
               assert set(('darts', 'finbert')).issubset(item.get('components', {}))
           print('unified_report=OK; component_statuses=OK; execution=BLOCKED')
           PY
+      - name: Publish scan summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.load(open('reports/latest_scan.json'))
+          rows=[]
+          for item in report.get('binary',{}).get('analyses',[]):
+              rows.append({
+                  'symbol': item.get('symbol'),
+                  'score': item.get('score'),
+                  'approved': item.get('approved'),
+                  'direction': item.get('direction_calculated'),
+                  'vetoes': item.get('vetoes',[]),
+                  'fusion': item.get('score_fusion',{}),
+              })
+          out=['## Binary Quant X — scan read-only', '', f"Schema: {report.get('schema_version')}", f"Execution allowed: {report.get('execution_allowed')}", '', '| Par | Score | Aprovado | Direção | Vetos |', '|---|---:|:---:|---|---|']
+          for row in rows:
+              veto='; '.join(map(str,row['vetoes'])) or '—'
+              out.append(f"| {row['symbol']} | {row['score']} | {row['approved']} | {row['direction']} | {veto} |")
+          Path('scan_summary.md').write_text('\n'.join(out)+'\n')
+          Path('reports/scan_summary.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2))
+          with open('${GITHUB_STEP_SUMMARY}','a') as f: f.write('\n'.join(out)+'\n')
+          print('scan_summary=published',len(rows))
+          PY
       - name: Upload latest scan
         uses: actions/upload-artifact@v4
         with:
