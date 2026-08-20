@@ -31,6 +31,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({'status':'ok','service':'omni-router','providers':['groq','openrouter'],'read_only':True,'execution_allowed':False})
     def do_POST(self):
         if not self.path.startswith('/v1/consensus'):return self.send_json({'status':'blocked','reason':'NOT_FOUND','execution_allowed':False},404)
+        expected=os.getenv('OMNI_API_KEY','')
+        if expected and self.headers.get('X-API-Key') != expected:
+            return self.send_json({'status':'blocked','reason':'UNAUTHORIZED','execution_allowed':False},401)
         try:payload=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0')) or 0).decode() or '{}')
         except Exception:return self.send_json({'status':'blocked','reason':'INVALID_JSON','execution_allowed':False},400)
         self.send_json(consensus(payload))
