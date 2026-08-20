@@ -78,7 +78,7 @@ jobs:
           python audit_readonly_validation.py
       - name: Fetch live market data from Railway
         env:
-          RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
         run: python scripts/fetch_railway_market.py
       - name: Select top three fast candidates
         if: github.event.inputs.fast_mode == 'true'
