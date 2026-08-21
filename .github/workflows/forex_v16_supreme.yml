@@ -8,9 +8,6 @@ on:
         required: true
         default: 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY'
         type: string
-  schedule:
-    - cron: '0 7-20 * * 1-5'
-    - cron: '0 0-5 * * 2-6'
 
 env:
   ANALYSIS_ONLY: '1'
@@ -50,7 +47,7 @@ jobs:
           PY
       - name: Fetch fresh Forex market data only
         env:
-          RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
         run: python scripts/fetch_railway_market.py
       - name: Run Forex-only read-only inference
         run: |
