@@ -282,6 +282,23 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 "execution_allowed": False, **timing}
 
 
+def _safe_symbol_entry(by_symbol: dict[str, Any], symbol: str) -> dict[str, Any]:
+    """Return a normalized gateway entry; malformed data blocks only that symbol."""
+    value = by_symbol.get(symbol, {}) if isinstance(by_symbol, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def _safe_component_analysis(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime, m3_candles: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    try:
+        return _analyse(market, symbol, candles, observed_at, m3_candles)
+    except Exception as exc:
+        reason = "ANALYSIS_ERROR:" + type(exc).__name__
+        return {"market": market, "symbol": symbol, "status": "blocked",
+                "reason": reason, "components": _blocked_components(reason),
+                "execution_allowed": False,
+                **_analysis_timing(market, {}, candles, observed_at)}
+
+
 def main() -> int:
     requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
@@ -313,16 +330,25 @@ def main() -> int:
     run_binary = requested_market in ('unified', 'binary', 'otc')
     if otc_only:
         for symbol in symbols:
-            binary.append(_analyse("otc", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or by_symbol.get(symbol, {}).get("candles") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or by_symbol.get(symbol, {}).get("m3_candles") or {}))))
+            entry = _safe_symbol_entry(by_symbol, symbol)
+            m1 = _candles(entry.get("m1") or entry.get("candles") or {})
+            m3 = _candles(entry.get("m3") or entry.get("m3_candles") or {})
+            binary.append(_safe_component_analysis("otc", symbol, m1, observed_at, m3))
     else:
         for symbol in symbols:
+            entry = _safe_symbol_entry(by_symbol, symbol)
+            m1 = _candles(entry.get("m1") or entry.get("candles") or {})
+            m3 = _candles(entry.get("m3") or entry.get("m3_candles") or {})
             if run_forex:
-                forex.append(_analyse("forex", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or by_symbol.get(symbol, {}).get("candles") or {})), observed_at))
+                forex.append(_safe_component_analysis("forex", symbol, m1, observed_at))
             if run_binary:
-                binary.append(_analyse("binary", symbol, _candles((by_symbol.get(symbol, {}).get("m1") or by_symbol.get(symbol, {}).get("candles") or {})), observed_at, _candles((by_symbol.get(symbol, {}).get("m3") or by_symbol.get(symbol, {}).get("m3_candles") or {}))))
+                binary.append(_safe_component_analysis("binary", symbol, m1, observed_at, m3))
             if include_otc:
                 otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
-                binary.append(_analyse("otc", otc_symbol, _candles((by_symbol.get(otc_symbol, {}).get("m1") or by_symbol.get(otc_symbol, {}).get("candles") or {})), observed_at, _candles((by_symbol.get(otc_symbol, {}).get("m3") or by_symbol.get(otc_symbol, {}).get("m3_candles") or {}))))
+                otc_entry = _safe_symbol_entry(by_symbol, otc_symbol)
+                otc_m1 = _candles(otc_entry.get("m1") or otc_entry.get("candles") or {})
+                otc_m3 = _candles(otc_entry.get("m3") or otc_entry.get("m3_candles") or {})
+                binary.append(_safe_component_analysis("otc", otc_symbol, otc_m1, observed_at, otc_m3))
 
     # Explicit pipeline dashboard: blocked intelligence is metadata, never a score zero.
     all_items = forex + binary
@@ -338,7 +364,14 @@ def main() -> int:
             "m3": {"status": "inference_ok" if len(m3_rows) >= 10 else "blocked", "reason": None if len(m3_rows) >= 10 else "INSUFFICIENT_M3"},
             "m5": {"status": "inference_ok" if len(m5_rows) >= 10 else "blocked", "reason": None if len(m5_rows) >= 10 else "INSUFFICIENT_M5"},
         })
-        item["committee_report"] = crew_v16.evaluate(item.get("symbol"), committee_components, market_snapshot_id, item.get("timeframe"))
+        try:
+            item["committee_report"] = crew_v16.evaluate(item.get("symbol"), committee_components, market_snapshot_id, item.get("timeframe"))
+        except Exception as exc:
+            # Committee evidence is advisory; it must not destroy the canonical read-only report.
+            item["committee_report"] = {"status": "blocked", "reason": "COMMITTEE_ERROR:" + type(exc).__name__,
+                                        "execution_allowed": False, "reports": {}}
+            item.setdefault("vetoes", []).append("COMMITTEE_EVIDENCE_BLOCKED")
+            item["approved"] = False
     intelligence_status = {}
     for item in all_items:
         for name, component in (item.get("components") or {}).items():
@@ -401,7 +434,7 @@ def main() -> int:
         },
         "market_data": market_data,
         "macro_data": macro_data,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "fast_mode": fast_mode, "requested_symbols": requested_symbols.split(), "selected_symbols": selected_symbols.split(), "source": "IQ_OPTION_RAILWAY_READ_ONLY"},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "fast_mode": fast_mode, "requested_symbols": requested_symbols.split(), "selected_symbols": selected_symbols.split(), "source": "IQ_OPTION_DIRECT_READ_ONLY"},
         "filters": {"candidate_threshold": 65, "conditional_threshold": 70, "score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
         "evidence_manifest": evidence_manifest({
             **{name: comp for item in all_items for name, comp in (item.get("components") or {}).items()},
