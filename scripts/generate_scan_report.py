@@ -352,10 +352,16 @@ def main() -> int:
 
     # Explicit pipeline dashboard: blocked intelligence is metadata, never a score zero.
     all_items = forex + binary
-    from core.trading_crew import crew_v16
+    # The committee is advisory. Its import or one malformed symbol must never
+    # prevent publication of the canonical read-only report.
+    try:
+        from core.trading_crew import crew_v16
+    except Exception:
+        crew_v16 = None
     for item in all_items:
         committee_components = dict(item.get("components") or {})
-        symbol_data = (market_data.get("symbols") or {}).get(item.get("symbol"), {})
+        raw_symbol_data = (market_data.get("symbols") or {}).get(item.get("symbol"), {})
+        symbol_data = raw_symbol_data if isinstance(raw_symbol_data, dict) else {}
         m1_rows = _candles(symbol_data.get("m1") or symbol_data.get("candles") or {})
         m3_rows = _candles(symbol_data.get("m3") or symbol_data.get("m3_candles") or {})
         m5_rows = _candles(symbol_data.get("m5") or symbol_data.get("m5_candles") or {})
@@ -365,6 +371,8 @@ def main() -> int:
             "m5": {"status": "inference_ok" if len(m5_rows) >= 10 else "blocked", "reason": None if len(m5_rows) >= 10 else "INSUFFICIENT_M5"},
         })
         try:
+            if crew_v16 is None:
+                raise RuntimeError("COMMITTEE_IMPORT_BLOCKED")
             item["committee_report"] = crew_v16.evaluate(item.get("symbol"), committee_components, market_snapshot_id, item.get("timeframe"))
         except Exception as exc:
             # Committee evidence is advisory; it must not destroy the canonical read-only report.
