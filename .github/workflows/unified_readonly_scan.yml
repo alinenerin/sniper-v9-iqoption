@@ -144,9 +144,11 @@ jobs:
                     'candle_timing': {'candle_count': 0, 'last_candle_timestamp_utc': None},
                     'expiration': {'hypothetical_result': None}, 'execution_allowed': False}
           otc = os.getenv('OTC_ONLY', 'false').lower() == 'true'
+          market_name = os.getenv('MARKET', 'binary').lower()
           binary = [blocked('otc' if otc else 'binary', (s if otc and s.endswith('-OTC') else s + '-OTC' if otc else s)) for s in symbols]
-          forex = [] if otc else [blocked('forex', s) for s in symbols]
-          report = {'schema_version': '2.2', 'mode': 'read_only', 'execution_allowed': False, 'timestamp_utc': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(), 'forex': {'status': 'completed' if not otc else 'not_requested', 'analyses': forex}, 'binary': {'status': 'completed', 'analyses': binary}, 'market_data': market, 'macro_data': {}, 'inputs': {'symbols': symbols, 'include_otc': not otc and os.getenv('INCLUDE_OTC','false').lower() == 'true', 'otc_only': otc}, 'filters': {'zero_gale': True}, 'error': 'REPORT_GENERATOR_FAILED'}
+          forex = [] if otc or market_name == 'binary' else [blocked('forex', s) for s in symbols]
+          binary_out = binary if market_name in ('binary', 'unified', 'otc') or otc else []
+          report = {'schema_version': '2.2', 'mode': 'read_only', 'execution_allowed': False, 'timestamp_utc': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(), 'forex': {'status': 'completed' if market_name in ('forex', 'unified') and not otc else 'not_requested', 'analyses': forex}, 'binary': {'status': 'completed' if binary_out or market_name in ('binary', 'unified', 'otc') or otc else 'not_requested', 'analyses': binary_out}, 'market_data': market, 'macro_data': {}, 'inputs': {'symbols': symbols, 'include_otc': not otc and os.getenv('INCLUDE_OTC','false').lower() == 'true', 'otc_only': otc}, 'filters': {'zero_gale': True}, 'error': 'REPORT_GENERATOR_FAILED'}
           Path('reports/latest_scan.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
           PYFALLBACK
           fi
