@@ -25,7 +25,7 @@ REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '1000'))
 REQUEST_M5 = int(os.getenv('REQUEST_M5_CANDLES', '100'))
 
 
-def get(path, timeout=60, attempts=3):
+def get(path, timeout=30, attempts=2):
     last = None
     for attempt in range(attempts):
         try:
@@ -57,7 +57,7 @@ def discover_symbols():
     # provider discovery must never expand the operational universe.
     from market_universes import REAL_SYMBOLS, OTC_SYMBOLS
     return list(OTC_SYMBOLS if otc_only else REAL_SYMBOLS)
-    payload = get('/api/market/assets?instrument=all', timeout=60)
+    payload = get('/api/market/assets?instrument=all', timeout=30)
     # Assets endpoint also contains stocks/crypto. Keep currency pairs only.
     rows = payload.get('assets', []) if isinstance(payload, dict) else []
     normalized = []
@@ -85,7 +85,7 @@ def discover_symbols():
 
 
 health = None
-for _ in range(18):
+for _ in range(6):
     try:
         candidate = get('/health', timeout=15, attempts=1)
         if candidate.get('status') == 'connected':
@@ -122,7 +122,7 @@ for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC
     for interval, key in ((60, 'm1'), (180, 'm3'), (300, 'm5')):
         try:
             direct = get('/api/market/candles?' + urllib.parse.urlencode({
-                'symbol': symbol, 'interval': interval, 'count': REQUEST_M1 if interval == 60 else REQUEST_M5}), timeout=120, attempts=3)
+                'symbol': symbol, 'interval': interval, 'count': REQUEST_M1 if interval == 60 else REQUEST_M5}), timeout=45, attempts=3)
             rows = direct.get('candles') or []
             if isinstance(rows, list) and rows:
                 collected[symbol][key] = {'candles': rows, 'source': direct.get('source'),
@@ -133,7 +133,7 @@ for start in range(0, len(symbols), 2):
     chunk = symbols[start:start + 2]
     path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
     try:
-        payload = get(path, timeout=120, attempts=3)
+        payload = get(path, timeout=45, attempts=3)
         for symbol, values in (payload.get('payouts') or {}).items():
             if isinstance(values, dict):
                 batch_payouts[symbol] = values
@@ -155,7 +155,7 @@ for start in range(0, len(symbols), 2):
                     try:
                         direct = get('/api/market/candles?' + urllib.parse.urlencode({
                             'symbol': symbol, 'interval': interval, 'count': REQUEST_M1 if interval == 60 else REQUEST_M5}),
-                            timeout=60, attempts=2)
+                            timeout=30, attempts=2)
                         rows = direct.get('candles') or []
                         if isinstance(rows, list):
                             collected[symbol][key] = {'candles': rows,
@@ -193,7 +193,7 @@ if empty_symbols:
         chunk = empty_symbols[start:start + 2]
         try:
             payload = get('/api/market/snapshot_batch?' + urllib.parse.urlencode(
-                {'pairs': ','.join(chunk)}), timeout=120, attempts=3)
+                {'pairs': ','.join(chunk)}), timeout=45, attempts=3)
             for symbol, data in (payload.get('symbols') or {}).items():
                 if symbol not in collected or not isinstance(data, dict):
                     continue
@@ -236,7 +236,7 @@ for recovery_attempt in range(1, 3):
             try:
                 direct = get('/api/market/candles?' + urllib.parse.urlencode({
                     'symbol': symbol, 'interval': interval, 'count': target}),
-                    timeout=90, attempts=3)
+                    timeout=45, attempts=3)
                 rows = direct.get('candles') or []
                 if isinstance(rows, list) and len(rows) > len(current):
                     collected[symbol][key] = {
