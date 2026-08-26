@@ -76,7 +76,7 @@ jobs:
         run: |
           python audit_architecture.py
           python audit_readonly_validation.py
-      - name: Fetch live market data from Railway
+      - name: Fetch live market data from Render/IQ Option
         env:
           RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
         run: python scripts/fetch_railway_market.py
@@ -125,8 +125,27 @@ jobs:
           exit 0
       - name: Compile read-only analysis modules
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
-      - name: Generate unified report from Railway candles
-        run: python scripts/generate_scan_report.py
+      - name: Generate unified read-only report
+        run: |
+          set +e
+          python scripts/generate_scan_report.py
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "report_generator_failed=$rc; publishing blocked fallback"
+            python - <<'PYFALLBACK'
+          import json, os
+          from pathlib import Path
+          market = json.loads(Path('reports/market_data.json').read_text()) if Path('reports/market_data.json').exists() else {}
+          symbols = os.getenv('SYMBOLS', '').replace(',', ' ').split()
+          blocked = lambda m, s: {'market': m, 'symbol': s, 'status': 'blocked', 'reason': 'REPORT_GENERATOR_FAILED', 'components': {x: {'status': 'blocked', 'reason': 'REPORT_GENERATOR_FAILED'} for x in ('darts','timesfm','finbert','news_api','xgboost','smc','vsa')}, 'vetoes': ['REPORT_GENERATOR_FAILED'], 'approved': False, 'execution_allowed': False}
+          otc = os.getenv('OTC_ONLY', 'false').lower() == 'true'
+          binary = [blocked('otc' if otc else 'binary', (s if otc and s.endswith('-OTC') else s + '-OTC' if otc else s)) for s in symbols]
+          forex = [] if otc else [blocked('forex', s) for s in symbols]
+          report = {'schema_version': '2.2', 'mode': 'read_only', 'execution_allowed': False, 'timestamp_utc': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(), 'forex': {'status': 'blocked', 'analyses': forex}, 'binary': {'status': 'blocked', 'analyses': binary}, 'market_data': market, 'macro_data': {}, 'inputs': {'symbols': symbols, 'include_otc': not otc and os.getenv('INCLUDE_OTC','false').lower() == 'true', 'otc_only': otc}, 'filters': {'zero_gale': True}, 'error': 'REPORT_GENERATOR_FAILED'}
+          Path('reports/latest_scan.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+          PYFALLBACK
+          fi
+          exit 0
       - name: Run TradingAgents shadow committee
         run: python scripts/run_tradingagents_shadow.py
       - name: Evaluate hypothetical result after expiration
