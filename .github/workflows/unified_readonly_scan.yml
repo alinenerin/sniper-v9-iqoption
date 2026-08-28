@@ -179,7 +179,10 @@ jobs:
           assert finbert.get('status') in ('ok', 'blocked', 'error'), finbert.get('status')
           if finbert.get('status') != 'ok':
               print('news_evidence=BLOCKED:', finbert.get('fetch_error') or finbert.get('reason'))
-          assert finbert.get('fetch_diagnostics', {}).get('valid_json') is True
+          # A blocked news provider is valid read-only evidence; only a
+          # successful provider response requires valid JSON.
+          if finbert.get('status') == 'ok':
+              assert finbert.get('fetch_diagnostics', {}).get('valid_json') is True
           assert r['execution_allowed'] is False
           assert r['mode'] == 'read_only'
           assert 'binary' in r and 'forex' in r
