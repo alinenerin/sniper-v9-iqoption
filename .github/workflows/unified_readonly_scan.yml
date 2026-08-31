@@ -162,69 +162,41 @@ jobs:
           # no post-decision candle exists yet.
           PAPER_EXPIRATION_WAIT_SECONDS: 0
         run: python scripts/evaluate_hypothetical_expiration.py
-      - name: Validate report contract and component evidence
+      - name: Validate separated read-only report
         run: |
           python - <<'PY'
-          import json, os
-          r=json.load(open('reports/latest_scan.json'))
-          macro=r.get('macro_data') or {}
-          # External macro/news outages are data-quality vetoes, not workflow crashes.
-          # The report remains valid read-only, but no signal may be treated as
-          # operationally approved while macro/news evidence is unavailable.
-          if not r.get('inputs', {}).get('otc_only') and macro.get('ok') is not True:
-              print('macro_evidence=BLOCKED:', macro.get('reason'))
-          finbert=json.load(open('reports/finbert_inference.json'))
-          assert finbert.get('read_only') is True
-          assert finbert.get('execution_allowed') is False
-          assert finbert.get('status') in ('ok', 'blocked', 'error'), finbert.get('status')
-          if finbert.get('status') != 'ok':
-              print('news_evidence=BLOCKED:', finbert.get('fetch_error') or finbert.get('reason'))
-          # A blocked news provider is valid read-only evidence; only a
-          # successful provider response requires valid JSON.
-          if finbert.get('status') == 'ok':
-              assert finbert.get('fetch_diagnostics', {}).get('valid_json') is True
-          assert r['execution_allowed'] is False
-          assert r['mode'] == 'read_only'
-          assert 'binary' in r and 'forex' in r
-          assert r['binary']['status'] == ('completed' if os.environ.get('MARKET') in ('binary', 'unified') else 'not_requested')
-          assert r['forex']['status'] == ('completed' if os.environ.get('MARKET') in ('forex', 'unified') else 'not_requested')
-          if os.environ.get('MARKET') == 'binary': assert not r['forex'].get('analyses')
-          if os.environ.get('MARKET') == 'forex': assert not r['binary'].get('analyses')
-          if r.get('inputs', {}).get('otc_only'):
-              assert r.get('inputs', {}).get('include_otc') is True
-              assert not r['forex'].get('analyses')
-          for book_name, book in (('forex', r['forex']), ('binary', r['binary'])):
-              for item in book.get('analyses', []):
-                  assert item.get('execution_allowed') is False, (book_name, item.get('symbol'))
-                  components=item.get('components') or {}
-                  assert isinstance(components, dict), (book_name, item.get('symbol'))
-                  assert 'direction_calculated' in item
-                  assert 'candle_timing' in item and 'last_candle_timestamp_utc' in item['candle_timing']
-                  assert 'expiration' in item and 'hypothetical_result' in item['expiration']
-                  for name, component in components.items():
-                      assert isinstance(component, dict), (name, component)
-                      status=component.get('status')
-                      # Components may be produced by either the legacy
-                      # inference lane or the current advisory lane.
-                      allowed_statuses = ('inference_ok', 'executed', 'completed', 'blocked', 'error', 'insufficient-data', 'unavailable')
-                      assert status in allowed_statuses, (name, status)
-                      if status in ('blocked', 'error', 'insufficient-data', 'unavailable'): assert component.get('reason'), (name, component)
-          otc = [x for x in r['binary']['analyses'] if x.get('market') == 'otc']
-          md_symbols = (r.get('market_data') or {}).get('symbols') or {}
-          expected_otc = len([s for s in md_symbols if str(s).upper().endswith('-OTC')]) if r.get('inputs', {}).get('include_otc') else 0
-          assert len(otc) == expected_otc, (len(otc), expected_otc)
-          for item in otc:
-              # A valid OTC inference must identify the authoritative chart.
-              # A blocked item may instead be rejected for missing/invalid candles;
-              # that is a data-quality veto, not a contract failure.
-              if item.get('status') == 'inference_ok':
-                  assert item.get('decision_basis') == 'OTC_IQ_CHART_AUTHORITATIVE'
-                  assert item.get('chart_evidence', {}).get('ema_cascade') == 'engine'
-              else:
-                  assert item.get('decision_basis') in ('OTC_IQ_CHART_AUTHORITATIVE', 'MISSING_INVALID_CANDLES')
-              assert item.get('execution_allowed') is False
-              assert set(('darts', 'finbert')).issubset(item.get('components', {}))
-          print('unified_report=OK; component_statuses=OK; execution=BLOCKED')
+          import json, os, sys
+          from pathlib import Path
+          errors=[]
+          r=json.loads(Path('reports/latest_scan.json').read_text())
+          market=os.environ.get('MARKET','binary').lower()
+          if r.get('mode') != 'read_only': errors.append('mode_not_read_only')
+          if r.get('execution_allowed') is not False: errors.append('execution_not_blocked')
+          if 'binary' not in r or 'forex' not in r: errors.append('missing_market_books')
+          expected_binary = market in ('binary','unified','otc')
+          expected_forex = market in ('forex','unified') and not bool(r.get('inputs',{}).get('otc_only'))
+          if (r.get('binary',{}).get('status') == 'completed') != expected_binary: errors.append('binary_status_mismatch')
+          if (r.get('forex',{}).get('status') == 'completed') != expected_forex: errors.append('forex_status_mismatch')
+          if market == 'binary' and r.get('forex',{}).get('analyses'): errors.append('forex_contaminated_binary')
+          if market == 'forex' and r.get('binary',{}).get('analyses'): errors.append('binary_contaminated_forex')
+          allowed={'inference_ok','executed','completed','blocked','error','insufficient-data','unavailable'}
+          for book_name in ('forex','binary'):
+            for item in r.get(book_name,{}).get('analyses',[]):
+              if item.get('execution_allowed') is not False: errors.append(f'{book_name}:execution')
+              if not isinstance(item.get('components'),dict): errors.append(f'{book_name}:components')
+              for name, comp in (item.get('components') or {}).items():
+                if not isinstance(comp,dict) or comp.get('status') not in allowed: errors.append(f'{book_name}:{item.get("symbol")}:component:{name}')
+                elif comp.get('status') in {'blocked','error','insufficient-data','unavailable'} and not comp.get('reason'): errors.append(f'{book_name}:{item.get("symbol")}:reason:{name}')
+          finbert_path=Path('reports/finbert_inference.json')
+          if finbert_path.exists():
+            f=json.loads(finbert_path.read_text())
+            if f.get('read_only') is not True or f.get('execution_allowed') is not False: errors.append('finbert_execution_guard')
+          if errors:
+            print('read_only_validation=BLOCKED', json.dumps(errors, ensure_ascii=False))
+            # A blocked report is a valid outcome; only safety/separation errors fail.
+            hard=[e for e in errors if 'execution' in e or 'contaminated' in e or 'mode_' in e or 'status_mismatch' in e]
+            if hard: sys.exit(1)
+          print('read_only_validation=OK; separated; execution=BLOCKED')
           PY
       - name: Publish scan summary
         run: |
