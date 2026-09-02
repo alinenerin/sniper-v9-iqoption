@@ -132,6 +132,11 @@ jobs:
           exit 0
       - name: Compile read-only analysis modules
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
+      - name: Refresh final market snapshot before decision
+        env:
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          MAX_CANDLE_AGE_SECONDS: '90'
+        run: python scripts/fetch_railway_market.py
       - name: Generate unified read-only report
         run: |
           set +e
