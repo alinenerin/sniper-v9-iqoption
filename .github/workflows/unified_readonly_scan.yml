@@ -91,7 +91,6 @@ jobs:
         if: github.event.inputs.fast_mode == 'true'
         run: python scripts/select_fast_candidates.py
       - name: Fetch canonical DXY/VIX macro snapshot
-        if: github.event.inputs.fast_mode != 'true'
         run: python scripts/fetch_tradingview_macro.py
       - name: Prepare fast lane advisory artifacts (disabled; heavy confirmation runs on top three)
         if: false
