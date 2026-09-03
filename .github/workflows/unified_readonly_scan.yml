@@ -21,7 +21,7 @@ on:
       fast_mode:
         description: 'Usar lane rápido read-only para sinais atuais'
         required: true
-        default: false
+        default: true
         type: boolean
       market:
         description: 'Mercado do pipeline: binary, forex ou unified'
