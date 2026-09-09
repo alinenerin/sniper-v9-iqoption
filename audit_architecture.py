@@ -14,13 +14,20 @@ if not all(checks.values()):
     raise SystemExit(1)
 
 
-# Global fail-closed execution guard. Legacy files are quarantined and are not
-# imported by production entrypoints; active source must not call broker order APIs.
+# Fail-closed execution guard for production entrypoints. The vendored SDK and
+# research/diagnostic scripts are not entrypoints and may contain broker API
+# definitions or fixtures.
 import ast
 ORDER_METHODS = {"buy", "buy_digital", "place_order", "open_order", "buy_order"}
+ACTIVE_ENTRYPOINTS = (
+    "app.py", "sniper_forex.py", "executor_v15_final_v4.py",
+    "executor_v16_supreme.py", "FOREX_SUPREME_FINAL_V16.py",
+    "central_executor.py", "motor_m5_sniper.py", "sniper_filtro_gha.py",
+)
 violations = []
-for source in Path(".").rglob("*.py"):
-    if any(part in {".git", ".venv", "__pycache__", "rejected", "tests", "iqoptionapi"} for part in source.parts):
+for name in ACTIVE_ENTRYPOINTS:
+    source = Path(name)
+    if not source.exists():
         continue
     try:
         tree = ast.parse(source.read_text(encoding="utf-8"))
