@@ -47,7 +47,7 @@ jobs:
           PY
       - name: Fetch fresh Forex market data only
         env:
-          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
         run: python scripts/fetch_railway_market.py
       - name: Run Forex-only read-only inference
         run: |

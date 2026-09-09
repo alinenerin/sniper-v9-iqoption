@@ -84,7 +84,7 @@ jobs:
         run: |
           python audit_architecture.py
           python audit_readonly_validation.py
-      - name: Warm Render/IQ Option gateway
+      - name: Warm Railway/IQ Option gateway
         env:
           RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
         run: |
@@ -93,7 +93,7 @@ jobs:
             sleep 3
           done
           echo 'Gateway did not warm within the short preflight window; fetch step will fail fast.'
-      - name: Fetch live market data from Render/IQ Option
+      - name: Fetch live market data from Railway/IQ Option
         env:
           RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
           SYMBOLS: EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY
