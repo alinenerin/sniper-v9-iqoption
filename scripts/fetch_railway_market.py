@@ -12,16 +12,17 @@ requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' '
 include_otc = os.getenv('INCLUDE_OTC', 'false').lower() == 'true'
 otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
+fast_triage = os.getenv('FAST_TRIAGE', 'false').lower() == 'true'
 # Never accept a partial batch as usable market data. The report contract
 # requires at least 120 M1 and 30 M5 candles; request the larger operational
 # targets and recover per symbol when a batch returns a short payload.
 # The full scan contract and Darts evidence both require the long M1 history.
 # Keep 120 only as an explicit emergency override, never as the default.
-MIN_M1 = int(os.getenv('MIN_M1_CANDLES', '1000'))
+MIN_M1 = int(os.getenv('MIN_M1_CANDLES', '100' if fast_triage else '1000'))
 MIN_M3 = int(os.getenv('MIN_M3_CANDLES', '30'))
 MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
 # Darts requires >=1000 M1 candles for its training window.
-REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '1000'))
+REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '120' if fast_triage else '1000'))
 REQUEST_M5 = int(os.getenv('REQUEST_M5_CANDLES', '100'))
 
 
