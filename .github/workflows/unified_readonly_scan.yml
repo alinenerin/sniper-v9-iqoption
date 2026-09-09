@@ -154,7 +154,7 @@ jobs:
       - name: Refresh live timing snapshot without replacing agent evidence
         env:
           RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
-          FAST_TRIAGE: 'false'
+          FAST_TRIAGE: 'true'
           REQUEST_M1_CANDLES: '120'
           MAX_CANDLE_AGE_SECONDS: '90'
         run: |
