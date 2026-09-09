@@ -38,7 +38,7 @@ class TradingConfig:
     # Pares principais
     symbols: List[str] = field(default_factory=lambda: [
         "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
-        "EURJPY", "EURGBP"
+        "EURJPY", "EURGBP", "USDCAD", "USDCHF", "NZDUSD", "GBPJPY"
     ])
     
     # Moedas correspondentes para NewsShield
@@ -83,13 +83,12 @@ class TradingConfig:
     # 💰 SCORE DIAMANTE — LIMIARES
     # =========================================================================
     supreme_threshold: float = 88.0   # SUPREME (88-100) → Execução Pesada
-    candidate_threshold: float = 65.0  # Triagem mínima antes da confirmação pesada
-    conditional_threshold: float = 70.0  # Candidato condicional
     diamond_threshold: float = 80.0   # DIAMOND (80-87) → Execução Padrão
     noise_threshold: float = 75.0     # Abaixo disso = RUÍDO → SILÊNCIO
     
     # Pesos centrais do Evidence/Fusion Score (soma = 1.0).
-    # Evidência ausente é excluída e os pesos disponíveis são renormalizados.
+    # A ausência de evidência é excluída e os pesos disponíveis são
+    # renormalizados; nunca é convertida em score zero.
     technical_core_weight: float = 0.35
     smc_weight: float = 0.20
     vsa_weight: float = 0.15
