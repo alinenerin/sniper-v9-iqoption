@@ -85,7 +85,7 @@ jobs:
           python audit_readonly_validation.py
       - name: Warm Render/IQ Option gateway
         env:
-          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
         run: |
           for i in 1 2 3; do
             if curl --connect-timeout 8 --max-time 20 --fail "$RAILWAY_GATEWAY_URL/health"; then exit 0; fi
@@ -94,7 +94,7 @@ jobs:
           echo 'Gateway did not warm within the short preflight window; fetch step will fail fast.'
       - name: Fetch live market data from Render/IQ Option
         env:
-          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
           SYMBOLS: EURUSD GBPUSD USDJPY AUDUSD
           FAST_TRIAGE: 'true'
           REQUEST_M1_CANDLES: '120'
@@ -105,7 +105,7 @@ jobs:
       - name: Fetch deep data for selected candidates
         if: github.event.inputs.fast_mode == 'true'
         env:
-          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
           FAST_TRIAGE: 'false'
           REQUEST_M1_CANDLES: '1000'
           MAX_CANDLE_AGE_SECONDS: '90'
@@ -153,7 +153,7 @@ jobs:
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
       - name: Refresh final market snapshot before decision
         env:
-          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
           MAX_CANDLE_AGE_SECONDS: '90'
         run: python scripts/fetch_railway_market.py
       - name: Generate unified read-only report
