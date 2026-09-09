@@ -181,13 +181,18 @@ def main() -> int:
             symbols = [s for s in symbols if s.endswith("-OTC")]
     else:
         symbols = requested
+    market_name = os.getenv("MARKET", "binary").lower()
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
+    run_forex = market_name in ("forex", "unified") and not otc_only
+    run_binary = market_name in ("binary", "unified", "otc") or otc_only
     for symbol in symbols:
-        if not otc_only:
-            forex.append(_analyse("forex", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-            binary.append(_analyse("binary", symbol, _candles(by_symbol.get(symbol, {}).get("candles")), observed_at))
-        if include_otc:
+        candles = _candles(by_symbol.get(symbol, {}).get("candles"))
+        if run_forex:
+            forex.append(_analyse("forex", symbol, candles, observed_at))
+        if run_binary and not otc_only:
+            binary.append(_analyse("binary", symbol, candles, observed_at))
+        if run_binary and (include_otc or otc_only):
             otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
             binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at))
 
@@ -198,8 +203,8 @@ def main() -> int:
         "schema_version": "2.1", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
         "mode": "read_only", "execution_allowed": False,
-        "forex": {"status": "completed", "analyses": forex},
-        "binary": {"status": "completed", "analyses": binary},
+        "forex": {"status": "completed" if run_forex else "not_requested", "analyses": forex},
+        "binary": {"status": "completed" if run_binary else "not_requested", "analyses": binary},
         "market_data": market_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
