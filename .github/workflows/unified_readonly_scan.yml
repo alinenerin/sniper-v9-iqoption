@@ -83,6 +83,15 @@ jobs:
         run: |
           python audit_architecture.py
           python audit_readonly_validation.py
+      - name: Warm Render/IQ Option gateway
+        env:
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+        run: |
+          for i in 1 2 3; do
+            if curl --connect-timeout 8 --max-time 20 --fail "$RAILWAY_GATEWAY_URL/health"; then exit 0; fi
+            sleep 3
+          done
+          echo 'Gateway did not warm within the short preflight window; fetch step will fail fast.'
       - name: Fetch live market data from Render/IQ Option
         env:
           RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
