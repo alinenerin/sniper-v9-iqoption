@@ -23,6 +23,7 @@ import iqoptionapi.constants as OP_code
 
 from current_iq import IQOptionReadonly, _bounded_call
 from core.signal_engine import generate_signal
+from core.deterministic_confluence import evaluate as deterministic_confluence
 
 TIMEFRAMES = {
     "H4": (14400, 600),
@@ -38,7 +39,7 @@ REAL_PAIRS = [
 OTC_PAIRS = [
     "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC",
     "EURJPY-OTC", "EURGBP-OTC", "USDCAD-OTC", "USDCHF-OTC",
-    "NZDUSD-OTC",
+    "NZDUSD-OTC", "GBPJPY-OTC",
 ]
 
 
@@ -146,7 +147,11 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
 
     # Fail closed: a simulated signal requires at least 3/4 timeframes and
     # a weighted score >= 70. No probability is fabricated from this score.
-    approved = not errors and same_direction >= 3 and score >= 70.0
+    no_score_mode = os.getenv("NO_SCORE_MODE", "false").lower() in {"1", "true", "yes"}
+    deterministic = deterministic_confluence(timeframe_results, direction, score, errors)
+    # The optional lane is explicit and conservative; it cannot approve a
+    # snapshot with missing/invalid timeframes or below-floor confluence.
+    approved = deterministic["approved"] if no_score_mode else (not errors and same_direction >= 3 and score >= 70.0)
     if not approved:
         direction = "NO_TRADE"
 
@@ -156,11 +161,18 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
         "symbol": symbol,
         "timeframes": timeframe_results,
         "weighted_score": score,
+        "score_preliminary": score,
+        "score_fused": score,
+        "score_final": score if approved else 0.0,
+        "score_mode": "NO_SCORE_MODE" if no_score_mode else "STANDARD",
+        "deterministic_confluence": deterministic,
         "timeframe_votes": same_direction,
         "direction": direction,
         "approved": approved,
         "status": "SIMULATION_ONLY",
         "execution_allowed": False,
+        "read_only": True,
+        "executor_enabled": False,
         "source": "IQ_OPTION_DIRECT",
         "errors": errors,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -197,6 +209,8 @@ def main() -> int:
     output = {
         "status": "SIMULATION_ONLY",
         "execution_allowed": False,
+        "read_only": True,
+        "executor_enabled": False,
         "source": "IQ_OPTION_DIRECT",
         "mode": mode,
         "markets": ["FOREX", "BINARIA_REAL", "BINARIA_OTC"],
