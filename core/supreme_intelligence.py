@@ -218,18 +218,23 @@ class SupremeIntelligence:
 
     def is_supreme_approved(self, analysis):
         """
-        Valida o sinal conforme o Protocolo Soberano V3.5
+        Valida o sinal conforme o Protocolo Soberano V3.5.
+
+        Score sem direção válida nunca é aprovado. O mínimo operacional e os
+        níveis de classificação vêm exclusivamente do TRADING_CONFIG.
         """
-        # Veto da Camada 0 (Darts) ou Camada 1 (VSA)
         if analysis.get("veto", False):
             return False, analysis.get("veto_reason", "ABORTED_BY_ANOMALY")
-        
-        score = analysis.get("score", 0)
-        
-        # Classificação do Score Diamante
-        if score >= 95:
+
+        direction = str(analysis.get("direction", "")).upper().strip()
+        if direction not in {"CALL", "PUT", "BUY", "SELL"}:
+            return False, "DIRECTION_UNCONFIRMED"
+
+        score = float(analysis.get("score", 0) or 0)
+        if score >= TRADING_CONFIG.supreme_threshold:
             return True, "SUPREME_CONFLUENCE_TOTAL"
-        elif score >= 90:
+        if score >= TRADING_CONFIG.diamond_threshold:
             return True, "DIAMOND_CONFLUENCE_MAJORITY"
-        else:
-            return False, f"RUÍDO_MARKET_LIQUIDITY_LOW (Score: {score:.1f})"
+        if score >= TRADING_CONFIG.noise_threshold:
+            return True, "QUALIFIED_CANDIDATE"
+        return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: {TRADING_CONFIG.noise_threshold:.1f})"
