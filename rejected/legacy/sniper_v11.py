@@ -46,13 +46,13 @@ BRT = pytz.timezone('America/Sao_Paulo')
 # CONFIGURAÇÃO GLOBAL
 # ══════════════════════════════════════════════════════════════════════════════
 
-IQ_EMAIL   = 'laiane.aline@gmail.com'
-IQ_PASS    = 'alineegui95'
-TG_TOKEN   = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
-TG_CHAT_ID = '5911742397'
+IQ_EMAIL   = os.environ.get('IQ_OPTION_EMAIL', '')
+IQ_PASS    = os.environ.get('IQ_OPTION_PASSWORD', os.environ.get('IQ_PASS', ''))
+TG_TOKEN   = os.environ.get('TG_TOKEN', '')
+TG_CHAT_ID = os.environ.get('TG_CHAT_ID', '')
 
 # Chaves de API
-TWELVE_KEY   = '1be0b948fb1c48bb997e350c542edafd'
+TWELVE_KEY   = os.environ.get('TWELVE_DATA_API_KEY', '')
 POLY_KEY     = 'gXySF0ojKao907z3vKOtpxr8opt0cbLx'
 FF_URL       = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 

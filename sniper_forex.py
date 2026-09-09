@@ -71,13 +71,13 @@ def check_news_bloqueio(now_brt):
 
 sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
 
-IQ_EMAIL     = 'laiane.aline@gmail.com'
-IQ_PASS      = 'alineegui95'
+IQ_EMAIL     = os.environ.get('IQ_OPTION_EMAIL', '')
+IQ_PASS      = os.environ.get('IQ_OPTION_PASSWORD', os.environ.get('IQ_PASS', ''))
 ACCOUNT_TYPE = 'PRACTICE'
 PAYOUT_MIN   = 0.85        # Forex exige payout ≥ 85%
 VALOR_PCT    = 0.02
-TG_TOKEN     = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
-TG_CHAT_ID   = '5911742397'
+TG_TOKEN     = os.environ.get('TG_TOKEN', '')
+TG_CHAT_ID   = os.environ.get('TG_CHAT_ID', '')
 
 SCORE_MIN    = 150         # Forex: mínimo 150 (máx 170 com bônus OB/FVG)
 COOLDOWN     = 120
@@ -179,7 +179,7 @@ def save_estado(e):
 # Garante que o bot nunca aborte por dado velho: se o fetch falhar,
 # usa o último valor conhecido ao invés de bloquear a entrada.
 _dxy_cache = {'valor': None, 'ts': 0}
-TWELVE_KEY  = '1be0b948fb1c48bb997e350c542edafd'
+TWELVE_KEY  = os.environ.get('TWELVE_DATA_API_KEY', '')
 DXY_TTL     = 30  # segundos — refresh máximo
 
 def get_dxy():

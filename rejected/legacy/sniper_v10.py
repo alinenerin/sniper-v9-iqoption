@@ -17,9 +17,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api_faria'))
 
 # ── CREDENCIAIS ───────────────────────────────────────────────────────
-IQ_EMAIL   = 'laiane.aline@gmail.com'
-IQ_PASS    = 'alineegui95'
-TG_TOKEN   = '8684280689:AAE0UaKDQmJfkGVndzCI8uQPt6I2YCX6iyg'
+IQ_EMAIL   = os.environ.get('IQ_OPTION_EMAIL', '')
+IQ_PASS    = os.environ.get('IQ_OPTION_PASSWORD', os.environ.get('IQ_PASS', ''))
+TG_TOKEN   = os.environ.get('TG_TOKEN', '')
 TG_CHAT_ID = '5911742397'
 
 # ── CONFIG ────────────────────────────────────────────────────────────

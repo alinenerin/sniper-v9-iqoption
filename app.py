@@ -46,6 +46,7 @@ IQ_EMAIL  = os.environ.get("IQ_EMAIL", "")
 IQ_PASS   = os.environ.get("IQ_PASS",  "")
 IQ_SSID   = os.environ.get("IQ_SSID",  "")
 POLYGON_KEY = os.environ.get("POLYGON_KEY", "")
+TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
 
 BRT            = pytz.timezone("America/Sao_Paulo")
 MAX_LOSSES_DIA = 4
@@ -410,7 +411,7 @@ def get_candles(ativo, n=60, tf=60):
         sym = ATIVOS_TD.get(par_base, "")
         if sym:
             r = requests.get(f"https://api.twelvedata.com/time_series?symbol={sym}"
-                             f"&interval=1min&outputsize={n}&apikey=1be0b948fb1c48bb997e350c542edafd",
+                             f"&interval=1min&outputsize={n}&apikey={TWELVE_DATA_API_KEY}",
                              timeout=8)
             vals = r.json().get("values", [])
             if vals:
