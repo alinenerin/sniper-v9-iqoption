@@ -13,6 +13,7 @@ score, not a guaranteed win probability.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -24,6 +25,7 @@ import iqoptionapi.constants as OP_code
 from current_iq import IQOptionReadonly, _bounded_call
 from core.signal_engine import generate_signal
 from core.deterministic_confluence import evaluate as deterministic_confluence
+from core.score_mode_comparison import compare_snapshot
 
 TIMEFRAMES = {
     "H4": (14400, 600),
@@ -116,6 +118,22 @@ def fetch_history(session: IQOptionReadonly, symbol: str, interval: int, count: 
     return sorted(collected.values(), key=lambda x: x["timestamp"])[-target:]
 
 
+def analyze_market_comparison(session: IQOptionReadonly, symbol: str, market: str, mode: str) -> Dict[str, Any]:
+    """Fetch once, then compare both lanes without environment mutation."""
+    snapshot, errors = {}, {}
+    for name, (interval, count) in TIMEFRAMES.items():
+        try:
+            candles = normalize_candles(fetch_history(session, symbol, interval, count))
+            sig = generate_signal(candles=candles, instrument=symbol, market=market,
+                                  mode=mode, timeframe=name, min_score=70.0)
+            snapshot[name] = sig.to_dict()
+        except Exception as exc:
+            errors[name] = f"{type(exc).__name__}:{exc}"
+    raw = json.dumps({"snapshot": snapshot, "errors": errors}, sort_keys=True, default=str).encode()
+    snapshot_id = hashlib.sha256(raw).hexdigest()[:16]
+    return compare_snapshot(symbol, market, mode, snapshot, snapshot_id, errors)
+
+
 def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: str) -> Dict[str, Any]:
     timeframe_results: Dict[str, Any] = {}
     weighted: Dict[str, float] = {"CALL": 0.0, "PUT": 0.0}
@@ -203,9 +221,9 @@ def main() -> int:
 
     results = []
     for market, instrument_mode, symbol in universes(mode):
-        results.append(analyze_market(session, symbol, market, instrument_mode))
+        results.append(analyze_market_comparison(session, symbol, market, instrument_mode))
 
-    approved = [r for r in results if r["approved"]]
+    approved = [r for r in results if r["score_mode"]["approved"]]
     output = {
         "status": "SIMULATION_ONLY",
         "execution_allowed": False,
