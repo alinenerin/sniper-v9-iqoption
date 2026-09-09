@@ -46,6 +46,7 @@ jobs:
       SYMBOLS: ${{ github.event.inputs.symbols }}
       MARKET: ${{ github.event.inputs.market }}
       FAST_MODE: ${{ github.event.inputs.fast_mode }}
+      NO_SCORE_MODE: 'true'
       LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
       MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
     steps:
