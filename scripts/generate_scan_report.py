@@ -1,8 +1,4 @@
-"""Generate a read-only Forex/Binary scan report from Railway market_data.json.
-
-This module must remain valid UTF-8 Python: it is compiled before any market
--data fetch, and compilation failure must prevent the scan from starting.
-"""
+"""Generate a read-only Forex/Binary scan report from Railway market_data.json."""
 from __future__ import annotations
 
 import json
@@ -135,11 +131,11 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 "shadow_policy": _shadow_policy(market, None, None, candles), **timing}
     try:
         if market == "forex":
-            result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
+            result = ForexV16ReadOnly(score_minimum=75).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
             result.update(_analysis_timing(market, result, candles, observed_at))
             return result
-        consultation = SharedAI(score_minimum=95).consult(MarketRequest(
+        consultation = SharedAI(score_minimum=75).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         ))
@@ -211,7 +207,7 @@ def main() -> int:
         "binary": {"status": "completed" if run_binary else "not_requested", "analyses": binary},
         "market_data": market_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
-        "filters": {"score_minimum": 95, "zero_gale": True, "payout_minimum": 80},
+        "filters": {"score_minimum": 75, "zero_gale": True, "payout_minimum": 80},
         "best_candidate": best_candidate,
         "best_candidate_note": "Ranking only; does not approve a trade. Score and all vetoes remain mandatory.",
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
