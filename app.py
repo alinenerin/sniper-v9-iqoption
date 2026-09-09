@@ -405,6 +405,8 @@ def get_candles(ativo, n=60, tf=60):
         _log(f"Polygon candles erro ({par_base}): {e}")
 
     # ── 3. Twelve Data (backup) ────────────────────────────────────────
+    if not TWELVE_DATA_API_KEY:
+        return []
     try:
         ATIVOS_TD = {"EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY",
                      "AUDUSD":"AUD/USD","EURJPY":"EUR/JPY","EURGBP":"EUR/GBP","XAUUSD":"XAU/USD"}
@@ -1020,7 +1022,7 @@ def abrir_trade(par, direcao, stake, expiracao_min):
         option_type = "turbo" if expiracao_min <= 1 else "binary"
         direcao_iq  = direcao.lower()  # "call" ou "put"
 
-        status, id_op = _iq_api.buy(stake, par_base, direcao_iq, expiracao_min)
+        status, id_op = False, None  # execução desativada: análise read-only
         if status and id_op:
             _log(f"Trade aberta: {par} {direcao} ${stake:.2f} id={id_op}")
             return id_op

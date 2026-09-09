@@ -186,6 +186,8 @@ def get_dxy():
     agora = time.time()
     if _dxy_cache['valor'] is not None and agora - _dxy_cache['ts'] < DXY_TTL:
         return _dxy_cache['valor'], 'cache'
+    if not TWELVE_KEY:
+        return _dxy_cache['valor'], 'unavailable'
     try:
         url = f'https://api.twelvedata.com/price?symbol=DXY&apikey={TWELVE_KEY}'
         with urllib.request.urlopen(url, timeout=2) as r:
@@ -682,7 +684,7 @@ def rodar_ciclo(iq, estado):
 
     try:
         # Expiração M3: gatilho M1 + 3min para tendência se consolidar
-        status, id_op = iq.buy(valor, par, direction.lower(), 3)
+        status, id_op = False, None  # execução desativada: análise read-only
     except Exception as e:
         log(f'Erro no buy: {e}')
         return None

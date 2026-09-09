@@ -5,5 +5,6 @@ WORKDIR /app
 COPY requirements_gateway.txt .
 RUN pip install --no-cache-dir -r requirements_gateway.txt
 COPY current_iq.py market_gateway.py market_data_contract.py railway_start.py network_diagnostics.py .
+COPY iqoptionapi ./iqoptionapi
 EXPOSE 8080
 CMD ["python", "railway_start.py"]
