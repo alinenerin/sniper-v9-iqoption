@@ -1,9 +1,0 @@
-iqoptionapi
-websocket-client
-requests
-python-dotenv
-xgboost-cpu
-numpy<1.24.0
-pandas==1.5.3
-TA-Lib
-pandas-ta

@@ -1,2 +1,0 @@
-# Run the official OmniRoute image published by the creator.
-FROM docker.io/diegosouzapw/omniroute:latest

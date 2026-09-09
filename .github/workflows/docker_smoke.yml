@@ -1,0 +1,66 @@
+name: Docker Smoke Test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'Dockerfile'
+      - 'requirements-gateway.txt'
+      - 'current_iq.py'
+      - 'market_gateway.py'
+      - 'market_data_contract.py'
+      - 'railway_start.py'
+      - 'network_diagnostics.py'
+      - 'iqoptionapi/**'
+      - '.github/workflows/docker_smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image without cache
+        run: docker build --pull --no-cache -t sniper-gateway-smoke:${{ github.sha }} .
+
+      - name: Verify imports and read-only flags
+        run: |
+          docker run --rm \
+            -e ANALYSIS_ONLY=1 \
+            -e READ_ONLY=true \
+            -e EXECUTION_ALLOWED=false \
+            -e EXECUTOR_ENABLED=false \
+            sniper-gateway-smoke:${{ github.sha }} \
+            python -c "import current_iq, market_gateway; print('imports_ok'); print('read_only_contract_ok')"
+
+      - name: Start temporary gateway
+        run: |
+          docker run -d --name sniper-gateway-smoke \
+            -p 8080:8080 \
+            -e ANALYSIS_ONLY=1 \
+            -e READ_ONLY=true \
+            -e EXECUTION_ALLOWED=false \
+            -e EXECUTOR_ENABLED=false \
+            sniper-gateway-smoke:${{ github.sha }}
+
+      - name: Healthcheck
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/health; then
+              echo
+              echo 'healthcheck_ok'
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs sniper-gateway-smoke || true
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f sniper-gateway-smoke || true
