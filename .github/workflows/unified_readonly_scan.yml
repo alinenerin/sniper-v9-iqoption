@@ -86,6 +86,7 @@ jobs:
       - name: Fetch live market data from Render/IQ Option
         env:
           RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          SYMBOLS: EURUSD GBPUSD USDJPY AUDUSD
           FAST_TRIAGE: 'true'
           REQUEST_M1_CANDLES: '120'
         run: python scripts/fetch_railway_market.py
