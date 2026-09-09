@@ -418,6 +418,12 @@ class IQOptionReadonly:
                 time.sleep(0.4 * attempt)
             with _lock:
                 cached = list(_candle_cache.get((normalized, interval), [])); base["cache_size"] = len(cached)
+            # Cache is an optimization, never an authority: discard stale
+            # rows before merging so an old stream snapshot cannot poison a
+            # valid per-symbol historical response or hide freshness failure.
+            cache_now = time.time()
+            cached = [x for x in cached if x.get("timestamp") is not None and cache_now - float(x["timestamp"]) <= 900]
+            base["cache_fresh"] = bool(cached)
             if len(cached) >= required:
                 merged = sorted({float(x["timestamp"]): x for x in cached + best if x.get("timestamp") is not None}.values(), key=lambda x: x["timestamp"])
                 if len(merged) > len(best): base["cache_hit"] = True
@@ -511,7 +517,12 @@ class IQOptionReadonly:
             candles = []
             for ts, c in data.items():
                 candles.append({'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)})
-            return {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': sorted(candles, key=lambda x: x['timestamp']), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
+            result = {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': sorted(candles, key=lambda x: x['timestamp'])[-2:], 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
+            stop = getattr(self.api, 'stop_candles_stream', None)
+            if callable(stop):
+                try: stop(symbol, int(interval))
+                except Exception: pass
+            return result
         except Exception: return {'ok': False, 'reason': 'IQ_OPTION_REALTIME_STREAM_UNAVAILABLE', 'read_only': True}
 
     def digital_strike(self, symbol, duration=60):
@@ -551,9 +562,15 @@ class IQOptionReadonly:
         for start in range(0, len(symbols), 2):
             for symbol in symbols[start:start+2]:
                 kind = 'OTC' if str(symbol).upper().endswith('-OTC') else 'REAL'
-                data[symbol]={'m1':self.candles(symbol,60,120,kind),
+                realtime = self.realtime_candles(symbol, 60, 20)
+                realtime_rows = realtime.get('candles', []) if isinstance(realtime, dict) else []
+                live_quote = realtime_rows[-1].get('close') if realtime_rows else None
+                data[symbol]={'m1':self.candles(symbol,60,1000,kind),
                              'm3':self.candles(symbol,180,120,kind),
-                             'm5':self.candles(symbol,300,30,kind)}
+                             'm5':self.candles(symbol,300,30,kind),
+                             'realtime': realtime_rows,
+                             'quote': live_quote,
+                             'quote_source': 'IQ_OPTION_REALTIME_CANDLE' if live_quote is not None else 'UNAVAILABLE'}
         return {'ok':True,'assets':assets,'payouts':payouts,'symbols':data,'source':'IQ_OPTION_DIRECT','read_only':True}
 
     def snapshot(self, symbol, interval=60):
