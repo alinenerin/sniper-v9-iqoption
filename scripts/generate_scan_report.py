@@ -323,6 +323,18 @@ def main() -> int:
     selected_symbols = os.getenv("SELECTED_SYMBOLS", " ".join(symbols))
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
+    # Optional final timing snapshot is collected after the agents. It is used
+    # only to validate candle freshness; agent evidence and scores remain bound
+    # to the immutable analysis snapshot.
+    final_timing = {}
+    final_timing_path = Path("reports/final_timing.json")
+    if final_timing_path.exists():
+        try:
+            final_timing = json.loads(final_timing_path.read_text())
+            if final_timing.get("observed_at_utc"):
+                observed_at = datetime.fromisoformat(final_timing["observed_at_utc"].replace("Z", "+00:00"))
+        except Exception:
+            final_timing = {}
     # Every lane and specialist artifact must bind to this immutable input snapshot.
     market_snapshot_id = snapshot_id(market_data)
     requested_market = os.getenv('MARKET', 'unified').lower()
@@ -352,6 +364,17 @@ def main() -> int:
 
     # Explicit pipeline dashboard: blocked intelligence is metadata, never a score zero.
     all_items = forex + binary
+    # Revalidate timing from the final live snapshot without changing the
+    # immutable snapshot used by all agents and the committee.
+    if final_timing:
+        final_symbols = final_timing.get("symbols") or {}
+        for item in all_items:
+            live_entry = final_symbols.get(item.get("symbol"), {})
+            live_m1 = _candles(live_entry.get("m1") or live_entry.get("candles") or {}) if isinstance(live_entry, dict) else []
+            if len(live_m1) >= 50:
+                timing = _analysis_timing(item.get("market", "binary"), item, live_m1, observed_at, item.get("timeframe") or "M1")
+                item.update(timing)
+
     # The committee is advisory. Its import or one malformed symbol must never
     # prevent publication of the canonical read-only report.
     try:
