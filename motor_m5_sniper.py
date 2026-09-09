@@ -13,8 +13,8 @@ import concurrent.futures
 # ── Configurações e Globais ──────────────────────────────────────────────────
 TG_TOKEN   = os.environ.get('TG_TOKEN', '')
 TG_CHAT_ID = os.environ.get('TG_CHAT_ID', '')
-IQ_EMAIL   = os.environ.get('IQ_OPTION_EMAIL', '')
-IQ_PASS    = os.environ.get('IQ_OPTION_PASSWORD', os.environ.get('IQ_PASS', ''))
+IQ_EMAIL   = os.environ.get('IQ_EMAIL', os.environ.get('IQ_OPTION_EMAIL', os.environ.get('IQ_USER', '')))
+IQ_PASS    = os.environ.get('IQ_PASS', os.environ.get('IQ_OPTION_PASSWORD', ''))
 
 FF_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 

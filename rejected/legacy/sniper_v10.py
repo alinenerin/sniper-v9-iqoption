@@ -17,8 +17,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api_faria'))
 
 # ── CREDENCIAIS ───────────────────────────────────────────────────────
-IQ_EMAIL   = os.environ.get('IQ_OPTION_EMAIL', '')
-IQ_PASS    = os.environ.get('IQ_OPTION_PASSWORD', os.environ.get('IQ_PASS', ''))
+IQ_EMAIL   = os.environ.get('IQ_EMAIL', os.environ.get('IQ_OPTION_EMAIL', os.environ.get('IQ_USER', '')))
+IQ_PASS    = os.environ.get('IQ_PASS', os.environ.get('IQ_OPTION_PASSWORD', ''))
 TG_TOKEN   = os.environ.get('TG_TOKEN', '')
 TG_CHAT_ID = '5911742397'
 

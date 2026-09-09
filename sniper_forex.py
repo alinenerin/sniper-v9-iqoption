@@ -71,8 +71,8 @@ def check_news_bloqueio(now_brt):
 
 sys.path.insert(0, '/app/state/6c99feb7-c22c-4fd6-9458-8f9bbea1db3e/work/libs/api_faria')
 
-IQ_EMAIL     = os.environ.get('IQ_OPTION_EMAIL', '')
-IQ_PASS      = os.environ.get('IQ_OPTION_PASSWORD', os.environ.get('IQ_PASS', ''))
+IQ_EMAIL     = os.environ.get('IQ_EMAIL', os.environ.get('IQ_OPTION_EMAIL', os.environ.get('IQ_USER', '')))
+IQ_PASS      = os.environ.get('IQ_PASS', os.environ.get('IQ_OPTION_PASSWORD', ''))
 ACCOUNT_TYPE = 'PRACTICE'
 PAYOUT_MIN   = 0.85        # Forex exige payout ≥ 85%
 VALOR_PCT    = 0.02

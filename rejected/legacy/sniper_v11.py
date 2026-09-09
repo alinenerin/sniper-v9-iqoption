@@ -46,8 +46,8 @@ BRT = pytz.timezone('America/Sao_Paulo')
 # CONFIGURAÇÃO GLOBAL
 # ══════════════════════════════════════════════════════════════════════════════
 
-IQ_EMAIL   = os.environ.get('IQ_OPTION_EMAIL', '')
-IQ_PASS    = os.environ.get('IQ_OPTION_PASSWORD', os.environ.get('IQ_PASS', ''))
+IQ_EMAIL   = os.environ.get('IQ_EMAIL', os.environ.get('IQ_OPTION_EMAIL', os.environ.get('IQ_USER', '')))
+IQ_PASS    = os.environ.get('IQ_PASS', os.environ.get('IQ_OPTION_PASSWORD', ''))
 TG_TOKEN   = os.environ.get('TG_TOKEN', '')
 TG_CHAT_ID = os.environ.get('TG_CHAT_ID', '')
 
