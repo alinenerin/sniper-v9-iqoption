@@ -151,6 +151,17 @@ jobs:
           exit 0
       - name: Compile read-only analysis modules
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
+      - name: Refresh live timing snapshot without replacing agent evidence
+        env:
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
+          FAST_TRIAGE: 'false'
+          REQUEST_M1_CANDLES: '120'
+          MAX_CANDLE_AGE_SECONDS: '90'
+        run: |
+          cp reports/market_data.json reports/agent_market_data.json
+          python scripts/fetch_railway_market.py
+          cp reports/market_data.json reports/final_timing.json
+          mv reports/agent_market_data.json reports/market_data.json
       - name: Generate unified read-only report
         run: |
           set +e
