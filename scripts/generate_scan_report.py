@@ -147,7 +147,11 @@ def _analysis_timing(market: str, result: dict, candles: list[dict], observed_at
     timing = _timing_fields(candles, observed_at)
     policy = plan_sniper_window(observed_at.timestamp(), timeframe) if market in ("binary", "otc") else {"valid": True, "execution_allowed": False}
     age = timing.get("candle_age_seconds")
-    timing_valid = market not in ("binary", "otc") or (age is not None and age <= 75 and policy.get("valid", False))
+    # The provider timestamp is a closed-candle timestamp. Keep the manual
+    # M1/M3 window bounded by two minutes, while avoiding a false veto from a
+    # hard-coded 75s threshold when the live Railway snapshot is still fresh.
+    max_live_age = float(os.getenv("MAX_CANDLE_AGE_SECONDS", "120"))
+    timing_valid = market not in ("binary", "otc") or (age is not None and age <= max_live_age and policy.get("valid", False))
     policy.update({"timezone": "America/Sao_Paulo", "manual_delivery": True, "valid": timing_valid,
                    "observed_at_brt": observed_at.astimezone(ZoneInfo("America/Sao_Paulo")).isoformat()})
     entry = policy.get("entry_timestamp")
