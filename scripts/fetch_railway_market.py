@@ -86,7 +86,9 @@ def discover_symbols():
 
 
 health = None
-for _ in range(6):
+health_attempts = 2 if fast_triage else 6
+health_sleep = 3 if fast_triage else 10
+for _ in range(health_attempts):
     try:
         candidate = get('/health', timeout=15, attempts=1)
         if candidate.get('status') == 'connected':
@@ -94,7 +96,7 @@ for _ in range(6):
             break
     except Exception:
         pass
-    time.sleep(10)
+    time.sleep(health_sleep)
 if not health:
     raise RuntimeError('RAILWAY_NOT_CONNECTED_AFTER_WARMUP')
 
