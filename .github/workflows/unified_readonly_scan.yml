@@ -86,10 +86,20 @@ jobs:
       - name: Fetch live market data from Render/IQ Option
         env:
           RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          FAST_TRIAGE: 'true'
+          REQUEST_M1_CANDLES: '120'
         run: python scripts/fetch_railway_market.py
       - name: Select top three fast candidates
         if: github.event.inputs.fast_mode == 'true'
         run: python scripts/select_fast_candidates.py
+      - name: Fetch deep data for selected candidates
+        if: github.event.inputs.fast_mode == 'true'
+        env:
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          FAST_TRIAGE: 'false'
+          REQUEST_M1_CANDLES: '1000'
+          MAX_CANDLE_AGE_SECONDS: '90'
+        run: python scripts/fetch_railway_market.py
       - name: Fetch canonical DXY/VIX macro snapshot
         run: python scripts/fetch_tradingview_macro.py
       - name: Prepare fast lane advisory artifacts (disabled; heavy confirmation runs on top three)
