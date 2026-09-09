@@ -214,6 +214,16 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             # WAIT. A timeframe veto must not erase evidence from the artifact.
             m1_components = consultation.components.get("component_status", {}) if consultation else {}
             m3_components = m3_consultation.components.get("component_status", {}) if m3_consultation else {}
+            m1_core = consultation.components.get("core_analysis", {}) if consultation else {}
+            m3_core = m3_consultation.components.get("core_analysis", {}) if m3_consultation else {}
+            score_breakdown = {
+                "M1": {"score": consultation.score, "direction": consultation.direction,
+                       "core_score": m1_core.get("score"), "score_components": m1_core.get("score_components", {}),
+                       "vetoes": list(consultation.vetoes)},
+                "M3": {"score": m3_consultation.score, "direction": m3_consultation.direction,
+                       "core_score": m3_core.get("score"), "score_components": m3_core.get("score_components", {}),
+                       "vetoes": list(m3_consultation.vetoes)} if m3_consultation else {"status": "blocked"},
+            }
             merged_components = dict(m1_components)
             for name, value in m3_components.items():
                 merged_components.setdefault(name, value)
@@ -224,6 +234,8 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                         "M3": {"score": m3_consultation.score, "probability": m3_consultation.probability,
                                 "anomaly_score": m3_consultation.anomaly_score, "vetoes": m3_consultation.vetoes} if m3_consultation else {"status": "blocked", "reason": "INSUFFICIENT_CANDLES"}},
                     "components": merged_components,
+                    "score_breakdown": score_breakdown,
+                    "score_validation": {"status": "preliminary", "reason": "TIMEFRAME_NOT_SELECTED"},
                     "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "MISSING_INVALID_CANDLES",
                     "chart_evidence": {"ema_cascade": "engine" if market == "otc" else "blocked", "algorithmic_cycle": "blocked"},
                     "execution_allowed": False, **_analysis_timing(market, {}, candles, observed_at, "M1")}
@@ -323,18 +335,6 @@ def main() -> int:
     selected_symbols = os.getenv("SELECTED_SYMBOLS", " ".join(symbols))
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
-    # Optional final timing snapshot is collected after the agents. It is used
-    # only to validate candle freshness; agent evidence and scores remain bound
-    # to the immutable analysis snapshot.
-    final_timing = {}
-    final_timing_path = Path("reports/final_timing.json")
-    if final_timing_path.exists():
-        try:
-            final_timing = json.loads(final_timing_path.read_text())
-            if final_timing.get("observed_at_utc"):
-                observed_at = datetime.fromisoformat(final_timing["observed_at_utc"].replace("Z", "+00:00"))
-        except Exception:
-            final_timing = {}
     # Every lane and specialist artifact must bind to this immutable input snapshot.
     market_snapshot_id = snapshot_id(market_data)
     requested_market = os.getenv('MARKET', 'unified').lower()
@@ -364,17 +364,6 @@ def main() -> int:
 
     # Explicit pipeline dashboard: blocked intelligence is metadata, never a score zero.
     all_items = forex + binary
-    # Revalidate timing from the final live snapshot without changing the
-    # immutable snapshot used by all agents and the committee.
-    if final_timing:
-        final_symbols = final_timing.get("symbols") or {}
-        for item in all_items:
-            live_entry = final_symbols.get(item.get("symbol"), {})
-            live_m1 = _candles(live_entry.get("m1") or live_entry.get("candles") or {}) if isinstance(live_entry, dict) else []
-            if len(live_m1) >= 50:
-                timing = _analysis_timing(item.get("market", "binary"), item, live_m1, observed_at, item.get("timeframe") or "M1")
-                item.update(timing)
-
     # The committee is advisory. Its import or one malformed symbol must never
     # prevent publication of the canonical read-only report.
     try:
