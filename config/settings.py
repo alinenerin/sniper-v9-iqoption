@@ -38,7 +38,7 @@ class TradingConfig:
     # Pares principais
     symbols: List[str] = field(default_factory=lambda: [
         "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
-        "EURJPY", "EURGBP", "USDCAD", "USDCHF", "NZDUSD", "GBPJPY"
+        "EURJPY", "EURGBP"
     ])
     
     # Moedas correspondentes para NewsShield
@@ -82,18 +82,15 @@ class TradingConfig:
     # =========================================================================
     # 💰 SCORE DIAMANTE — LIMIARES
     # =========================================================================
-    supreme_threshold: float = 88.0   # SUPREME (88-100) → Execução Pesada
-    diamond_threshold: float = 80.0   # DIAMOND (80-87) → Execução Padrão
-    noise_threshold: float = 75.0     # Abaixo disso = RUÍDO → SILÊNCIO
+    supreme_threshold: float = 95.0   # SUPREME (95-100) → Execução Pesada
+    diamond_threshold: float = 90.0   # DIAMOND (90-94) → Execução Padrão
+    noise_threshold: float = 90.0     # Abaixo disso = RUÍDO → SILÊNCIO
     
-    # Pesos centrais do Evidence/Fusion Score (soma = 1.0).
-    # A ausência de evidência é excluída e os pesos disponíveis são
-    # renormalizados; nunca é convertida em score zero.
-    technical_core_weight: float = 0.35
-    smc_weight: float = 0.20
-    vsa_weight: float = 0.15
-    sentiment_weight: float = 0.10
-    ai_ensemble_weight: float = 0.20
+    # Pesos do Score
+    technical_core_weight: float = 0.35  # Núcleo técnico central
+    smc_weight: float = 0.4       # SMC (ICT Concepts)
+    vsa_weight: float = 0.3       # VSA (Volume Spread)
+    sentiment_weight: float = 0.3    # NLP Sentiment
     
     # =========================================================================
     # 🛡️ DARTS ANOMALY SHIELD — CAMADA 0
