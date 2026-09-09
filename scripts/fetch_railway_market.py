@@ -6,7 +6,7 @@ from pathlib import Path
 # Allow imports from the repository root when executed as scripts/fetch_....py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-base = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
+base = os.getenv('RAILWAY_GATEWAY_URL', 'https://iqoption-readonly-gateway-production.up.railway.app').rstrip('/')
 fetch_started = time.perf_counter()
 requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
 include_otc = os.getenv('INCLUDE_OTC', 'false').lower() == 'true'
