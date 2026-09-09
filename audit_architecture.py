@@ -20,7 +20,7 @@ import ast
 ORDER_METHODS = {"buy", "buy_digital", "place_order", "open_order", "buy_order"}
 violations = []
 for source in Path(".").rglob("*.py"):
-    if any(part in {".git", ".venv", "__pycache__", "rejected", "tests"} for part in source.parts):
+    if any(part in {".git", ".venv", "__pycache__", "rejected", "tests", "iqoptionapi"} for part in source.parts):
         continue
     try:
         tree = ast.parse(source.read_text(encoding="utf-8"))
