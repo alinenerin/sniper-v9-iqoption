@@ -1,4 +1,8 @@
-"""Generate a read-only Forex/Binary scan report from Railway market_data.json."""
+"""Generate a read-only Forex/Binary scan report from Railway market_data.json.
+
+This module must remain valid UTF-8 Python: it is compiled before any market
+-data fetch, and compilation failure must prevent the scan from starting.
+"""
 from __future__ import annotations
 
 import json
