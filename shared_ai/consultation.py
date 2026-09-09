@@ -181,6 +181,12 @@ class SharedAI:
                     analysis["anomaly_details"] = {"status": "inference_ok", "score": verified,
                                                     "anomaly_score": verified, "source": "DARTS_ARTIFACT"}
                     analysis["camada_0_darts"] = analysis["anomaly_details"]
+                    # The dedicated per-symbol DARTS artifact is authoritative.
+                    # Do not retain a conflicting in-process veto from the local
+                    # shield when the verified artifact reports NORMAL.
+                    if not bool((darts_item.get("scan") or {}).get("veto", False)) and verified <= 85:
+                        analysis["veto"] = False
+                        analysis.pop("veto_reason", None)
             except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 pass
             approved, reason = engine.is_supreme_approved(analysis)
