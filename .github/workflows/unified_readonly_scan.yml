@@ -159,8 +159,7 @@ jobs:
           MAX_CANDLE_AGE_SECONDS: '90'
         run: |
           cp reports/market_data.json reports/agent_market_data.json
-          python scripts/fetch_railway_market.py
-          cp reports/market_data.json reports/final_timing.json
+          python scripts/refresh_final_timing.py
           mv reports/agent_market_data.json reports/market_data.json
       - name: Generate unified read-only report
         run: |
