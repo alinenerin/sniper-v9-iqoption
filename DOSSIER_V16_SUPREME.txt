@@ -1,0 +1,44 @@
+======================================================================
+     ARQUITETURA QUANTITATIVA V16 SUPREME - DOSSIÊ DE OPERAÇÃO
+======================================================================
+
+1. NÚCLEO DE INTELIGÊNCIA (IA & MEMÓRIA) - [CONFIGURADO]
+- XGBoost Supreme: Motor probabilístico de sinais (Score 95+).
+- OmniRouter: Roteador Dual-Key (Groq + OpenRouter) Ativo.
+- Free-Claude & Codex: Skills de redundância e auto-otimização.
+- Groq AI: Chave capturada e vinculada (Processamento Ultra-rápido).
+- OpenRouter: Chave capturada e vinculada (Acesso Multimodelos).
+- Mem0: Memória de Longo Prazo (Aprendizado de Ciclos e Contexto).
+- Auto-TS: IA preditiva para projeção de velas futuras.
+
+2. MOTORES DE EXECUÇÃO (MULTIMERCADO) - [PRONTO PARA DEPLOY]
+- Motor Binárias (M1/M5): executor_v16_supreme.py (Sniper de Retração).
+- Motor Forex (H1/M15): FOREX_SUPREME_FINAL_V16.py (Tendência SMC).
+- Protocolo Sniper: Entrada com delay de 2s para captura de taxa.
+- Regra de Ouro: Zero Gale (Foco total em Win de Primeira).
+
+3. ANÁLISE INSTITUCIONAL (SMC & VSA) - [INTEGRADO]
+- SMC: Identificação de Order Blocks e FVG (Fair Value Gaps).
+- VSA: Detecção de exaustão de volume e manipulação.
+- LSE: Dados de Ticks e Liquidez de Londres (API Vinculada).
+- TA-Lib: Biblioteca de precisão bancária (Indicadores Reais).
+
+4. INTERFACE E VISUALIZAÇÃO (QUARTEL GENERAL) - [DASHBOARD ATIVO]
+- Zapia Jarvis Dashboard: Painel Web em tempo real (Neon Style).
+- Insights em Tempo Real: Feedback do Mem0 e Claude sobre o mercado.
+
+5. ESCUDOS E INFRAESTRUTURA - [BLINDADO]
+- MarketAux: News Shield (Veto automático em notícias 🔴).
+- Webshare Proxy: IP Fixo dedicado (31.59.20.176).
+- Servidor: Railway (Plano Hobby/Pago - Requisito 2GB RAM).
+- Repositório: GitHub (alinenerin/sniper-v9-iqoption).
+
+======================================================================
+STATUS: AGUARDANDO UPGRADE RAILWAY PARA DEPLOY FINAL
+======================================================================
+- Adicionado Loop de Auto-Reconnect (Check_Connect) a cada 5s.
+- Adicionado Filtro de Payout Mínimo Dinâmico (80%).
+- Isolamento de Threads: IA (45s) vs WebSocket (5s) vs Sniper (Real-time).
+- Módulo Hunter V16 Engine (Workflow Fable 5) integrado.
+- Adicionado Sistema de Pontuação: COMPRA FORTE / WATCHLIST / IGNORAR.
+- Nova regra: Identificação obrigatória de CATALISADOR antes do clique.

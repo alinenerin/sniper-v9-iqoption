@@ -1,0 +1,4 @@
+# Minimal dependencies for the read-only IQ Option gateway on Render Free
+requests>=2.31
+websocket-client>=1.6
+pytz>=2023.3

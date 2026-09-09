@@ -1,0 +1,1 @@
+# OmniRouter uses Python standard library only; kept for Render build compatibility.

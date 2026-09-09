@@ -1,0 +1,18 @@
+# Binary Quant X — dependências pesadas, somente GitHub Actions sob demanda
+-r requirements.txt
+
+# Anomaly Shield
+Darts>=0.30,<1.0
+
+# Forecasting advisory
+# TimesFM 2.5 backend; torch é instalado explicitamente para evitar fallback silencioso
+timesfm>=1.3.0
+
+# Sentiment advisory (FinBERT)
+torch>=2.2
+transformers>=4.40
+sentencepiece>=0.2
+
+# Scientific/runtime support
+accelerate>=0.30
+safetensors>=0.4
