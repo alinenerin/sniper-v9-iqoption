@@ -67,18 +67,34 @@ def _iso(ts: Any) -> str | None:
         return None
 
 
-def _direction(market: str, result: dict[str, Any], candles: list[dict[str, Any]]) -> tuple[str, str]:
-    """Return an explicit calculated direction without inventing a signal."""
+def _direction_state(market: str, result: dict[str, Any], candles: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep candle observation separate from a validated signal direction.
+
+    The last completed candle is useful evidence, but it is not a signal.  A
+    confirmed direction must come from the engine (M1/M3/M5 or a validated
+    confluence); never promote the candle fallback into that field.
+    """
     raw = result.get('direction') or result.get('signal') or result.get('side') or result.get('bias')
     text = str(raw or '').upper()
     if any(x in text for x in ('CALL', 'BUY', 'UP', 'COMPRA', 'LONG')):
-        return ('CALL' if market in ('binary', 'otc') else 'BUY'), 'engine'
-    if any(x in text for x in ('PUT', 'SELL', 'DOWN', 'VENDA', 'SHORT')):
-        return ('PUT' if market in ('binary', 'otc') else 'SELL'), 'engine'
+        confirmed = 'CALL' if market in ('binary', 'otc') else 'BUY'
+        confirmed_source = 'engine'
+    elif any(x in text for x in ('PUT', 'SELL', 'DOWN', 'VENDA', 'SHORT')):
+        confirmed = 'PUT' if market in ('binary', 'otc') else 'SELL'
+        confirmed_source = 'engine'
+    else:
+        confirmed = None
+        confirmed_source = None
+
     closes = [x.get('close') for x in candles[-2:] if isinstance(x.get('close'), (int, float))]
+    observed = None
     if len(closes) == 2 and closes[1] != closes[0]:
-        return ('CALL' if closes[1] > closes[0] else 'PUT') if market in ('binary', 'otc') else ('BUY' if closes[1] > closes[0] else 'SELL'), 'last_completed_candle'
-    return 'NEUTRAL', 'insufficient-direction-data'
+        observed = ('CALL' if closes[1] > closes[0] else 'PUT') if market in ('binary', 'otc') else ('BUY' if closes[1] > closes[0] else 'SELL')
+        observed_source = 'last_completed_candle'
+    else:
+        observed_source = 'insufficient-direction-data'
+    return {'direction_observed': observed, 'direction_observed_source': observed_source,
+            'direction_confirmed': confirmed, 'direction_confirmed_source': confirmed_source}
 
 
 def _timing_fields(candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
@@ -107,17 +123,29 @@ def _shadow_policy(market: str, score: float | None, direction: str | None, cand
 
 
 def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
-    direction, source = _direction(market, result, candles)
+    direction_state = _direction_state(market, result, candles)
     timing = _timing_fields(candles, observed_at)
     last_ts = candles[-1].get('timestamp') if candles else None
     expiry_seconds = 60
     expiry_ts = None
     try: expiry_ts = float(last_ts) + expiry_seconds if last_ts is not None else None
     except (TypeError, ValueError): pass
-    return {'direction_calculated': direction, 'direction_source': source, 'candle_timing': timing,
+    return {**direction_state, 'candle_timing': timing,
             'expiration': {'duration_seconds': expiry_seconds, 'expected_timestamp_utc': _iso(expiry_ts),
                            'status': 'pending_expiration', 'hypothetical_result': None,
                            'result_reason': 'Future candle required; no outcome fabricated.'}}
+
+
+def _apply_direction_veto(result: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed when only an observational candle direction is available."""
+    if result.get("direction_confirmed") is None:
+        vetoes = list(result.get("vetoes") or [])
+        if "DIRECTION_UNCONFIRMED" not in vetoes:
+            vetoes.append("DIRECTION_UNCONFIRMED")
+        result["vetoes"] = vetoes
+        result["direction_reason"] = "DIRECTION_UNCONFIRMED"
+        result["approved"] = False
+    return result
 
 
 def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
@@ -142,7 +170,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             result = ForexV16ReadOnly(score_minimum=95).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
             result.update(_analysis_timing(market, result, candles, observed_at))
-            return result
+            return _apply_direction_veto(result)
         consultation = SharedAI(score_minimum=95).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
@@ -166,9 +194,9 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at),
         }
         if market == "otc":
-            direction = result.get("direction_calculated")
+            direction = result.get("direction_confirmed")
             result["shadow_policy"] = _shadow_policy(market, result.get("score"), direction, candles)
-        return result
+        return _apply_direction_veto(result)
     except Exception as exc:
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
         return {"market": market, "symbol": symbol, "status": "blocked",
@@ -228,3 +256,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
