@@ -18,6 +18,7 @@ def snapshot_id(payload: Any) -> str:
 # IQ Option candle sizes, in seconds.
 TIMEFRAME_NAMES = {
     60: "M1",
+    180: "M3",
     300: "M5",
     900: "M15",
     3600: "H1",
@@ -27,6 +28,7 @@ TIMEFRAME_NAMES = {
 # Local minimums required by the temporal contract. These are NOT provider limits.
 MINIMUMS = {
     60: 120,
+    180: 40,
     300: 30,
     900: 30,
     3600: 30,
