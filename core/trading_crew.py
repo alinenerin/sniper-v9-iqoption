@@ -23,6 +23,7 @@ class TradingCrewV16:
         "liquidity": ("liquidity", "advisory"),
         "probability_engine": ("probability_context", "advisory"),
         "cycle_catalog": ("cycle_context", "advisory"),
+        "news_api": ("news_api", "advisory"),
         "paper_performance": ("paper_performance", "advisory"),
         "m1": ("m1_operational", "timeframe_candidate"),
         "m3": ("m3_operational", "timeframe_candidate"),
@@ -63,11 +64,11 @@ class TradingCrewV16:
                 status = "blocked"
             state = (
                 "executed_and_fused"
-                if status in {"inference_ok", "executed", "completed"}
+                if status in {"ok", "inference_ok", "executed", "completed"}
                 and authority in {"fused", "confirmation", "timeframe_candidate", "safety"}
                 and not mismatch
                 else "executed_advisory_only"
-                if status in {"inference_ok", "executed", "completed"} and not mismatch
+                if status in {"ok", "inference_ok", "executed", "completed"} and not mismatch
                 else "declared_or_blocked"
             )
             reason = "SNAPSHOT_MISMATCH" if mismatch else item.get("reason")
