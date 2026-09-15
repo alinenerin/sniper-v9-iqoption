@@ -40,10 +40,15 @@ class TradingAgentsShadowCommittee:
             vetoes.append("V16_NOT_APPROVED")
         if item.get("status") in {"blocked", "error", "insufficient-data"}:
             vetoes.append("SOURCE_ANALYSIS_NOT_READY")
+        # Neutral/unknown direction and thin auxiliary evidence are advisory
+        # observations, not execution vetoes.  Only the authoritative V16
+        # lane can reject; this shadow committee must not turn uncertainty into
+        # a false hard block.
+        flags: List[str] = []
         if str(item.get("direction", "")).upper() not in {"CALL", "PUT", "BUY", "SELL"}:
-            vetoes.append("DIRECTION_UNCONFIRMED")
+            flags.append("DIRECTION_UNCONFIRMED")
         if len(evidence_ok) < self.min_evidence:
-            vetoes.append("INSUFFICIENT_ADVISORY_EVIDENCE")
+            flags.append("INSUFFICIENT_ADVISORY_EVIDENCE")
 
         # The committee can veto or flag; it cannot approve an operation.
         verdict = "REJECTED" if vetoes else "WATCHLIST"
@@ -56,6 +61,7 @@ class TradingAgentsShadowCommittee:
             "evidence_ok": sorted(evidence_ok),
             "blocked_components": sorted(blocked),
             "vetoes": vetoes,
+            "flags": flags,
             "decision_impact": "advisory_only",
             "execution_allowed": False,
             "read_only": True,
