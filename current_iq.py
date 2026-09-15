@@ -309,7 +309,7 @@ class IQOptionReadonly:
         self._schedule_reconnect(_state.get('reason') or 'IQ_OPTION_RECONNECT_REQUIRED')
         return False, _state.get('reason') or 'IQ_OPTION_RECONNECTING'
 
-    def candles(self, symbol, interval=60, count=1000, market_type=None):
+    def candles(self, symbol, interval=60, count=1000, market_type=None, allow_cache=True):
         """Return only a validated, fresh, sufficiently deep historical dataset."""
         requested_at = time.time()
         requested_symbol = str(symbol).upper()
@@ -416,15 +416,18 @@ class IQOptionReadonly:
                 if len(best) >= required: break
                 if best: cursor = min(float(x["timestamp"]) for x in best) - interval
                 time.sleep(0.4 * attempt)
-            with _lock:
-                cached = list(_candle_cache.get((normalized, interval), [])); base["cache_size"] = len(cached)
-            # Cache is an optimization, never an authority: discard stale
-            # rows before merging so an old stream snapshot cannot poison a
-            # valid per-symbol historical response or hide freshness failure.
-            cache_now = time.time()
-            cached = [x for x in cached if x.get("timestamp") is not None and cache_now - float(x["timestamp"]) <= 900]
+            # Historical batch scans can opt out of the stream cache.  This is
+            # important for a same-snapshot committee: every pair must be
+            # refreshed by the provider, never silently completed by an older
+            # stream sample.
+            cached = []
+            if allow_cache:
+                with _lock:
+                    cached = list(_candle_cache.get((normalized, interval), [])); base["cache_size"] = len(cached)
+                cache_now = time.time()
+                cached = [x for x in cached if x.get("timestamp") is not None and cache_now - float(x["timestamp"]) <= 900]
             base["cache_fresh"] = bool(cached)
-            if len(cached) >= required:
+            if allow_cache and len(cached) >= required:
                 merged = sorted({float(x["timestamp"]): x for x in cached + best if x.get("timestamp") is not None}.values(), key=lambda x: x["timestamp"])
                 if len(merged) > len(best): base["cache_hit"] = True
                 best = merged
@@ -544,34 +547,42 @@ class IQOptionReadonly:
         except Exception: return {'ok': False, 'reason': 'COMMISSION_UNAVAILABLE', 'read_only': True}
 
     def snapshot_batch(self, symbols):
-        """Single batch gateway call: one IQ init/payout snapshot plus requested M1/M5 candles."""
+        """Collect a fresh, complete snapshot for every requested pair.
+
+        Batch mode deliberately bypasses the stream cache.  The returned
+        envelope is only OK when every requested pair has all required
+        timeframes, so callers cannot mistake a partial scan for consensus.
+        """
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
-        # Use the SDK's supported open-time/profit batch calls instead of
-        # get_all_init_v2, whose websocket response can stall behind Webshare.
-        # Asset catalog/payouts are advisory. A transient empty catalog must
-        # never prevent the authoritative candle requests from running.
-        asset_response=self.assets('all')
-        assets=asset_response.get('assets',[]) if asset_response.get('ok') else []
-        payouts={}
+        asset_response = self.assets('all')
+        assets = asset_response.get('assets', []) if asset_response.get('ok') else []
+        payouts = {}
         for item in assets:
             if item.get('payout') is not None:
-                payouts.setdefault(item.get('symbol'),{})[item.get('instrument')]=item.get('payout')
-        # iqoptionapi's websocket client is not thread-safe: process small batches
-        # sequentially to avoid deadlocks, while keeping one external gateway call.
-        data={}
-        for start in range(0, len(symbols), 2):
-            for symbol in symbols[start:start+2]:
-                kind = 'OTC' if str(symbol).upper().endswith('-OTC') else 'REAL'
-                realtime = self.realtime_candles(symbol, 60, 20)
-                realtime_rows = realtime.get('candles', []) if isinstance(realtime, dict) else []
-                live_quote = realtime_rows[-1].get('close') if realtime_rows else None
-                data[symbol]={'m1':self.candles(symbol,60,1000,kind),
-                             'm3':self.candles(symbol,180,120,kind),
-                             'm5':self.candles(symbol,300,30,kind),
-                             'realtime': realtime_rows,
-                             'quote': live_quote,
-                             'quote_source': 'IQ_OPTION_REALTIME_CANDLE' if live_quote is not None else 'UNAVAILABLE'}
-        return {'ok':True,'assets':assets,'payouts':payouts,'symbols':data,'source':'IQ_OPTION_DIRECT','read_only':True}
+                payouts.setdefault(item.get('symbol'), {})[item.get('instrument')] = item.get('payout')
+        requested = list(dict.fromkeys(str(x).upper() for x in (symbols or []) if str(x).strip()))
+        data, failures = {}, {}
+        for symbol in requested:
+            kind = 'OTC' if symbol.endswith('-OTC') else 'REAL'
+            realtime = self.realtime_candles(symbol, 60, 20)
+            realtime_rows = realtime.get('candles', []) if isinstance(realtime, dict) else []
+            live_quote = realtime_rows[-1].get('close') if realtime_rows else None
+            rows = {
+                'm1': self.candles(symbol, 60, 1000, kind, allow_cache=False),
+                'm3': self.candles(symbol, 180, 120, kind, allow_cache=False),
+                'm5': self.candles(symbol, 300, 30, kind, allow_cache=False),
+                'realtime': realtime_rows, 'quote': live_quote,
+                'quote_source': 'IQ_OPTION_REALTIME_CANDLE' if live_quote is not None else 'UNAVAILABLE',
+                'cache_policy': 'bypass',
+            }
+            data[symbol] = rows
+            bad = [tf for tf in ('m1', 'm3', 'm5') if rows[tf].get('status') != 'OK']
+            if bad:
+                failures[symbol] = {'timeframes': bad, 'reason': 'FRESH_PROVIDER_DATA_UNAVAILABLE'}
+        return {'ok': not failures and len(data) == len(requested), 'requested_symbols': requested,
+                'collected_symbols': list(data), 'failed_symbols': failures,
+                'assets': assets, 'payouts': payouts, 'symbols': data,
+                'source': 'IQ_OPTION_DIRECT', 'read_only': True, 'cache_policy': 'bypass'}
 
     def snapshot(self, symbol, interval=60):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
