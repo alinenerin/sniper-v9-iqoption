@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from config.settings import TRADING_CONFIG
+
 
 def _candles(payload: Any) -> list[dict[str, Any]]:
     """Accept the gateway's list or its usual {candles: [...]} envelope."""
@@ -91,11 +93,18 @@ def _shadow_policy(market: str, score: float | None, direction: str | None, cand
     if market != "otc":
         return {}
     value = float(score or 0)
-    eligible = bool(candles) and 90.0 <= value < 95.0 and direction in ("CALL", "PUT")
-    return {"lane": "shadow", "minimum_score": 90.0, "official_minimum_score": 95.0,
-            "eligible": eligible, "requires_live_timing": True,
-            "execution_allowed": False,
-            "reason": "SCORE_90_94_REQUIRES_LIVE_TIMING" if eligible else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION"}
+    diamond = float(TRADING_CONFIG.diamond_threshold)
+    supreme = float(TRADING_CONFIG.supreme_threshold)
+    eligible = bool(candles) and diamond <= value < supreme and direction in ("CALL", "PUT")
+    return {
+        "lane": "shadow",
+        "minimum_score": diamond,
+        "official_minimum_score": supreme,
+        "eligible": eligible,
+        "requires_live_timing": True,
+        "execution_allowed": False,
+        "reason": "SCORE_IN_SHADOW_BAND_REQUIRES_LIVE_TIMING" if eligible else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION",
+    }
 
 
 def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str, Any]], observed_at: datetime) -> dict[str, Any]:
@@ -131,11 +140,11 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 "shadow_policy": _shadow_policy(market, None, None, candles), **timing}
     try:
         if market == "forex":
-            result = ForexV16ReadOnly(score_minimum=75).analyze(symbol, candles, {"source": "Railway market_data.json"})
+            result = ForexV16ReadOnly(score_minimum=TRADING_CONFIG.diamond_threshold).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
             result.update(_analysis_timing(market, result, candles, observed_at))
             return result
-        consultation = SharedAI(score_minimum=75).consult(MarketRequest(
+        consultation = SharedAI(score_minimum=TRADING_CONFIG.diamond_threshold).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
         ))
@@ -207,7 +216,11 @@ def main() -> int:
         "binary": {"status": "completed" if run_binary else "not_requested", "analyses": binary},
         "market_data": market_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
-        "filters": {"score_minimum": 75, "zero_gale": True, "payout_minimum": 80},
+        "filters": {
+            "score_minimum": TRADING_CONFIG.diamond_threshold,
+            "zero_gale": True,
+            "payout_minimum": TRADING_CONFIG.payout_minimum,
+        },
         "best_candidate": best_candidate,
         "best_candidate_note": "Ranking only; does not approve a trade. Score and all vetoes remain mandatory.",
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
