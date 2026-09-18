@@ -7,7 +7,42 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 from engines.binary.sniper_timing import plan_sniper_window
+from config.settings import TRADING_CONFIG
 from core.deterministic_confluence import evaluate as deterministic_confluence
+
+
+def _truthy(row: Dict[str, Any], *keys: str) -> bool:
+    return any(bool(row.get(key)) for key in keys)
+
+
+def _gate_evidence(timeframe_results: Dict[str, Any], errors: List[str],
+                   confluence: Dict[str, Any], timing: Dict[str, Any]) -> Dict[str, Any]:
+    """Build independent fail-closed gates shared by both lanes.
+
+    NO_SCORE_MODE is deliberately not represented as a second approval path:
+    it only changes ``score.required``. Every data-integrity and operational
+    gate remains authoritative.
+    """
+    rows = [r for r in timeframe_results.values() if isinstance(r, dict)]
+    stale = any(_truthy(r, "stale", "is_stale", "stale_candle") for r in rows)
+    anomaly_values = [r.get("anomaly_score") for r in rows
+                      if isinstance(r.get("anomaly_score"), (int, float))]
+    anomaly = any(v > 85 for v in anomaly_values) or any(
+        _truthy(r, "anomaly_veto", "anomaly_blocked") for r in rows)
+    conflict = any(_truthy(r, "conflict", "direction_conflict", "consensus_conflict") for r in rows)
+    data = bool(errors) or any(r.get("status") in {"ERROR", "error", "blocked"} for r in rows)
+    return {
+        "data": {"passed": not data, "vetoes": list(errors)},
+        "stale": {"passed": not stale, "vetoes": ["STALE_CANDLE"] if stale else []},
+        "timing": {"passed": bool(timing.get("valid")), "vetoes": [] if timing.get("valid") else ["TIMING_INVALID"]},
+        "anomaly": {"passed": not anomaly, "vetoes": ["ANOMALY_VETO"] if anomaly else [], "scores": anomaly_values},
+        "conflict": {"passed": not conflict, "vetoes": ["DIRECTION_CONFLICT"] if conflict else []},
+        "confluence": {"passed": bool(confluence.get("approved")), "vetoes": [] if confluence.get("approved") else ["CONFLUENCE_VETO"]},
+    }
+
+
+def _gate_vetoes(gates: Dict[str, Any]) -> List[str]:
+    return [veto for gate in gates.values() for veto in gate.get("vetoes", [])]
 
 
 def _lane(timeframe_results: Dict[str, Any], market: str, mode: str,
@@ -25,15 +60,27 @@ def _lane(timeframe_results: Dict[str, Any], market: str, mode: str,
     score = round(weighted[direction], 2)
     votes = sum(1 for row in timeframe_results.values() if row.get("direction") == direction)
     confluence = deterministic_confluence(timeframe_results, direction, score, errors)
-    approved = bool(confluence["approved"] if no_score else (not errors and votes >= 3 and score >= 70.0))
-    vetoes = list(errors)
+    timing = plan_sniper_window(timeframe="M1")
+    gates = _gate_evidence(timeframe_results, errors, confluence, timing)
     if votes < 3:
-        vetoes.append("INSUFFICIENT_DIRECTIONAL_VOTES")
-    if not no_score and score < 70.0:
-        vetoes.append("SCORE_BELOW_THRESHOLD")
+        gates["consensus"] = {"passed": False, "vetoes": ["INSUFFICIENT_DIRECTIONAL_VOTES"]}
+    else:
+        gates["consensus"] = {"passed": True, "vetoes": []}
+    score_required = not no_score
+    score_passed = score >= TRADING_CONFIG.diamond_threshold
+    gates["score"] = {
+        "passed": score_passed if score_required else True,
+        "required": score_required,
+        "bypassed": not score_required,
+        "threshold": TRADING_CONFIG.diamond_threshold,
+        "value": score,
+        "vetoes": (["SCORE_BELOW_MINIMUM", "SCORE_BELOW_THRESHOLD"]
+                   if score_required and not score_passed else []),
+    }
+    approved = all(gate["passed"] for name, gate in gates.items() if name != "score" or score_required)
+    vetoes = _gate_vetoes(gates)
     if not approved:
         direction = "NO_TRADE"
-    timing = plan_sniper_window(timeframe="M1")
     # Keep operational evidence in both lanes.  In particular, NO_SCORE_MODE
     # bypasses only the numeric score gate; stale/anomaly/consensus/timing and
     # confluence evidence must remain visible and authoritative.
@@ -55,6 +102,7 @@ def _lane(timeframe_results: Dict[str, Any], market: str, mode: str,
         **({"score": score, "weighted_score": score} if not no_score else {}),
         "timeframe_votes": votes, "approved": approved,
         "timing": timing, "vetoes": vetoes,
+        "gates": gates,
         "reason": "approved" if approved else "; ".join(vetoes) or "NO_TRADE",
         "evidence": evidence,
         "timeframes": timeframe_results,
