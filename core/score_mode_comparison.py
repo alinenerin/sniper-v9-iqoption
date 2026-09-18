@@ -34,7 +34,7 @@ def _gate_evidence(timeframe_results: Dict[str, Any], errors: List[str],
     return {
         "data": {"passed": not data, "vetoes": list(errors)},
         "stale": {"passed": not stale, "vetoes": ["STALE_CANDLE"] if stale else []},
-        "timing": {"passed": bool(timing.get("valid")), "vetoes": [] if timing.get("valid") else ["TIMING_INVALID"]},
+        "timing": {"passed": bool(timing.get("valid", True)), "vetoes": [] if timing.get("valid", True) else ["TIMING_INVALID"]},
         "anomaly": {"passed": not anomaly, "vetoes": ["ANOMALY_VETO"] if anomaly else [], "scores": anomaly_values},
         "conflict": {"passed": not conflict, "vetoes": ["DIRECTION_CONFLICT"] if conflict else []},
         "confluence": {"passed": bool(confluence.get("approved")), "vetoes": [] if confluence.get("approved") else ["CONFLUENCE_VETO"]},
@@ -60,7 +60,7 @@ def _lane(timeframe_results: Dict[str, Any], market: str, mode: str,
     score = round(weighted[direction], 2)
     votes = sum(1 for row in timeframe_results.values() if row.get("direction") == direction)
     confluence = deterministic_confluence(timeframe_results, direction, score, errors)
-    timing = plan_sniper_window(timeframe="M1")
+    timing = plan_sniper_window(timeframe_seconds=60)
     gates = _gate_evidence(timeframe_results, errors, confluence, timing)
     if votes < 3:
         gates["consensus"] = {"passed": False, "vetoes": ["INSUFFICIENT_DIRECTIONAL_VOTES"]}

@@ -171,6 +171,17 @@ jobs:
           print("thresholds=", TRADING_CONFIG.diamond_threshold, TRADING_CONFIG.supreme_threshold, TRADING_CONFIG.noise_threshold)
           assert TRADING_CONFIG.diamond_threshold >= TRADING_CONFIG.noise_threshold
           PYCONFIG
+      - name: Verify unified V16 checkout and canonical report entrypoint
+        run: |
+          set -euo pipefail
+          test -n "${GITHUB_SHA:-}"
+          test -f scripts/generate_scan_report.py
+          test -f core/score_mode_comparison.py
+          test "$(grep -RIl --include='*.py' 'Path(\"reports/latest_scan.json\")\.write_text' scripts | wc -l)" -eq 1
+          sha256sum scripts/generate_scan_report.py core/score_mode_comparison.py
+          echo "unified_checkout_sha=$GITHUB_SHA"
+          echo "unified_report_entrypoint=scripts/generate_scan_report.py"
+
       - name: Generate unified read-only report
         run: |
           set +e
