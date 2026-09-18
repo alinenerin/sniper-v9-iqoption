@@ -1,1 +1,48 @@
-IiIiUmVncmVzc2lvbiBjb3ZlcmFnZSBmb3Igd29ya2Zsb3cgMzUzNjc1MTYzMTAgcmVwb3J0IGdlbmVyYXRpb24uIiIiCmZyb20gX19mdXR1cmVfXyBpbXBvcnQgYW5ub3RhdGlvbnMKCmltcG9ydCBqc29uCmltcG9ydCBvcwppbXBvcnQgc3VicHJvY2VzcwppbXBvcnQgc3lzCmltcG9ydCB0ZW1wZmlsZQppbXBvcnQgdW5pdHRlc3QKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgoKY2xhc3MgUmVwb3J0R2VuZXJhdG9yRW50cnlwb2ludFRlc3QodW5pdHRlc3QuVGVzdENhc2UpOgogICAgZGVmIHRlc3RfcmVhbF93b3JrZmxvd19wYXlsb2FkX2RvZXNfbm90X3B1Ymxpc2hfcmVwb3J0X2dlbmVyYXRvcl9mYWlsZWQoc2VsZik6CiAgICAgICAgIyBUaGUgZmFpbGluZyB3b3JrZmxvdyBzdXBwbGllZCB0aGlzIHBheWxvYWQgc2hhcGUgYW5kIE5PX1NDT1JFX01PREUuCiAgICAgICAgIyBObyBjYW5kbGVzIG9yIHNjb3JlcyBhcmUgZmFicmljYXRlZCBieSB0aGlzIGZpeHR1cmUuCiAgICAgICAgdG1wX3BhdGggPSBQYXRoKHRlbXBmaWxlLm1rZHRlbXAoKSkKICAgICAgICAodG1wX3BhdGggLyAicmVwb3J0cyIpLm1rZGlyKCkKICAgICAgICAodG1wX3BhdGggLyAicmVwb3J0cyIgLyAibWFya2V0X2RhdGEuanNvbiIpLndyaXRlX3RleHQoCiAgICAgICAgICAgIGpzb24uZHVtcHMoeyJzeW1ib2xzIjogeyJHQlBVU0QiOiB7ImNhbmRsZXMiOiBbXX19fSkKICAgICAgICApCiAgICAgICAgKHRtcF9wYXRoIC8gInJlcG9ydHMiIC8gIm1hY3JvX2RhdGEuanNvbiIpLndyaXRlX3RleHQoCiAgICAgICAgICAgIGpzb24uZHVtcHMoeyJvayI6IEZhbHNlLCAicmVhc29uIjogIlRSQURJTkdWSUVXX01BQ1JPX1JFUE9SVF9NSVNTSU5HIiwgInN5bWJvbHMiOiB7fX0pCiAgICAgICAgKQogICAgICAgIGVudiA9IHsKICAgICAgICAgICAgKipvcy5lbnZpcm9uLAogICAgICAgICAgICAiUFlUSE9OUEFUSCI6IHN0cihQYXRoKF9fZmlsZV9fKS5wYXJlbnRzWzFdKSwKICAgICAgICAgICAgIlNZTUJPTFMiOiAiR0JQVVNEIiwKICAgICAgICAgICAgIk1BUktFVCI6ICJiaW5hcnkiLAogICAgICAgICAgICAiSU5DTFVERV9PVEMiOiAiZmFsc2UiLAogICAgICAgICAgICAiT1RDX09OTFkiOiAiZmFsc2UiLAogICAgICAgICAgICAiTk9fU0NPUkVfTU9ERSI6ICJ0cnVlIiwKICAgICAgICAgICAgIkFOQUxZU0lTX09OTFkiOiAiMSIsCiAgICAgICAgICAgICJFWEVDVVRJT05fQUxMT1dFRCI6ICJmYWxzZSIsCiAgICAgICAgICAgICJFWEVDVVRPUl9FTkFCTEVEIjogImZhbHNlIiwKICAgICAgICB9CiAgICAgICAgc2NyaXB0ID0gUGF0aChfX2ZpbGVfXykucGFyZW50c1sxXSAvICJzY3JpcHRzIiAvICJnZW5lcmF0ZV9zY2FuX3JlcG9ydC5weSIKICAgICAgICBjb21wbGV0ZWQgPSBzdWJwcm9jZXNzLnJ1bigKICAgICAgICAgICAgW3N5cy5leGVjdXRhYmxlLCBzdHIoc2NyaXB0KV0sIGN3ZD10bXBfcGF0aCwgZW52PWVudiwKICAgICAgICAgICAgY2FwdHVyZV9vdXRwdXQ9VHJ1ZSwgdGV4dD1UcnVlLAogICAgICAgICkKICAgICAgICBzZWxmLmFzc2VydEVxdWFsKGNvbXBsZXRlZC5yZXR1cm5jb2RlLCAwLCBjb21wbGV0ZWQuc3RkZXJyKQogICAgICAgIHJlcG9ydCA9IGpzb24ubG9hZHMoKHRtcF9wYXRoIC8gInJlcG9ydHMiIC8gImxhdGVzdF9zY2FuLmpzb24iKS5yZWFkX3RleHQoKSkKICAgICAgICBzZWxmLmFzc2VydEVxdWFsKHJlcG9ydFsibW9kZSJdLCAicmVhZF9vbmx5IikKICAgICAgICBzZWxmLmFzc2VydElzKHJlcG9ydFsiZXhlY3V0aW9uX2FsbG93ZWQiXSwgRmFsc2UpCiAgICAgICAgc2VsZi5hc3NlcnRUcnVlKHJlcG9ydFsiYmluYXJ5Il1bImFuYWx5c2VzIl0pCiAgICAgICAgc2VsZi5hc3NlcnRFcXVhbChyZXBvcnRbImJpbmFyeSJdWyJhbmFseXNlcyJdWzBdWyJyZWFzb24iXSwgIk5PX1JBSUxXQVlfQ0FORExFUyIpCiAgICAgICAgc2VsZi5hc3NlcnROb3RJbigiUkVQT1JUX0dFTkVSQVRPUl9GQUlMRUQiLCBqc29uLmR1bXBzKHJlcG9ydCkpCgoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIHVuaXR0ZXN0Lm1haW4oKQo=
+"""Regression coverage for importing the report entrypoint without optional models."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+
+class ReportGeneratorEntrypointTest(unittest.TestCase):
+    def test_import_succeeds_when_optional_dependencies_are_unavailable(self):
+        root = Path(__file__).resolve().parents[1]
+        code = r'''
+import importlib.abc
+import importlib.util
+import sys
+
+OPTIONAL = {
+    "core.direction_aggregator", "engines.binary", "iqoptionapi",
+    "numpy", "pandas", "sklearn", "tensorflow", "torch", "transformers",
+    "xgboost", "lightgbm", "catboost", "statsmodels",
+}
+class BlockOptional(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in OPTIONAL or any(fullname.startswith(name + ".") for name in OPTIONAL):
+            raise ModuleNotFoundError(fullname)
+        return None
+sys.meta_path.insert(0, BlockOptional())
+spec = importlib.util.spec_from_file_location(
+    "generate_scan_report", "scripts/generate_scan_report.py"
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert callable(module.main)
+assert module.TRADING_CONFIG is not None
+'''
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(root)
+        result = subprocess.run(
+            [sys.executable, "-c", code], cwd=root, env=env,
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
