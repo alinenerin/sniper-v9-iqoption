@@ -26,6 +26,7 @@ from current_iq import IQOptionReadonly, _bounded_call
 from core.signal_engine import generate_signal
 from core.deterministic_confluence import evaluate as deterministic_confluence
 from core.score_mode_comparison import compare_snapshot
+from config.settings import TRADING_CONFIG
 
 TIMEFRAMES = {
     "H4": (14400, 600),
@@ -125,7 +126,7 @@ def analyze_market_comparison(session: IQOptionReadonly, symbol: str, market: st
         try:
             candles = normalize_candles(fetch_history(session, symbol, interval, count))
             sig = generate_signal(candles=candles, instrument=symbol, market=market,
-                                  mode=mode, timeframe=name, min_score=70.0)
+                                  mode=mode, timeframe=name, min_score=TRADING_CONFIG.diamond_threshold)
             snapshot[name] = sig.to_dict()
         except Exception as exc:
             errors[name] = f"{type(exc).__name__}:{exc}"
@@ -149,7 +150,7 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
                 market=market,
                 mode=mode,
                 timeframe=name,
-                min_score=70.0,
+                min_score=TRADING_CONFIG.diamond_threshold,
             )
             timeframe_results[name] = sig.to_dict()
             if sig.direction in weighted:
@@ -169,7 +170,14 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
     deterministic = deterministic_confluence(timeframe_results, direction, score, errors)
     # The optional lane is explicit and conservative; it cannot approve a
     # snapshot with missing/invalid timeframes or below-floor confluence.
-    approved = deterministic["approved"] if no_score_mode else (not errors and same_direction >= 3 and score >= 70.0)
+    stale = any(bool(r.get("stale") or r.get("is_stale") or r.get("stale_candle"))
+                  for r in timeframe_results.values() if isinstance(r, dict))
+    anomaly = any(float(r.get("anomaly_score", 0)) > 85
+                  for r in timeframe_results.values() if isinstance(r, dict)
+                  and isinstance(r.get("anomaly_score"), (int, float)))
+    approved = (deterministic["approved"] and not stale and not anomaly
+                if no_score_mode else (not errors and same_direction >= 3
+                                       and score >= TRADING_CONFIG.diamond_threshold))
     if not approved:
         direction = "NO_TRADE"
 
