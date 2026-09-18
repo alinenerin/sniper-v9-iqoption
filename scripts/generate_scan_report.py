@@ -460,7 +460,7 @@ def main() -> int:
         "market_data": market_data,
         "macro_data": macro_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
-        "filters": {"score_minimum": 80, "diamond_threshold": 80, "supreme_threshold": 88, "noise_threshold": 75, "zero_gale": True, "payout_minimum": 80},
+        "filters": {"score_minimum": float(TRADING_CONFIG.diamond_threshold), "diamond_threshold": float(TRADING_CONFIG.diamond_threshold), "supreme_threshold": float(TRADING_CONFIG.supreme_threshold), "noise_threshold": float(TRADING_CONFIG.noise_threshold), "zero_gale": True, "payout_minimum": int(TRADING_CONFIG.payout_minimum), "score_mode": "NO_SCORE_MODE" if os.getenv("NO_SCORE_MODE", "").lower() in {"1", "true", "yes"} else "SCORE_MODE"},
         "evidence_manifest": evidence_manifest({
             **{name: comp for item in all_items for name, comp in (item.get("components") or {}).items()},
             **{name: report for item in all_items for name, report in ((item.get("committee_report") or {}).get("reports") or {}).items()},
@@ -480,3 +480,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

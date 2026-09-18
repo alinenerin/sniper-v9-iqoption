@@ -110,31 +110,40 @@ def _xgboost_vote(item: Any) -> tuple[str | None, str]:
 def aggregate_direction(*, smc: Any = None, timesfm: Any = None, xgboost: Any = None,
                         m5_engine: Any = None, engine_direction: Any = None) -> dict[str, Any]:
     smc_vote, smc_reason = _smc_vote(smc)
-    times_vote, times_reason = _nested_direction(timesfm, ("direction", "bias", "forecast_direction", "trend", "direcao", "prediction_direction"), "TIMESFM")
+    # TimesFM forecasts price paths; its adapter does not establish a validated
+    # directional vote for this committee. Keep it visible as advisory only.
+    times_vote, _times_reason = _nested_direction(timesfm, ("direction", "bias", "forecast_direction", "trend", "direcao", "prediction_direction"), "TIMESFM")
+    times_reason = "TIMESFM_ADVISORY_ONLY_DIRECTION_NOT_USED" if times_vote else "TIMESFM_ADVISORY_ONLY_NO_EXPLICIT_DIRECTION"
     xgb_vote, xgb_reason = _xgboost_vote(xgboost)
     m5_vote, m5_reason = _nested_direction(m5_engine, ("direction", "bias", "confirmation", "m5_direction", "engine_direction", "signal", "decision", "direction_calculated"), "M5_ENGINE")
     if m5_vote is None:
         fallback = _direction(engine_direction)
         if fallback:
             m5_vote, m5_reason = fallback, f"M5_ENGINE_OUTER_ENGINE_DIRECTION_{fallback}"
-    voters = {"smc": smc_vote, "timesfm": times_vote, "xgboost": xgb_vote, "m5_engine": m5_vote}
+    voters = {"smc": smc_vote, "timesfm": None, "xgboost": xgb_vote, "m5_engine": m5_vote}
     reasons = {"smc": smc_reason, "timesfm": times_reason, "xgboost": xgb_reason, "m5_engine": m5_reason}
+    # Only independent, directional producers can authorize direction. TimesFM
+    # remains in the report as advisory evidence and can never satisfy quorum.
     valid = {name: vote for name, vote in voters.items() if vote in {"CALL", "PUT"}}
     counts = Counter(valid.values())
     winner, winner_count = (counts.most_common(1)[0] if counts else (None, 0))
-    quorum = len(valid) >= 3 and winner_count >= 3 and winner_count > counts.get("PUT" if winner == "CALL" else "CALL", 0)
+    opposing = counts.get("PUT" if winner == "CALL" else "CALL", 0) if winner else 0
+    quorum = len(valid) >= 2 and winner_count >= 2 and opposing == 0
     direction = winner if quorum else "NEUTRAL"
     if quorum:
-        reason = f"3_OF_4_DIRECTIONAL_CONSENSUS:{winner_count}/{len(valid)}"
+        reason = f"MIN_2_INDEPENDENT_DIRECTIONAL_CONSENSUS:{winner_count}/{len(valid)}"
         source = "consensus"
-    elif len(valid) < 3:
-        reason = f"INSUFFICIENT_DIRECTIONAL_EVIDENCE:{len(valid)}/4; minimum=3"
+    elif opposing:
+        reason = f"DIRECTIONAL_CONFLICT:{counts.get('CALL', 0)}-{counts.get('PUT', 0)}"
         source = "none"
     else:
-        reason = f"DIRECTIONAL_DIVERGENCE:{counts.get('CALL', 0)}-{counts.get('PUT', 0)}"
+        reason = f"INSUFFICIENT_DIRECTIONAL_EVIDENCE:{len(valid)}/3; minimum=2"
         source = "none"
     mode = "NO_SCORE_MODE" if os.getenv("NO_SCORE_MODE", "").lower() in {"1", "true", "yes"} else "SCORE_MODE"
     return {"direction_confirmed": direction, "source": source, "votes": voters,
             "vote_reasons": reasons, "vote_counts": {"CALL": counts.get("CALL", 0), "PUT": counts.get("PUT", 0)},
-            "valid_votes": len(valid), "required_votes": 3, "direction_reason": reason,
+            "valid_votes": len(valid), "required_votes": 2,
+            "directional_sources": [name for name in ("smc", "xgboost", "m5_engine") if voters[name]],
+            "advisory_only": ["timesfm"], "direction_reason": reason,
             "score_mode": mode}
+

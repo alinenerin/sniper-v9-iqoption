@@ -8,10 +8,10 @@ def ok(direction):
 def test_three_of_four_confirms_without_candle_vote():
     result = aggregate_direction(smc=ok("CALL"), timesfm=ok("UP"),
                                  xgboost={"status": "inference_ok", "probability_up": .8},
-                                 m5_engine=ok("PUT"), engine_direction="PUT")
+                                 m5_engine=ok("CALL"), engine_direction="CALL")
     assert result["direction_confirmed"] == "CALL"
     assert result["source"] == "consensus"
-    assert result["vote_counts"] == {"CALL": 3, "PUT": 1}
+    assert result["vote_counts"] == {"CALL": 2, "PUT": 0}
     assert all(result["vote_reasons"].values())
 
 
@@ -23,8 +23,8 @@ def test_three_of_four_normalizes_native_smc_timesfm_and_m5_outputs():
         m5_engine={"status": "executed", "result": {"signal": "CALL"}},
     )
     assert result["direction_confirmed"] == "CALL"
-    assert result["valid_votes"] == 4
-    assert result["votes"] == {"smc": "CALL", "timesfm": "CALL", "xgboost": "CALL", "m5_engine": "CALL"}
+    assert result["valid_votes"] == 3
+    assert result["votes"] == {"smc": "CALL", "timesfm": None, "xgboost": "CALL", "m5_engine": "CALL"}
     assert "SMC_BOS_CALL" in result["vote_reasons"]["smc"]
 
 
@@ -55,3 +55,18 @@ def test_legitimate_absence_stays_neutral_with_reasons():
     assert result["valid_votes"] == 0
     assert "NO_EXPLICIT_DIRECTION" in result["vote_reasons"]["smc"]
     assert "STATUS_BLOCKED" in result["vote_reasons"]["m5_engine"]
+
+
+
+def test_timesfm_is_explicitly_advisory_and_cannot_create_vote():
+    result = aggregate_direction(timesfm=ok("UP"), xgboost={"status": "inference_ok", "probability_up": .8})
+    assert result["direction_confirmed"] == "NEUTRAL"
+    assert result["votes"]["timesfm"] is None
+    assert result["vote_reasons"]["timesfm"].startswith("TIMESFM_ADVISORY_ONLY")
+    assert "timesfm" in result["advisory_only"]
+
+
+def test_two_independent_aligned_sources_are_sufficient_without_conflict():
+    result = aggregate_direction(smc=ok("PUT"), m5_engine=ok("PUT"), timesfm=ok("UP"))
+    assert result["direction_confirmed"] == "PUT"
+    assert result["directional_sources"] == ["smc", "m5_engine"]

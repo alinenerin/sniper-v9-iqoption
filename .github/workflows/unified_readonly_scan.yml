@@ -162,6 +162,15 @@ jobs:
           cp reports/market_data.json reports/agent_market_data.json
           python scripts/refresh_final_timing.py
           mv reports/agent_market_data.json reports/market_data.json
+      - name: Verify current analysis commit and official thresholds
+        run: |
+          python - <<'PYCONFIG'
+          import os
+          from config.settings import TRADING_CONFIG
+          print("analysis_commit=" + os.environ.get("GITHUB_SHA", "unknown"))
+          print("thresholds=", TRADING_CONFIG.diamond_threshold, TRADING_CONFIG.supreme_threshold, TRADING_CONFIG.noise_threshold)
+          assert TRADING_CONFIG.diamond_threshold >= TRADING_CONFIG.noise_threshold
+          PYCONFIG
       - name: Generate unified read-only report
         run: |
           set +e
@@ -269,3 +278,4 @@ jobs:
             reports/tradingagents_shadow.json
             reports/darts_inference.json
             reports/finbert_inference.json
+
