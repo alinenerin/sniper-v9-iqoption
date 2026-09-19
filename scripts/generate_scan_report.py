@@ -12,7 +12,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from config.settings import TRADING_CONFIG
+# The report must be runnable in the workflow's read-only lane even when an
+# optional model dependency is unavailable.  Keep the canonical config when it
+# can be imported, but do not make report generation fail before it can emit a
+# blocked, truthful report.
+try:
+    from config.settings import TRADING_CONFIG
+except (ImportError, ModuleNotFoundError):
+    class _FallbackTradingConfig:
+        diamond_threshold = 80.0
+        supreme_threshold = 88.0
+        noise_threshold = 75.0
+        payout_minimum = 80
+    TRADING_CONFIG = _FallbackTradingConfig()
 
 # GitHub invokes this file by path; make repository imports deterministic.
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,10 +180,11 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
 def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime,
              final_timing: dict[str, Any] | None = None) -> dict[str, Any]:
     timing = _analysis_timing(market, {}, candles, observed_at, final_timing)
-    from config.markets.contracts import MarketRequest
-    from engines.forex.operational import ForexV16ReadOnly
-    from shared_ai.consultation import SharedAI
 
+    # Empty/invalid gateway payloads are a valid fail-closed outcome.  Handle
+    # them before importing model/engine modules: those imports are optional
+    # and previously raised (for example missing pytz/numpy), causing the
+    # workflow to publish REPORT_GENERATOR_FAILED instead of a real report.
     if not candles:
         components = _blocked_components("NO_RAILWAY_CANDLES")
         if market == "otc":
@@ -185,6 +198,13 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 "shadow_policy": _shadow_policy(market, None, None, candles), **timing,
                 "score_mode": _mode_contract({"vetoes": ["NO_RAILWAY_CANDLES"]})["score_mode"],
                 "no_score_mode": _mode_contract({"vetoes": ["NO_RAILWAY_CANDLES"]})["no_score_mode"]}
+
+    # Heavy engines are imported only for a payload that actually contains
+    # candles.  This keeps blocked-data reporting independent of optional ML
+    # packages while preserving the official engines for real analysis.
+    from config.markets.contracts import MarketRequest
+    from engines.forex.operational import ForexV16ReadOnly
+    from shared_ai.consultation import SharedAI
     try:
         if market == "forex":
             result = ForexV16ReadOnly(score_minimum=0).analyze(symbol, candles, {"source": "Railway market_data.json"})
