@@ -23,6 +23,11 @@ on:
         required: true
         default: true
         type: boolean
+      no_score_mode:
+        description: 'Ativar modo comparativo sem score (opcional)'
+        required: true
+        default: false
+        type: boolean
       market:
         description: 'Mercado do pipeline: binary, forex ou unified'
         required: true
@@ -46,7 +51,7 @@ jobs:
       SYMBOLS: ${{ github.event.inputs.symbols }}
       MARKET: ${{ github.event.inputs.market }}
       FAST_MODE: ${{ github.event.inputs.fast_mode }}
-      NO_SCORE_MODE: 'true'
+      NO_SCORE_MODE: ${{ github.event.inputs.no_score_mode }}
       LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
       MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
     steps:
