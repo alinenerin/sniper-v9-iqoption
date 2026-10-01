@@ -9,10 +9,11 @@ garantir o Win de 1ª ou no máximo Gale 1.
 """
 
 import logging
+from config.settings import TRADING_CONFIG
 
 class SovereignFilter:
-    def __init__(self, min_score=90, min_prob=92):
-        self.min_score = min_score
+    def __init__(self, min_score=None, min_prob=92):
+        self.min_score = TRADING_CONFIG.diamond_threshold if min_score is None else float(min_score)
         self.min_prob = min_prob
 
     def validate(self, analysis, probability):

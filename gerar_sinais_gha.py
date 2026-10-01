@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import pytz
 from iqoptionapi.stable_api import IQ_Option
 from core.signal_engine import generate_signal
+from config.settings import TRADING_CONFIG
 
 BRT = pytz.timezone('America/Sao_Paulo')
 MODO = os.environ.get('MODO', 'AMBOS').upper()  # FOREX, BINARIA, OTC, AMBOS
@@ -40,7 +41,7 @@ def analisar_par(par, iq, market='BINARIA', mode='STANDARD'):
         market=market,
         mode=mode,
         timeframe='M1',
-        min_score=70.0,
+        min_score=TRADING_CONFIG.diamond_threshold,
     )
 
     det = {
@@ -59,16 +60,6 @@ def analisar_par(par, iq, market='BINARIA', mode='STANDARD'):
 
     if sig.direction not in {'CALL', 'PUT'}:
         det['reason'] = '; '.join(sig.reasons) if sig.reasons else 'Sem setup'
-        return None, 0, det
-
-    # Trava específica já existente para JPY.
-    if 'JPY' in par and sig.score < 95:
-        det['reason'] = 'Trava JPY: score abaixo de 95'
-        return None, 0, det
-
-    # OTC continua sendo BINARIA, com confirmação adicional.
-    if mode == 'OTC' and sig.score < 75:
-        det['reason'] = 'Trava OTC: score abaixo de 75'
         return None, 0, det
 
     return sig.direction, sig.score, det

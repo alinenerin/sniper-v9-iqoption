@@ -231,10 +231,10 @@ class SupremeIntelligence:
             return False, "DIRECTION_UNCONFIRMED"
 
         score = float(analysis.get("score", 0) or 0)
+        # Approval minimum and classification are separate: 75 is the single
+        # operational floor, while SUPREME remains the distinct 88+ category.
         if score >= TRADING_CONFIG.supreme_threshold:
             return True, "SUPREME_CONFLUENCE_TOTAL"
         if score >= TRADING_CONFIG.diamond_threshold:
             return True, "DIAMOND_CONFLUENCE_MAJORITY"
-        if score >= TRADING_CONFIG.noise_threshold:
-            return True, "QUALIFIED_CANDIDATE"
-        return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: {TRADING_CONFIG.noise_threshold:.1f})"
+        return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: {TRADING_CONFIG.diamond_threshold:.1f})"

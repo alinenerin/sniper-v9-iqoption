@@ -12,6 +12,8 @@ import pytz
 from dataclasses import dataclass, field
 from typing import List
 
+from config.score_thresholds import OFFICIAL_SCORE_MINIMUM
+
 # =============================================================================
 # 🔐 CREDENCIAIS (Protegidas via GitHub Secrets / Railway Variables)
 # =============================================================================
@@ -85,7 +87,7 @@ class TradingConfig:
     supreme_threshold: float = 88.0   # SUPREME (88-100)
     candidate_threshold: float = 65.0  # triagem de timeframe
     conditional_threshold: float = 70.0
-    diamond_threshold: float = 80.0   # DIAMOND (80-87)
+    diamond_threshold: float = OFFICIAL_SCORE_MINIMUM  # Operational approval minimum (75); classification remains separate
     noise_threshold: float = 75.0
 
     # Pesos do Evidence/Fusion Score (soma = 1.0)

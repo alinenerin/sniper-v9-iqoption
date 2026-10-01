@@ -60,7 +60,7 @@ def _lane(timeframe_results: Dict[str, Any], market: str, mode: str,
     score = round(weighted[direction], 2)
     votes = sum(1 for row in timeframe_results.values() if row.get("direction") == direction)
     confluence = deterministic_confluence(timeframe_results, direction, score, errors)
-    timing = plan_sniper_window(timeframe_seconds=60)
+    timing = plan_sniper_window(timeframe="M1")
     gates = _gate_evidence(timeframe_results, errors, confluence, timing)
     if votes < 3:
         gates["consensus"] = {"passed": False, "vetoes": ["INSUFFICIENT_DIRECTIONAL_VOTES"]}

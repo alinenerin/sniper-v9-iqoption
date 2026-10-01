@@ -165,7 +165,7 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
     same_direction = sum(1 for vote in votes if vote == direction)
 
     # Fail closed: a simulated signal requires at least 3/4 timeframes and
-    # a weighted score >= 70. No probability is fabricated from this score.
+    # the configured operational score minimum. No probability is fabricated.
     no_score_mode = os.getenv("NO_SCORE_MODE", "false").lower() in {"1", "true", "yes"}
     deterministic = deterministic_confluence(timeframe_results, direction, score, errors)
     # The optional lane is explicit and conservative; it cannot approve a

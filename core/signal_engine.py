@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional
 import math
+from config.settings import TRADING_CONFIG
 
 @dataclass
 class Signal:
@@ -53,9 +54,10 @@ def _valid(c):
     return all(all(k in x for k in ('open','close','max','min','t')) for x in c)
 
 def generate_signal(candles: List[Dict[str,Any]], instrument:str, market:str,
-                    mode:str='STANDARD', timeframe:str='M1', min_score:float=70.0)->Signal:
+                    mode:str='STANDARD', timeframe:str='M1', min_score:float | None=None)->Signal:
     """Gera CALL/PUT/NO_TRADE. Nunca envia ordem."""
     market=market.upper(); mode=mode.upper()
+    min_score = TRADING_CONFIG.diamond_threshold if min_score is None else float(min_score)
     if market not in {'FOREX','BINARIA'}: raise ValueError('market deve ser FOREX ou BINARIA')
     if market=='FOREX' and mode=='OTC': raise ValueError('OTC pertence a BINARIA')
     if not _valid(candles):

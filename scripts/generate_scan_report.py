@@ -12,25 +12,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# GitHub invokes this file by path; make repository imports deterministic
+# before either the canonical or dependency-free fallback config is imported.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 # The report must be runnable in the workflow's read-only lane even when an
-# optional model dependency is unavailable.  Keep the canonical config when it
+# optional model dependency is unavailable. Keep the canonical config when it
 # can be imported, but do not make report generation fail before it can emit a
 # blocked, truthful report.
 try:
     from config.settings import TRADING_CONFIG
 except (ImportError, ModuleNotFoundError):
+    # Keep the degraded-report path tied to the same dependency-free constant
+    # used by the canonical TradingConfig, rather than duplicating a threshold.
+    from config.score_thresholds import OFFICIAL_SCORE_MINIMUM
+
     class _FallbackTradingConfig:
-        diamond_threshold = 80.0
+        diamond_threshold = OFFICIAL_SCORE_MINIMUM
         supreme_threshold = 88.0
         noise_threshold = 75.0
         payout_minimum = 80
     TRADING_CONFIG = _FallbackTradingConfig()
-
-# GitHub invokes this file by path; make repository imports deterministic.
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 
 def _candles(payload: Any) -> list[dict[str, Any]]:
     """Accept the gateway's list or its usual {candles: [...]} envelope."""
@@ -120,7 +124,9 @@ def _shadow_policy(market: str, score: float | None, direction: str | None, cand
         return {}
     value = float(score or 0)
     eligible = bool(candles) and 90.0 <= value < 95.0 and direction in ("CALL", "PUT")
-    return {"lane": "shadow", "minimum_score": 90.0, "official_minimum_score": 95.0,
+    return {"lane": "shadow", "shadow_eligibility_minimum_score": 90.0,
+            "shadow_eligibility_maximum_score_exclusive": 95.0,
+            "official_minimum_score": float(TRADING_CONFIG.diamond_threshold),
             "eligible": eligible, "requires_live_timing": True,
             "execution_allowed": False,
             "reason": "SCORE_90_94_REQUIRES_LIVE_TIMING" if eligible else "OUTSIDE_SHADOW_BAND_OR_MISSING_DIRECTION"}
@@ -197,7 +203,8 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 "chart_evidence": {"ema_cascade": "engine", "algorithmic_cycle": "blocked",
                                    "wick_rejection": "blocked", "previous_candle": "blocked",
                                    "vsa": "blocked", "m5_confirmation": "blocked"} if market == "otc" else {},
-                "components": components, "execution_allowed": False,
+                "components": components, "read_only": True,
+                "execution_allowed": False, "executor_enabled": False,
                 "shadow_policy": _shadow_policy(market, None, None, candles), **timing,
                 "score_mode": _mode_contract({"vetoes": ["NO_RAILWAY_CANDLES"]})["score_mode"],
                 "no_score_mode": _mode_contract({"vetoes": ["NO_RAILWAY_CANDLES"]})["no_score_mode"]}
@@ -234,7 +241,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                                "wick_rejection": "engine", "previous_candle": "engine",
                                "vsa": "engine", "m5_confirmation": "engine"} if market == "otc" else {},
             "components": chart_components,
-            "execution_allowed": False,
+            "read_only": True, "execution_allowed": False, "executor_enabled": False,
             **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at, final_timing),
         }
         if market == "otc":
@@ -246,7 +253,8 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
         return {"market": market, "symbol": symbol, "status": "blocked",
                 "reason": reason, "components": _blocked_components(reason),
-                "execution_allowed": False, **timing, **_mode_contract({"vetoes": [reason]})}
+                "read_only": True, "execution_allowed": False, "executor_enabled": False,
+                **timing, **_mode_contract({"vetoes": [reason]})}
 
 
 def main() -> int:
@@ -310,7 +318,8 @@ def main() -> int:
     result = {
         "schema_version": "2.2", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
-        "mode": "read_only", "execution_allowed": False,
+        "mode": "read_only", "read_only": True,
+        "execution_allowed": False, "executor_enabled": False,
         "forex": {"status": "completed" if run_forex else "not_requested", "analyses": forex},
         "binary": {"status": "completed" if run_binary else "not_requested", "analyses": binary},
         "market_data": market_data,
