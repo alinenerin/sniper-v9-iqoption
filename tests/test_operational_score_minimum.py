@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -106,6 +107,55 @@ class OperationalScoreMinimum(unittest.TestCase):
         self.assertNotIn("sig.score < 95", generator)
         self.assertNotIn("min_score=70.0", generator)
         self.assertNotIn("sig.score < 75", generator)
+
+    def test_simulated_scan_applies_75_only_in_score_mode(self):
+        from types import SimpleNamespace
+        import core.simulated_signal_scan as scanner
+
+        candles = [{"timestamp": i, "open": 1.0, "high": 1.1, "low": 0.9,
+                    "close": 1.0, "volume": 1.0} for i in range(4)]
+        fake = SimpleNamespace(direction="CALL", score=60.0, to_dict=lambda: {
+            "direction": "CALL", "score": 60.0, "status": "OK",
+            "stale": False, "anomaly_score": 0,
+        })
+        with patch.object(scanner, "fetch_history", return_value=candles), \
+             patch.object(scanner, "generate_signal", return_value=fake) as engine:
+            with patch.dict(os.environ, {"NO_SCORE_MODE": "false"}):
+                score_mode = scanner.analyze_market(None, "EURUSD", "BINARIA", "STANDARD")
+            self.assertEqual(engine.call_args.kwargs["min_score"], 75.0)
+            with patch.dict(os.environ, {"NO_SCORE_MODE": "true"}):
+                no_score_mode = scanner.analyze_market(None, "EURUSD", "BINARIA", "STANDARD")
+            self.assertEqual(engine.call_args.kwargs["min_score"], 0.0)
+
+        self.assertFalse(score_mode["approved"])
+        self.assertTrue(no_score_mode["approved"])
+        self.assertEqual(score_mode["score_threshold"], 75.0)
+        self.assertEqual(no_score_mode["score_threshold"], 75.0)
+        self.assertEqual(score_mode["score_mode"], "SCORE_MODE")
+        self.assertEqual(no_score_mode["score_mode"], "NO_SCORE_MODE")
+        self.assertTrue(score_mode["other_gates_passed"])
+        self.assertEqual(score_mode["read_only"], no_score_mode["read_only"])
+        self.assertFalse(no_score_mode["execution_allowed"])
+        self.assertFalse(no_score_mode["executor_enabled"])
+
+    def test_comparison_fetch_keeps_raw_scores_for_both_lanes(self):
+        from types import SimpleNamespace
+        import core.simulated_signal_scan as scanner
+
+        candles = [{"timestamp": i, "open": 1.0, "high": 1.1, "low": 0.9,
+                    "close": 1.0, "volume": 1.0} for i in range(4)]
+        fake = SimpleNamespace(direction="CALL", score=60.0, to_dict=lambda: {
+            "direction": "CALL", "score": 60.0, "status": "OK",
+            "stale": False, "anomaly_score": 0,
+        })
+        with patch.object(scanner, "fetch_history", return_value=candles), \
+             patch.object(scanner, "generate_signal", return_value=fake) as engine:
+            result = scanner.analyze_market_comparison(None, "EURUSD", "BINARIA", "STANDARD")
+        self.assertEqual(engine.call_args.kwargs["min_score"], 0.0)
+        self.assertEqual(result["score_mode"]["gates"]["score"]["threshold"], 75.0)
+        self.assertFalse(result["score_mode"]["approved"])
+        self.assertTrue(result["no_score_mode"]["approved"])
+        self.assertTrue(result["same_snapshot"])
 
     def test_shadow_band_is_specialized_not_an_alternate_official_minimum(self):
         policy = _shadow_policy("otc", 92.0, "CALL", [{"close": 1.0}])

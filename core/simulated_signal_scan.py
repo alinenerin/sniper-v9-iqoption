@@ -125,8 +125,10 @@ def analyze_market_comparison(session: IQOptionReadonly, symbol: str, market: st
     for name, (interval, count) in TIMEFRAMES.items():
         try:
             candles = normalize_candles(fetch_history(session, symbol, interval, count))
+            # Preserve the raw model score/direction; compare_snapshot applies
+            # the configured 75-point gate only in SCORE_MODE.
             sig = generate_signal(candles=candles, instrument=symbol, market=market,
-                                  mode=mode, timeframe=name, min_score=TRADING_CONFIG.diamond_threshold)
+                                  mode=mode, timeframe=name, min_score=0.0)
             snapshot[name] = sig.to_dict()
         except Exception as exc:
             errors[name] = f"{type(exc).__name__}:{exc}"
@@ -139,6 +141,8 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
     timeframe_results: Dict[str, Any] = {}
     weighted: Dict[str, float] = {"CALL": 0.0, "PUT": 0.0}
     errors: List[str] = []
+    no_score_mode = os.getenv("NO_SCORE_MODE", "false").lower() in {"1", "true", "yes"}
+    model_minimum = 0.0 if no_score_mode else TRADING_CONFIG.diamond_threshold
 
     for name, (interval, count) in TIMEFRAMES.items():
         try:
@@ -150,7 +154,7 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
                 market=market,
                 mode=mode,
                 timeframe=name,
-                min_score=TRADING_CONFIG.diamond_threshold,
+                min_score=model_minimum,
             )
             timeframe_results[name] = sig.to_dict()
             if sig.direction in weighted:
@@ -164,9 +168,8 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
     votes = [r.get("direction") for r in timeframe_results.values() if isinstance(r, dict)]
     same_direction = sum(1 for vote in votes if vote == direction)
 
-    # Fail closed: a simulated signal requires at least 3/4 timeframes and
-    # the configured operational score minimum. No probability is fabricated.
-    no_score_mode = os.getenv("NO_SCORE_MODE", "false").lower() in {"1", "true", "yes"}
+    # Fail closed on identical non-score gates in both lanes. NO_SCORE_MODE
+    # removes only the configured numerical score requirement.
     deterministic = deterministic_confluence(timeframe_results, direction, score, errors)
     # The optional lane is explicit and conservative; it cannot approve a
     # snapshot with missing/invalid timeframes or below-floor confluence.
@@ -175,9 +178,10 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
     anomaly = any(float(r.get("anomaly_score", 0)) > 85
                   for r in timeframe_results.values() if isinstance(r, dict)
                   and isinstance(r.get("anomaly_score"), (int, float)))
-    approved = (deterministic["approved"] and not stale and not anomaly
-                if no_score_mode else (not errors and same_direction >= 3
-                                       and score >= TRADING_CONFIG.diamond_threshold))
+    other_gates_pass = bool(deterministic["approved"] and not errors
+                            and same_direction >= 3 and not stale and not anomaly)
+    score_passed = score >= TRADING_CONFIG.diamond_threshold
+    approved = bool(other_gates_pass and (no_score_mode or score_passed))
     if not approved:
         direction = "NO_TRADE"
 
@@ -190,7 +194,11 @@ def analyze_market(session: IQOptionReadonly, symbol: str, market: str, mode: st
         "score_preliminary": score,
         "score_fused": score,
         "score_final": score if approved else 0.0,
-        "score_mode": "NO_SCORE_MODE" if no_score_mode else "STANDARD",
+        "score_mode": "NO_SCORE_MODE" if no_score_mode else "SCORE_MODE",
+        "score_threshold": TRADING_CONFIG.diamond_threshold,
+        "score_gate": {"required": not no_score_mode, "passed": True if no_score_mode else score_passed,
+                       "threshold": TRADING_CONFIG.diamond_threshold, "bypassed": no_score_mode},
+        "other_gates_passed": other_gates_pass,
         "deterministic_confluence": deterministic,
         "timeframe_votes": same_direction,
         "direction": direction,
