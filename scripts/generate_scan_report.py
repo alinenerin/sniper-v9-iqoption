@@ -104,7 +104,10 @@ def _timing_fields(candles: list[dict[str, Any]], observed_at: datetime,
     first = timestamps[0] if timestamps else None
     age = None
     if last is not None:
-        try: age = max(0.0, observed_at.timestamp() - float(last))
+        try:
+            # Gateway timestamps mark the M1 candle start. Age is measured
+            # from its close so reports do not overstate staleness by 60 sec.
+            age = max(0.0, observed_at.timestamp() - (float(last) + 60.0))
         except (TypeError, ValueError): pass
     return {'candle_count': len(candles), 'first_candle_timestamp_utc': _iso(first),
             'last_candle_timestamp_utc': _iso(last), 'observed_at_utc': observed_at.isoformat(),
