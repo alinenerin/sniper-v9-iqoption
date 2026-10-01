@@ -6,6 +6,7 @@ This module must remain valid UTF-8 Python: it is compiled before any market
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -36,6 +37,13 @@ except (ImportError, ModuleNotFoundError):
         payout_minimum = 80
     TRADING_CONFIG = _FallbackTradingConfig()
 
+from runtime_agent_registry import evidence_manifest
+from market_data_contract import snapshot_id as make_snapshot_id
+
+M5_INTERVAL_SECONDS = 300
+M5_MIN_COMPLETED_CANDLES = 25
+M5_MAX_CLOSED_AGE_SECONDS = 300
+
 def _candles(payload: Any) -> list[dict[str, Any]]:
     """Accept the gateway's list or its usual {candles: [...]} envelope."""
     if isinstance(payload, list):
@@ -55,10 +63,39 @@ def _candles(payload: Any) -> list[dict[str, Any]]:
 def _blocked_components(reason: str) -> dict[str, dict[str, str]]:
     names = ("timesfm", "xgboost", "finbert", "darts", "smc", "vsa",
              "liquidity", "probability_engine", "mem0_semantic",
-             "news_api", "paper_performance", "cycle_catalog", "lse")
+             "news_api", "paper_performance", "cycle_catalog", "lse", "m5")
     return {name: {"status": "blocked", "reason": reason,
-                   "role": "advisory_only" if name in {"finbert", "news_api", "liquidity", "probability_engine", "mem0_semantic", "paper_performance", "cycle_catalog", "lse"} else "fused",
+                   "role": "confirmation" if name == "m5" else "advisory_only" if name in {"finbert", "news_api", "liquidity", "probability_engine", "mem0_semantic", "paper_performance", "cycle_catalog", "lse"} else "fused",
                    "read_only": True} for name in names}
+
+
+def _agent_dashboard(analyses: list[dict[str, Any]], lane: str) -> dict[str, Any]:
+    """Project the dashboard from each analysis manifest, never separately."""
+    rows = []
+    names: set[str] = set()
+    for analysis in analyses:
+        manifest = analysis.get("evidence_manifest") or evidence_manifest(analysis.get("components"))
+        agents = manifest.get("agents", {})
+        executed = sorted(name for name, item in agents.items()
+                          if item.get("state") in {"executed_and_fused", "executed_advisory_only"})
+        blocked = sorted(name for name, item in agents.items()
+                         if item.get("state") == "declared_or_blocked")
+        names.update(agents)
+        rows.append({
+            "symbol": analysis.get("symbol"),
+            "market": analysis.get("market"),
+            "score": analysis.get("score"),
+            "approved": bool(analysis.get("approved", False)),
+            "vetoes": analysis.get("vetoes", []),
+            "specialists_executed": executed,
+            "specialists_blocked": blocked,
+            "committee_consensus": (analysis.get("specialist_committee") or {}).get("consensus"),
+            "committee_missing_required": (analysis.get("specialist_committee") or {}).get("missing_required", []),
+            "read_only": True,
+            "execution_allowed": False,
+        })
+    return {"lane": lane, "mode": "read_only", "execution_allowed": False,
+            "analyses": rows, "specialist_names": sorted(names)}
 
 
 def _auxiliary(symbol: str) -> dict[str, Any]:
@@ -116,6 +153,79 @@ def _timing_fields(candles: list[dict[str, Any]], observed_at: datetime,
     return {'candle_count': len(candles), 'first_candle_timestamp_utc': _iso(first),
             'last_candle_timestamp_utc': _iso(last), 'observed_at_utc': observed_at.isoformat(),
             'candle_age_seconds': round(age, 3) if age is not None else None}
+
+
+def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
+                              observed_at: datetime, bundle_snapshot_id: str) -> dict[str, Any]:
+    """Confirm direction using only valid, closed, native M5 candles."""
+    observed_ts = observed_at.timestamp()
+    completed: list[tuple[float, dict[str, Any]]] = []
+    invalid_count = 0
+    for row in candles:
+        if not isinstance(row, dict):
+            invalid_count += 1
+            continue
+        try:
+            ts = float(row.get("timestamp"))
+            prices = [float(row.get(key)) for key in ("open", "high", "low", "close")]
+        except (TypeError, ValueError):
+            invalid_count += 1
+            continue
+        if not math.isfinite(ts) or not all(math.isfinite(value) for value in prices):
+            invalid_count += 1
+            continue
+        op, high, low, close = prices
+        if high < max(op, close) or low > min(op, close) or high < low:
+            invalid_count += 1
+            continue
+        if ts + M5_INTERVAL_SECONDS <= observed_ts:
+            completed.append((ts, row))
+    completed.sort(key=lambda pair: pair[0])
+    closed_rows = [row for _, row in completed]
+    latest_close_ts = completed[-1][0] + M5_INTERVAL_SECONDS if completed else None
+    closed_age = max(0.0, observed_ts - latest_close_ts) if latest_close_ts is not None else None
+
+    base = {
+        "timeframe": "M5",
+        "status": "blocked",
+        "confirmed": False,
+        "reason": None,
+        "received_candles": len(candles),
+        "valid_closed_candles": len(closed_rows),
+        "invalid_candles": invalid_count,
+        "latest_completed_candle_close_utc": _iso(latest_close_ts),
+        "closed_candle_age_seconds": round(closed_age, 3) if closed_age is not None else None,
+        "snapshot_id": bundle_snapshot_id,
+        "source": "market_data.json:m5_candles",
+        "read_only": True,
+        "execution_allowed": False,
+    }
+    if invalid_count:
+        base["reason"] = "M5_INVALID_CANDLES"
+        return base
+    if len(closed_rows) < M5_MIN_COMPLETED_CANDLES:
+        base["reason"] = "M5_INSUFFICIENT_COMPLETED_CANDLES"
+        return base
+    if closed_age is None or closed_age > M5_MAX_CLOSED_AGE_SECONDS:
+        base["reason"] = "M5_CLOSED_CANDLES_STALE"
+        return base
+    recent = completed[-M5_MIN_COMPLETED_CANDLES:]
+    if any(abs((b[0] - a[0]) - M5_INTERVAL_SECONDS) > 2 for a, b in zip(recent, recent[1:])):
+        base["reason"] = "M5_CANDLE_GAP"
+        return base
+    if direction not in {"CALL", "PUT"}:
+        base["reason"] = "DIRECTION_UNCONFIRMED"
+        return base
+
+    from engines.binary.operational import BinaryPolicy
+    confirmed = BinaryPolicy.m5_confirmation(closed_rows, direction)
+    base.update({
+        "status": "inference_ok",
+        "confirmed": bool(confirmed),
+        "reason": None if confirmed else "M5_DIRECTION_NOT_CONFIRMED",
+        "valid_closed_candles": len(closed_rows),
+    })
+    return base
 
 
 def _shadow_policy(market: str, score: float | None, direction: str | None, candles: list[dict[str, Any]]) -> dict[str, Any]:
@@ -187,7 +297,9 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
 
 
 def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime,
-             final_timing: dict[str, Any] | None = None) -> dict[str, Any]:
+             final_timing: dict[str, Any] | None = None,
+             m5_candles: list[dict[str, Any]] | None = None,
+             market_snapshot_id: str | None = None) -> dict[str, Any]:
     timing = _analysis_timing(market, {}, candles, observed_at, final_timing)
 
     # Empty/invalid gateway payloads are a valid fail-closed outcome.  Handle
@@ -198,7 +310,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         components = _blocked_components("NO_RAILWAY_CANDLES")
         if market == "otc":
             components.update(_auxiliary(symbol))
-        return {"market": market, "symbol": symbol, "status": "blocked",
+        blocked_result = {"market": market, "symbol": symbol, "status": "blocked",
                 "reason": "NO_RAILWAY_CANDLES", "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "MISSING_INVALID_CANDLES",
                 "chart_evidence": {"ema_cascade": "engine", "algorithmic_cycle": "blocked",
                                    "wick_rejection": "blocked", "previous_candle": "blocked",
@@ -208,6 +320,13 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 "shadow_policy": _shadow_policy(market, None, None, candles), **timing,
                 "score_mode": _mode_contract({"vetoes": ["NO_RAILWAY_CANDLES"]})["score_mode"],
                 "no_score_mode": _mode_contract({"vetoes": ["NO_RAILWAY_CANDLES"]})["no_score_mode"]}
+        if market in {"binary", "otc"}:
+            blocked_result["m5_confirmation"] = {
+                "timeframe": "M5", "status": "blocked", "confirmed": False,
+                "reason": "M1_DATA_MISSING", "received_candles": len(m5_candles or []),
+                "execution_allowed": False, "read_only": True,
+            }
+        return blocked_result
 
     # Heavy engines are imported only for a payload that actually contains
     # candles.  This keeps blocked-data reporting independent of optional ML
@@ -222,25 +341,73 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             result.update(_analysis_timing(market, result, candles, observed_at, final_timing))
             result.update(_mode_contract(result))
             return result
+        m5_candles = m5_candles if isinstance(m5_candles, list) else []
+        # The global immutable market_data.json snapshot is the common identity
+        # used by Darts/XGBoost/TimesFM artifacts and the M1+M5 decision. A
+        # standalone invocation (e.g. an offline unit test) falls back to a
+        # deterministic per-symbol M1+M5 bundle identity.
+        bundle_snapshot_id = market_snapshot_id or make_snapshot_id({
+            "market": market, "symbol": symbol, "m1_candles": candles,
+            "m5_candles": m5_candles,
+        })
         consultation = SharedAI(score_minimum=0).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
-            account_mode="PRACTICE", metadata={"source": "Railway market_data.json"},
+            account_mode="PRACTICE", metadata={
+                "source": "Railway market_data.json",
+                "snapshot_id": bundle_snapshot_id,
+            },
         ))
-        chart_components = consultation.components.get("component_status", {})
+        chart_components = dict(consultation.components.get("component_status", {}))
+        m5_direction = str(getattr(consultation, "direction", "NEUTRAL") or "NEUTRAL").upper()
+        m5_evidence = _m5_confirmation_evidence(
+            m5_candles, m5_direction, observed_at, bundle_snapshot_id,
+        )
+        chart_components["m5"] = {
+            "status": m5_evidence["status"],
+            "reason": m5_evidence["reason"],
+            "role": "confirmation",
+            "confirmed": m5_evidence["confirmed"],
+            "snapshot_id": bundle_snapshot_id,
+            "timeframe": "M5",
+            "read_only": True,
+        }
+        from core.trading_crew import crew_v16
+        specialist_committee = crew_v16.evaluate(
+            symbol, chart_components, bundle_snapshot_id, "M1+M5",
+        )
         if market == "otc":
             # OTC IQ chart is authoritative; Darts/FinBERT are context only.
             chart_components.update(_auxiliary(symbol))
+        vetoes = list(consultation.vetoes or [])
+        consensus_ready = (
+            specialist_committee.get("consensus") == "ready_for_fusion"
+            and not specialist_committee.get("snapshot_mismatch")
+            and not specialist_committee.get("missing_required")
+        )
+        if not m5_evidence["confirmed"]:
+            veto = str(m5_evidence.get("reason") or "M5_SEM_CONFIRMACAO")
+            if veto not in vetoes:
+                vetoes.append(veto)
+        if not consensus_ready:
+            missing = specialist_committee.get("missing_required") or []
+            veto = "AGENT_CONSENSUS_INCOMPLETE"
+            if missing:
+                veto += ":" + ",".join(missing)
+            if veto not in vetoes:
+                vetoes.append(veto)
         result = {
             "market": market, "symbol": symbol, "status": "inference_ok",
-            "approved": consultation.approved, "score": consultation.score,
+            "approved": bool(consultation.approved and m5_evidence["confirmed"] and consensus_ready), "score": consultation.score,
             "probability": consultation.probability,
             "anomaly_score": consultation.anomaly_score,
-            "vetoes": consultation.vetoes, "explanation": consultation.explanation,
+            "vetoes": vetoes, "explanation": "; ".join(vetoes) if vetoes else consultation.explanation,
+            "m5_confirmation": m5_evidence,
             "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "CORE_ENGINE",
             "chart_evidence": {"ema_cascade": "engine", "algorithmic_cycle": "engine",
                                "wick_rejection": "engine", "previous_candle": "engine",
                                "vsa": "engine", "m5_confirmation": "engine"} if market == "otc" else {},
             "components": chart_components,
+            "specialist_committee": specialist_committee,
             "read_only": True, "execution_allowed": False, "executor_enabled": False,
             **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at, final_timing),
         }
@@ -251,10 +418,16 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         return result
     except Exception as exc:
         reason = "ANALYSIS_ERROR:" + type(exc).__name__
-        return {"market": market, "symbol": symbol, "status": "blocked",
-                "reason": reason, "components": _blocked_components(reason),
-                "read_only": True, "execution_allowed": False, "executor_enabled": False,
-                **timing, **_mode_contract({"vetoes": [reason]})}
+        error_result = {"market": market, "symbol": symbol, "status": "blocked",
+                        "reason": reason, "components": _blocked_components(reason),
+                        "read_only": True, "execution_allowed": False, "executor_enabled": False,
+                        **timing, **_mode_contract({"vetoes": [reason]})}
+        if market in {"binary", "otc"}:
+            error_result["m5_confirmation"] = {
+                "timeframe": "M5", "status": "blocked", "confirmed": False,
+                "reason": reason, "execution_allowed": False, "read_only": True,
+            }
+        return error_result
 
 
 def main() -> int:
@@ -278,6 +451,10 @@ def main() -> int:
     final_payload = json.loads(final_path.read_text()) if final_path.exists() else {}
     final_by_symbol = final_payload.get("symbols", {}) if isinstance(final_payload, dict) else {}
     by_symbol = market_data.get("symbols", {}) if isinstance(market_data, dict) else {}
+    # Agent artifacts hash this exact frozen gateway payload. Carry that same
+    # identity through the M1/M5 report instead of manufacturing a new ID that
+    # merely labels stale or unrelated successful artifacts as current.
+    market_snapshot_id = make_snapshot_id(market_data)
     if any(s.upper() in ("ALL", "ALL_AVAILABLE", "*") for s in requested):
         symbols = list(by_symbol.keys())
         if otc_only:
@@ -288,19 +465,58 @@ def main() -> int:
     forex, binary = [], []
     observed_at = datetime.now(timezone.utc)
     run_forex = market_name in ("forex", "unified") and not otc_only
-    run_binary = market_name in ("binary", "unified", "otc") or otc_only
-    for symbol in symbols:
-        candles = _candles(by_symbol.get(symbol, {}).get("candles"))
+    run_real_binary = market_name in ("binary", "unified") and not otc_only
+    run_otc = otc_only or market_name == "otc" or (include_otc and market_name in ("binary", "unified"))
+    run_binary = run_real_binary or run_otc
+    seen_otc: set[str] = set()
+
+    def append_otc(otc_symbol: str) -> None:
+        if otc_symbol in seen_otc:
+            return
+        seen_otc.add(otc_symbol)
+        otc_data = by_symbol.get(otc_symbol, {})
+        binary.append(_analyse("otc", otc_symbol, _candles(otc_data.get("candles")), observed_at,
+                               (final_by_symbol.get(otc_symbol, {}).get("m1") or {}),
+                               _candles(otc_data.get("m5_candles")), market_snapshot_id))
+
+    for raw_symbol in symbols:
+        symbol = str(raw_symbol).upper()
+        is_otc_symbol = symbol.endswith("-OTC")
+        if otc_only:
+            append_otc(symbol if is_otc_symbol else symbol + "-OTC")
+            continue
+        if is_otc_symbol:
+            if run_otc:
+                append_otc(symbol)
+            continue
+
+        symbol_data = by_symbol.get(symbol, {})
+        candles = _candles(symbol_data.get("candles"))
+        m5_candles = _candles(symbol_data.get("m5_candles"))
         if run_forex:
             forex.append(_analyse("forex", symbol, candles, observed_at,
                                    (final_by_symbol.get(symbol, {}).get("m1") or {})))
-        if run_binary and not otc_only:
+        if run_real_binary:
             binary.append(_analyse("binary", symbol, candles, observed_at,
-                                   (final_by_symbol.get(symbol, {}).get("m1") or {})))
-        if run_binary and (include_otc or otc_only):
-            otc_symbol = symbol if symbol.endswith("-OTC") else symbol + "-OTC"
-            binary.append(_analyse("otc", otc_symbol, _candles(by_symbol.get(otc_symbol, {}).get("candles")), observed_at,
-                                   (final_by_symbol.get(otc_symbol, {}).get("m1") or {})))
+                                   (final_by_symbol.get(symbol, {}).get("m1") or {}), m5_candles,
+                                   market_snapshot_id))
+        if run_otc:
+            append_otc(symbol + "-OTC")
+
+    # Build every agent view from the actual component records on each analysis.
+    # This prevents a separately maintained dashboard from overstating execution.
+    all_analyses = forex + binary
+    manifests_by_market: dict[str, list[dict[str, Any]]] = {}
+    for analysis in all_analyses:
+        manifest = evidence_manifest(analysis.get("components"))
+        analysis["evidence_manifest"] = manifest
+        manifests_by_market.setdefault(str(analysis.get("market", "unknown")), []).append(manifest)
+
+    agent_dashboard = {
+        "forex": _agent_dashboard([a for a in all_analyses if a.get("market") == "forex"], "forex"),
+        "binary": _agent_dashboard([a for a in all_analyses if a.get("market") == "binary"], "binary"),
+        "otc": _agent_dashboard([a for a in all_analyses if a.get("market") == "otc"], "otc"),
+    }
 
     # Expose the mode contract on every symbol, including blocked symbols, so
     # consumers cannot mistake a NO_SCORE_MODE lane for a data/timing bypass.
@@ -324,6 +540,8 @@ def main() -> int:
         "binary": {"status": "completed" if run_binary else "not_requested", "analyses": binary},
         "market_data": market_data,
         "macro_data": macro_data,
+        "agent_dashboard": agent_dashboard,
+        "evidence_manifest_by_market": manifests_by_market,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": TRADING_CONFIG.diamond_threshold,
                     "diamond_threshold": TRADING_CONFIG.diamond_threshold,

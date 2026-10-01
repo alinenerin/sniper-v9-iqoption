@@ -7,13 +7,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from core.trading_crew import TradingCrewV16
+from shared_ai.consultation import SharedAI
 
 
 class TradingCrewContract(unittest.TestCase):
     def test_reports_are_bound_to_one_snapshot_and_read_only(self):
         crew = TradingCrewV16()
         components = {
-            name: {"status": "inference_ok"}
+            name: {"status": "inference_ok", "snapshot_id": "snap-1"}
             for name in crew.SPECIALISTS
         }
         report = crew.evaluate("EURUSD", components, "snap-1", "M1")
@@ -30,7 +31,7 @@ class TradingCrewContract(unittest.TestCase):
 
     def test_missing_required_specialist_is_fail_closed(self):
         crew = TradingCrewV16()
-        report = crew.evaluate("EURUSD", {"smc": {"status": "inference_ok"}}, "snap-2", "M1")
+        report = crew.evaluate("EURUSD", {"smc": {"status": "inference_ok", "snapshot_id": "snap-2"}}, "snap-2", "M1")
         self.assertEqual(report["consensus"], "incomplete")
         self.assertIn("darts", report["missing_required"])
         self.assertIn("m5", report["missing_required"])
@@ -44,6 +45,50 @@ class TradingCrewContract(unittest.TestCase):
         self.assertIn("smc", report["snapshot_mismatch"])
         self.assertIn("smc", report["blocked_agents"])
         self.assertEqual(report["consensus"], "incomplete")
+
+    def test_missing_snapshot_id_blocks_evidence_when_bundle_is_required(self):
+        crew = TradingCrewV16()
+        components = {name: {"status": "inference_ok", "snapshot_id": "snap-1"} for name in crew.SPECIALISTS}
+        components["vsa"].pop("snapshot_id")
+        report = crew.evaluate("EURUSD", components, "snap-1", "M1")
+        self.assertIn("vsa", report["snapshot_mismatch"])
+        self.assertIn("vsa", report["blocked_agents"])
+        self.assertEqual(report["consensus"], "incomplete")
+
+    def test_advisory_snapshot_does_not_veto_required_same_snapshot_consensus(self):
+        crew = TradingCrewV16()
+        components = {name: {"status": "inference_ok", "snapshot_id": "snap-1"} for name in crew.SPECIALISTS}
+        components["finbert"]["snapshot_id"] = "news-context-snapshot"
+        report = crew.evaluate("EURUSD", components, "snap-1", "M1")
+        self.assertEqual(report["consensus"], "ready_for_fusion")
+        self.assertNotIn("finbert", report["snapshot_mismatch"])
+        self.assertEqual(report["reports"]["finbert"]["snapshot_id"], "news-context-snapshot")
+
+    def test_artifact_snapshot_provenance_is_preserved(self):
+        import json
+        import os
+        import tempfile
+        from pathlib import Path
+
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                os.chdir(tmp)
+                Path("reports").mkdir()
+                for name in ("darts", "timesfm", "finbert", "xgboost"):
+                    Path(f"reports/{name}_inference.json").write_text(json.dumps({
+                        "components": {"EURUSD": {
+                            "status": "inference_ok", "snapshot_id": f"source-{name}"
+                        }}
+                    }))
+                statuses = SharedAI._component_status(
+                    {"symbol": "EURUSD", "smc": {}, "vsa": {}}, {}
+                )
+                self.assertEqual(statuses["darts"]["snapshot_id"], "source-darts")
+                self.assertEqual(statuses["timesfm"]["snapshot_id"], "source-timesfm")
+                self.assertEqual(statuses["xgboost"]["snapshot_id"], "source-xgboost")
+            finally:
+                os.chdir(original_cwd)
 
 
 if __name__ == "__main__":

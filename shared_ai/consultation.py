@@ -68,14 +68,20 @@ class SharedAI:
         xgb_report=report_status("xgboost_inference.json", symbol)
         components = {
             "darts": {"status": darts_report.get("status", "inference_ok" if darts_available else "blocked"),
+                      "snapshot_id": darts_report.get("snapshot_id"),
                       "reason": darts_report.get("reason") or "DARTS_LIBRARY_OR_MODEL_UNAVAILABLE" if darts_report.get("status") != "inference_ok" else None},
             "timesfm": {"status": times_report.get("status", "inference_ok" if "TIMESFM" in times_source and "FALLBACK" not in times_source else "blocked"),
+                        "snapshot_id": times_report.get("snapshot_id"),
                         "reason": times_report.get("reason") or "TIMESFM_WEIGHTS_OR_LIBRARY_UNAVAILABLE" if times_report.get("status") != "inference_ok" else None},
-            "finbert": {"status": finbert_report.get("status", "blocked"), "reason": finbert_report.get("reason") or "FINBERT_INFERENCE_UNAVAILABLE" if finbert_report.get("status") != "inference_ok" else None},
+            "finbert": {"status": finbert_report.get("status", "blocked"),
+                        "snapshot_id": finbert_report.get("snapshot_id"),
+                        "reason": finbert_report.get("reason") or "FINBERT_INFERENCE_UNAVAILABLE" if finbert_report.get("status") != "inference_ok" else None},
             "news_api": {"status": "inference_ok" if (news_ok or finbert_report.get("status") == "inference_ok") else "blocked",
                          "reason": None if (news_ok or finbert_report.get("status") == "inference_ok") else "NEWS_API_UNAVAILABLE_OR_UNVERIFIED",
                          "source": "core_sentiment_or_finbert_report"},
-            "xgboost": {"status": xgb_report.get("status", "blocked"), "reason": xgb_report.get("reason") or "XGBOOST_INFERENCE_UNAVAILABLE" if xgb_report.get("status") != "inference_ok" else None},
+            "xgboost": {"status": xgb_report.get("status", "blocked"),
+                        "snapshot_id": xgb_report.get("snapshot_id"),
+                        "reason": xgb_report.get("reason") or "XGBOOST_INFERENCE_UNAVAILABLE" if xgb_report.get("status") != "inference_ok" else None},
             "liquidity": {"status": (advisory.get("liquidity") or {}).get("status", "blocked")},
             "probability_engine": {"status": (advisory.get("probability_engine") or {}).get("status", "blocked")},
             "mem0_semantic": {"status": (advisory.get("memory_context", {}).get("mem0_semantic", {}) or {}).get("status", "blocked"),
@@ -294,10 +300,15 @@ class SharedAI:
                 "timeframe": request.timeframe,
                 "candles": request.candles,
             })
-            # Preserve the binding in every specialist record so the committee
-            # can reject stale or cross-run evidence instead of fusing it.
+            # Bind locally computed chart specialists (SMC/VSA) to the exact
+            # request, but preserve IDs from independent agent artifacts. Never
+            # overwrite an artifact's provenance: required evidence without an
+            # ID, or from another snapshot, must fail closed in the committee.
             component_status = {
-                name: {**item, "snapshot_id": market_snapshot_id}
+                name: ({**item, "snapshot_id": market_snapshot_id}
+                       if name in {"smc", "vsa"} and item.get("status") in
+                       {"ok", "inference_ok", "executed", "completed"}
+                       else dict(item))
                 for name, item in component_status.items()
             }
             committee_report = crew_v16.evaluate(

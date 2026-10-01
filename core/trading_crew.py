@@ -58,7 +58,11 @@ class TradingCrewV16:
             item = supplied if isinstance(supplied, dict) else {}
             status = str(item.get("status", "blocked")).lower()
             item_snapshot = item.get("snapshot_id")
-            mismatch = bool(snapshot_id and item_snapshot and item_snapshot != snapshot_id)
+            # Only consensus-required specialists must prove exact snapshot
+            # identity. Advisory evidence can be contextual (e.g. news) and
+            # must not be relabelled as a candle snapshot or veto chart fusion.
+            mismatch = bool(snapshot_id and name in self.required_for_consensus
+                            and item_snapshot != snapshot_id)
             if mismatch:
                 snapshot_mismatch.append(name)
                 status = "blocked"
@@ -80,7 +84,8 @@ class TradingCrewV16:
                 "status": status,
                 "state": state,
                 "reason": reason,
-                "snapshot_id": snapshot_id,
+                "snapshot_id": item_snapshot,
+                "expected_snapshot_id": snapshot_id,
                 "read_only": True,
                 "execution_allowed": False,
             }
