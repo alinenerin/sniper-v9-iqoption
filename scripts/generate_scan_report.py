@@ -252,6 +252,17 @@ def main() -> int:
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
     path = Path("reports/market_data.json")
     market_data = json.loads(path.read_text()) if path.exists() else {}
+    macro_path = Path("reports/macro_data.json")
+    try:
+        macro_data = json.loads(macro_path.read_text()) if macro_path.exists() else {
+            "ok": False, "status": "unavailable",
+            "reason": "MACRO_SNAPSHOT_UNAVAILABLE", "read_only": True,
+        }
+    except (OSError, json.JSONDecodeError):
+        macro_data = {
+            "ok": False, "status": "unavailable",
+            "reason": "MACRO_SNAPSHOT_INVALID", "read_only": True,
+        }
     final_path = Path("reports/final_timing.json")
     final_payload = json.loads(final_path.read_text()) if final_path.exists() else {}
     final_by_symbol = final_payload.get("symbols", {}) if isinstance(final_payload, dict) else {}
@@ -300,6 +311,7 @@ def main() -> int:
         "forex": {"status": "completed" if run_forex else "not_requested", "analyses": forex},
         "binary": {"status": "completed" if run_binary else "not_requested", "analyses": binary},
         "market_data": market_data,
+        "macro_data": macro_data,
         "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
         "filters": {"score_minimum": TRADING_CONFIG.diamond_threshold,
                     "diamond_threshold": TRADING_CONFIG.diamond_threshold,
