@@ -90,7 +90,7 @@ jobs:
           python audit_architecture.py
           python audit_readonly_validation.py
       - name: Run offline read-only contract tests
-        run: python -m unittest discover -s tests -v
+        run: python -m unittest discover -s tests -t . -v
       - name: Warm Railway/IQ Option gateway
         env:
           RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway-production.up.railway.app
