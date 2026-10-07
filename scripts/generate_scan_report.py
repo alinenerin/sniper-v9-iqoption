@@ -123,17 +123,14 @@ def _iso(ts: Any) -> str | None:
 
 
 def _direction(market: str, result: dict[str, Any], candles: list[dict[str, Any]]) -> tuple[str, str]:
-    """Return an explicit calculated direction without inventing a signal."""
+    """Return a direction only when an analysis engine explicitly provides it."""
     raw = result.get('direction') or result.get('signal') or result.get('side') or result.get('bias')
     text = str(raw or '').upper()
     if any(x in text for x in ('CALL', 'BUY', 'UP', 'COMPRA', 'LONG')):
         return ('CALL' if market in ('binary', 'otc') else 'BUY'), 'engine'
     if any(x in text for x in ('PUT', 'SELL', 'DOWN', 'VENDA', 'SHORT')):
         return ('PUT' if market in ('binary', 'otc') else 'SELL'), 'engine'
-    closes = [x.get('close') for x in candles[-2:] if isinstance(x.get('close'), (int, float))]
-    if len(closes) == 2 and closes[1] != closes[0]:
-        return ('CALL' if closes[1] > closes[0] else 'PUT') if market in ('binary', 'otc') else ('BUY' if closes[1] > closes[0] else 'SELL'), 'last_completed_candle'
-    return 'NEUTRAL', 'insufficient-direction-data'
+    return 'NEUTRAL', 'no_explicit_engine_direction'
 
 
 def _timing_fields(candles: list[dict[str, Any]], observed_at: datetime,
@@ -281,6 +278,25 @@ def _mode_contract(analysis: dict[str, Any]) -> dict[str, Any]:
 def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str, Any]], observed_at: datetime,
                      final_timing: dict[str, Any] | None = None) -> dict[str, Any]:
     direction, source = _direction(market, result, candles)
+    recent_closes: list[float] = []
+    for candle in candles[-2:]:
+        if not isinstance(candle, dict):
+            continue
+        value = candle.get('close')
+        if isinstance(value, bool):
+            continue
+        try:
+            price = float(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(price):
+            recent_closes.append(price)
+    observed_direction = None
+    if len(recent_closes) == 2 and recent_closes[1] != recent_closes[0]:
+        upward = recent_closes[1] > recent_closes[0]
+        observed_direction = (('CALL' if upward else 'PUT') if market in ('binary', 'otc')
+                              else ('BUY' if upward else 'SELL'))
+    confirmed_direction = direction if source == 'engine' and direction != 'NEUTRAL' else None
     final_ts = (final_timing or {}).get("final_completed_timestamp")
     timing = _timing_fields(candles, observed_at, final_ts)
     timing["source"] = "RAILWAY_DIRECT_PER_SYMBOL_NO_CACHE" if final_ts is not None else "analysis_snapshot"
@@ -290,10 +306,33 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
     expiry_ts = None
     try: expiry_ts = float(last_ts) + expiry_seconds if last_ts is not None else None
     except (TypeError, ValueError): pass
-    return {'direction_calculated': direction, 'direction_source': source, 'candle_timing': timing,
-            'expiration': {'duration_seconds': expiry_seconds, 'expected_timestamp_utc': _iso(expiry_ts),
-                           'status': 'pending_expiration', 'hypothetical_result': None,
-                           'result_reason': 'Future candle required; no outcome fabricated.'}}
+    result_fields = {'direction_observed': observed_direction,
+                     'direction_confirmed': confirmed_direction,
+                     'direction_source': source, 'candle_timing': timing,
+                     'expiration': {'duration_seconds': expiry_seconds, 'expected_timestamp_utc': _iso(expiry_ts),
+                                    'status': 'pending_expiration', 'hypothetical_result': None,
+                                    'result_reason': 'Future candle required; no outcome fabricated.'}}
+    if confirmed_direction is not None:
+        result_fields['direction_calculated'] = confirmed_direction
+    return result_fields
+
+
+def _apply_direction_veto(analysis: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed if an approved result has no explicit engine direction."""
+    result = dict(analysis)
+    if not result.get('approved'):
+        return result
+    confirmed = str(result.get('direction_confirmed') or '').upper()
+    if confirmed in {'CALL', 'PUT', 'BUY', 'SELL'}:
+        return result
+    raw_vetoes = result.get('vetoes')
+    vetoes = list(raw_vetoes) if isinstance(raw_vetoes, (list, tuple, set)) else []
+    if 'DIRECTION_UNCONFIRMED' not in vetoes:
+        vetoes.append('DIRECTION_UNCONFIRMED')
+    result['approved'] = False
+    result['vetoes'] = vetoes
+    result['direction_reason'] = 'DIRECTION_UNCONFIRMED'
+    return result
 
 
 def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_at: datetime,
@@ -339,6 +378,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             result = ForexV16ReadOnly(score_minimum=0).analyze(symbol, candles, {"source": "Railway market_data.json"})
             result["market"] = market
             result.update(_analysis_timing(market, result, candles, observed_at, final_timing))
+            result = _apply_direction_veto(result)
             result.update(_mode_contract(result))
             return result
         m5_candles = m5_candles if isinstance(m5_candles, list) else []
@@ -411,6 +451,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             "read_only": True, "execution_allowed": False, "executor_enabled": False,
             **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at, final_timing),
         }
+        result = _apply_direction_veto(result)
         if market == "otc":
             direction = result.get("direction_calculated")
             result["shadow_policy"] = _shadow_policy(market, result.get("score"), direction, candles)

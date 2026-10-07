@@ -55,7 +55,7 @@ assert module.TRADING_CONFIG is not None
                    "MARKET": "binary", "INCLUDE_OTC": "false", "OTC_ONLY": "false",
                    "NO_SCORE_MODE": "true", "ANALYSIS_ONLY": "1",
                    "EXECUTION_ALLOWED": "false", "EXECUTOR_ENABLED": "false"}
-            command = [sys.executable, "scripts/generate_scan_report.py"]
+            command = [sys.executable, str(root / "scripts" / "generate_scan_report.py")]
             completed = subprocess.run(command, cwd=work, env=env, capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             report = json.loads((reports / "latest_scan.json").read_text())

@@ -11,13 +11,15 @@ def main() -> int:
     parser.add_argument("--symbols", nargs="+", required=True)
     parser.add_argument("--otc", action="store_true", help="OTC-only scan")
     parser.add_argument("--wait", action="store_true")
-    parser.add_argument("--fast", action="store_true", help="fast IQ read-only lane; heavy agents remain advisory")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--fast", action="store_true", help="fast IQ read-only lane; heavy agents remain advisory")
+    mode.add_argument("--full", action="store_true", help="run the full read-only lane")
     args = parser.parse_args()
     bridge = GitHubScanBridge()
     result = bridge.dispatch(args.symbols, include_otc=args.otc, otc_only=args.otc, fast=(not args.full or args.fast))
     if not args.wait:
         print(json.dumps(result, ensure_ascii=False)); return 0
-    run = bridge.run_after(result["dispatched_at"])
+    run = bridge.run_after(result["dispatched_at"], ref=result.get("ref", "main"))
     bridge.wait_for_run(run["id"])
     report = bridge.download_latest_report(run["id"], expected=result)
     print(json.dumps(report, ensure_ascii=False))

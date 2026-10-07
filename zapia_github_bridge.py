@@ -1,6 +1,7 @@
 """Secure Zapia -> GitHub Actions bridge for guarded read-only scans."""
 from __future__ import annotations
 import io, json, os, time, zipfile
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 import requests
 
@@ -31,18 +32,27 @@ class GitHubScanBridge:
             timeout=30,
         )
         response.raise_for_status()
-        return {"dispatched": True, "workflow": WORKFLOW, "repo": self.repo, "ref": ref, "dispatched_at": dispatched_at, "symbols": safe_symbols, "include_otc": include_otc, "otc_only": otc_only, "fast": fast, "execution_allowed": False}
+        return {"dispatched": True, "workflow": WORKFLOW, "repo": self.repo, "ref": ref, "dispatched_at": dispatched_at, "symbols": safe_symbols, "include_otc": include_otc, "otc_only": otc_only, "fast": fast, "read_only": True, "execution_allowed": False, "executor_enabled": False}
 
-    def run_after(self, dispatched_at: float, timeout_seconds: int = 120) -> Dict[str, Any]:
+    def run_after(self, dispatched_at: float, timeout_seconds: int = 120,
+                  ref: str = "main") -> Dict[str, Any]:
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             response = self.session.get(f"{API}/repos/{self.repo}/actions/workflows/{WORKFLOW}/runs", params={"per_page": 20}, timeout=30)
             response.raise_for_status()
             for run in response.json().get("workflow_runs", []):
                 created = run.get("created_at")
-                if not created:
+                if not created or run.get("event") != "workflow_dispatch":
                     continue
-                created_epoch = time.mktime(time.strptime(created, "%Y-%m-%dT%H:%M:%SZ"))
+                if run.get("head_branch") != ref:
+                    continue
+                try:
+                    created_at = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    created_epoch = created_at.timestamp()
+                except (TypeError, ValueError):
+                    continue
                 if created_epoch >= dispatched_at - 5:
                     return run
             time.sleep(3)
@@ -75,6 +85,8 @@ class GitHubScanBridge:
                 report = json.load(handle)
         if report.get("execution_allowed") is not False or report.get("mode") != "read_only":
             raise RuntimeError("REPORT_EXECUTION_OR_MODE_GUARD_FAILED")
+        if report.get("read_only") is not True or report.get("executor_enabled") is not False:
+            raise RuntimeError("REPORT_READ_ONLY_FLAGS_FAILED")
         if str(report.get("workflow_run_id")) != str(run_id):
             raise RuntimeError("REPORT_RUN_ID_MISMATCH")
         if expected:

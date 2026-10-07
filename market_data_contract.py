@@ -94,6 +94,8 @@ class CandleValidation:
     latest_timestamp: float | None
     age_seconds: float | None
     freshness_status: str
+    interval: int | None = None
+    timeframe: str | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -132,7 +134,9 @@ def validate_candles(rows: Any, interval: int, required: int, now: float | None 
     if len(ordered) < minimum: status, reason = "INSUFFICIENT_DATA", f"{len(ordered)}<{minimum}"
     elif invalid_count or duplicate_count: status, reason = "INVALID", "invalid_or_duplicate_candles"
     elif freshness != "PASS": status, reason = "STALE", "freshness_failed"
-    return CandleValidation(status, reason, len(rows), len(ordered), duplicate_count, invalid_count, gaps, latest, age, freshness)
+    return CandleValidation(status, reason, len(rows), len(ordered), duplicate_count,
+                            invalid_count, gaps, latest, age, freshness,
+                            interval=int(interval), timeframe=TIMEFRAME_NAMES.get(int(interval)))
 
 
 def snapshot_id(payload: Any) -> str:
