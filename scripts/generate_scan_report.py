@@ -275,28 +275,34 @@ def _mode_contract(analysis: dict[str, Any]) -> dict[str, Any]:
                           "approved": bool(not non_score), "vetoes": non_score},
     }
 
+def _score_report_fields(core_analysis: dict[str, Any]) -> dict[str, Any]:
+    """Project score provenance without replacing absent evidence with guesses."""
+    breakdown = core_analysis.get("score_breakdown")
+    breakdown = breakdown if isinstance(breakdown, dict) else {}
+    return {
+        "technical_score": core_analysis.get("technical_score"),
+        "technical_score_source": breakdown.get("technical_score_source"),
+        "score_components": breakdown.get("score_components", core_analysis.get("score_components", {})),
+        "score_fusion": breakdown.get("score_fusion", core_analysis.get("score_fusion", {})),
+        "score_breakdown": breakdown,
+        "score_source": breakdown.get("score_source"),
+    }
+
+
 def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str, Any]], observed_at: datetime,
                      final_timing: dict[str, Any] | None = None) -> dict[str, Any]:
-    direction, source = _direction(market, result, candles)
-    recent_closes: list[float] = []
-    for candle in candles[-2:]:
-        if not isinstance(candle, dict):
-            continue
-        value = candle.get('close')
-        if isinstance(value, bool):
-            continue
-        try:
-            price = float(value)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(price):
-            recent_closes.append(price)
-    observed_direction = None
-    if len(recent_closes) == 2 and recent_closes[1] != recent_closes[0]:
-        upward = recent_closes[1] > recent_closes[0]
-        observed_direction = (('CALL' if upward else 'PUT') if market in ('binary', 'otc')
-                              else ('BUY' if upward else 'SELL'))
-    confirmed_direction = direction if source == 'engine' and direction != 'NEUTRAL' else None
+    aggregated = isinstance(result.get("direction_votes"), dict)
+    if aggregated:
+        confirmed_direction = str(result.get("direction_confirmed") or "NEUTRAL").upper()
+        direction = (confirmed_direction if confirmed_direction in {"CALL", "PUT", "BUY", "SELL"}
+                     else "NEUTRAL")
+        observed_direction = result.get("direction_observed")
+        observed_direction = str(observed_direction).upper() if observed_direction is not None else None
+        source = str(result.get("direction_source") or "none")
+    else:
+        direction, source = _direction(market, result, candles)
+        observed_direction = direction if source == "engine" and direction != "NEUTRAL" else None
+        confirmed_direction = observed_direction
     final_ts = (final_timing or {}).get("final_completed_timestamp")
     timing = _timing_fields(candles, observed_at, final_ts)
     timing["source"] = "RAILWAY_DIRECT_PER_SYMBOL_NO_CACHE" if final_ts is not None else "analysis_snapshot"
@@ -308,11 +314,16 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
     except (TypeError, ValueError): pass
     result_fields = {'direction_observed': observed_direction,
                      'direction_confirmed': confirmed_direction,
-                     'direction_source': source, 'candle_timing': timing,
+                     'direction_source': source,
+                     'direction_votes': result.get("direction_votes"),
+                     'direction_vote_reasons': result.get("direction_vote_reasons"),
+                     'direction_source_status': result.get("direction_source_status"),
+                     'direction_reason': result.get("direction_reason"),
+                     'candle_timing': timing,
                      'expiration': {'duration_seconds': expiry_seconds, 'expected_timestamp_utc': _iso(expiry_ts),
                                     'status': 'pending_expiration', 'hypothetical_result': None,
                                     'result_reason': 'Future candle required; no outcome fabricated.'}}
-    if confirmed_direction is not None:
+    if confirmed_direction in {"CALL", "PUT", "BUY", "SELL"}:
         result_fields['direction_calculated'] = confirmed_direction
     return result_fields
 
@@ -435,9 +446,19 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 veto += ":" + ",".join(missing)
             if veto not in vetoes:
                 vetoes.append(veto)
+        core_analysis = consultation.components.get("core_analysis", {})
+        direction_report_fields = {
+            key: core_analysis.get(key) for key in (
+                "direction_observed", "direction_confirmed", "direction_source",
+                "direction_votes", "direction_vote_reasons", "direction_source_status",
+                "direction_reason",
+            )
+        }
         result = {
             "market": market, "symbol": symbol, "status": "inference_ok",
             "approved": bool(consultation.approved and m5_evidence["confirmed"] and consensus_ready), "score": consultation.score,
+            **_score_report_fields(core_analysis),
+            "direction_aggregation": core_analysis.get("direction_aggregation"),
             "probability": consultation.probability,
             "anomaly_score": consultation.anomaly_score,
             "vetoes": vetoes, "explanation": "; ".join(vetoes) if vetoes else consultation.explanation,
@@ -449,7 +470,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             "components": chart_components,
             "specialist_committee": specialist_committee,
             "read_only": True, "execution_allowed": False, "executor_enabled": False,
-            **_analysis_timing(market, {"direction": getattr(consultation, "direction", None), "probability": consultation.probability}, candles, observed_at, final_timing),
+            **_analysis_timing(market, direction_report_fields, candles, observed_at, final_timing),
         }
         result = _apply_direction_veto(result)
         if market == "otc":
