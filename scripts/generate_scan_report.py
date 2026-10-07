@@ -600,7 +600,9 @@ def main() -> int:
     all_analyses = forex + binary
     manifests_by_market: dict[str, list[dict[str, Any]]] = {}
     for analysis in all_analyses:
-        manifest = evidence_manifest(analysis.get("components"))
+        manifest = evidence_manifest(
+            analysis.get("components"), expected_snapshot_id=market_snapshot_id,
+        )
         analysis["evidence_manifest"] = manifest
         manifests_by_market.setdefault(str(analysis.get("market", "unknown")), []).append(manifest)
 

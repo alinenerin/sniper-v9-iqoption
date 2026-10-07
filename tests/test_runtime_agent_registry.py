@@ -30,8 +30,8 @@ class RuntimeAgentRegistryTest(unittest.TestCase):
 
     def test_manifest_does_not_claim_one_snapshot_for_mixed_evidence(self):
         manifest = evidence_manifest({
-            "smc": {"status": "inference_ok", "snapshot_id": "snap-a"},
-            "vsa": {"status": "inference_ok", "snapshot_id": "snap-b"},
+            "smc": {"status": "inference_ok", "role": "fused", "snapshot_id": "snap-a"},
+            "vsa": {"status": "inference_ok", "role": "fused", "snapshot_id": "snap-b"},
         })
         self.assertIsNone(manifest["market_snapshot_id"])
         self.assertFalse(manifest["snapshot_consistent"])
@@ -40,6 +40,29 @@ class RuntimeAgentRegistryTest(unittest.TestCase):
         manifest = evidence_manifest({"smc": {"status": "inference_ok", "role": "fused"}})
         self.assertIsNone(manifest["market_snapshot_id"])
         self.assertFalse(manifest["snapshot_consistent"])
+
+    def test_advisory_without_market_binding_does_not_break_primary_consistency(self):
+        manifest = evidence_manifest({
+            "smc": {"status": "inference_ok", "role": "fused", "snapshot_id": "snap-current"},
+            "m5": {"status": "inference_ok", "role": "confirmation", "snapshot_id": "snap-current"},
+            "mem0": {"status": "inference_ok", "role": "advisory_only"},
+            "paper_performance": {"status": "inference_ok", "role": "advisory_only",
+                                  "snapshot_id": "historical-window"},
+        }, expected_snapshot_id="snap-current")
+        self.assertTrue(manifest["snapshot_consistent"])
+        self.assertEqual(manifest["market_snapshot_id"], "snap-current")
+        self.assertEqual(manifest["expected_market_snapshot_id"], "snap-current")
+        self.assertFalse(manifest["agents"]["mem0"]["snapshot_binding_required"])
+        self.assertEqual(manifest["agents"]["paper_performance"]["snapshot_id"], "historical-window")
+
+    def test_fused_evidence_must_match_the_expected_current_snapshot(self):
+        manifest = evidence_manifest({
+            "smc": {"status": "inference_ok", "role": "fused", "snapshot_id": "stale-snapshot"},
+            "xgboost": {"status": "inference_ok", "role": "fused", "snapshot_id": "stale-snapshot"},
+        }, expected_snapshot_id="current-snapshot")
+        self.assertFalse(manifest["snapshot_consistent"])
+        self.assertIsNone(manifest["market_snapshot_id"])
+        self.assertEqual(manifest["expected_market_snapshot_id"], "current-snapshot")
 
     def test_dashboard_is_derived_from_manifest_states(self):
         analysis = {
