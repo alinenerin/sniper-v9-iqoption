@@ -289,20 +289,49 @@ def _score_report_fields(core_analysis: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _candle_direction_observed(market: str, candles: list[dict[str, Any]]) -> str | None:
+    """Describe the last candle-to-candle movement without treating it as a vote."""
+    closes = []
+    for row in candles:
+        if not isinstance(row, dict):
+            continue
+        try:
+            close = float(row.get("close"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(close):
+            closes.append(close)
+    if len(closes) < 2:
+        return None
+    change = closes[-1] - closes[-2]
+    if change == 0:
+        return None
+    if market in {"binary", "otc"}:
+        return "CALL" if change > 0 else "PUT"
+    return "BUY" if change > 0 else "SELL"
+
+
 def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str, Any]], observed_at: datetime,
                      final_timing: dict[str, Any] | None = None) -> dict[str, Any]:
+    valid_directions = {"CALL", "PUT", "BUY", "SELL"}
+    candle_observation = _candle_direction_observed(market, candles)
     aggregated = isinstance(result.get("direction_votes"), dict)
     if aggregated:
         confirmed_direction = str(result.get("direction_confirmed") or "NEUTRAL").upper()
-        direction = (confirmed_direction if confirmed_direction in {"CALL", "PUT", "BUY", "SELL"}
-                     else "NEUTRAL")
-        observed_direction = result.get("direction_observed")
-        observed_direction = str(observed_direction).upper() if observed_direction is not None else None
-        source = str(result.get("direction_source") or "none")
+        observed = result.get("direction_observed")
+        if observed is None:
+            observed_direction = candle_observation
+            observed_source = "candle_close_movement" if candle_observation else None
+        else:
+            observed_direction = str(observed).upper()
+            observed_source = result.get("direction_observed_source") or "independent_direction_votes"
+        source = str(result.get("direction_source") or "independent_direction_votes")
     else:
-        direction, source = _direction(market, result, candles)
-        observed_direction = direction if source == "engine" and direction != "NEUTRAL" else None
-        confirmed_direction = observed_direction
+        engine_direction, source = _direction(market, result, candles)
+        observed_direction = candle_observation
+        observed_source = "candle_close_movement" if candle_observation else None
+        confirmed_direction = (engine_direction if source == "engine" and engine_direction in valid_directions
+                               else None)
     final_ts = (final_timing or {}).get("final_completed_timestamp")
     timing = _timing_fields(candles, observed_at, final_ts)
     timing["source"] = "RAILWAY_DIRECT_PER_SYMBOL_NO_CACHE" if final_ts is not None else "analysis_snapshot"
@@ -313,6 +342,7 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
     try: expiry_ts = float(last_ts) + expiry_seconds if last_ts is not None else None
     except (TypeError, ValueError): pass
     result_fields = {'direction_observed': observed_direction,
+                     'direction_observed_source': observed_source,
                      'direction_confirmed': confirmed_direction,
                      'direction_source': source,
                      'direction_votes': result.get("direction_votes"),
@@ -323,7 +353,7 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
                      'expiration': {'duration_seconds': expiry_seconds, 'expected_timestamp_utc': _iso(expiry_ts),
                                     'status': 'pending_expiration', 'hypothetical_result': None,
                                     'result_reason': 'Future candle required; no outcome fabricated.'}}
-    if confirmed_direction in {"CALL", "PUT", "BUY", "SELL"}:
+    if confirmed_direction in valid_directions:
         result_fields['direction_calculated'] = confirmed_direction
     return result_fields
 

@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.generate_scan_report import _analyse, _m5_confirmation_evidence
 from core.trading_crew import TradingCrewV16
+from shared_ai.consultation import SharedAI
 
 
 class M5SignalGateTest(unittest.TestCase):
@@ -34,8 +35,19 @@ class M5SignalGateTest(unittest.TestCase):
     def run_analysis(consultation, m1, observed, m5, mismatch_agent=None):
         def fake_consult(request):
             bundle_id = request.metadata["snapshot_id"]
-            for name, item in consultation.components["component_status"].items():
+            component_status = consultation.components["component_status"]
+            for name, item in component_status.items():
                 item["snapshot_id"] = "stale-snapshot" if name == mismatch_agent else bundle_id
+            xgb_item = dict(component_status.get("xgboost", {}))
+            xgb_item["direction"] = "CALL"
+            chart_evidence = {
+                "direction": "CALL",
+                "smc": {"status": component_status.get("smc", {}).get("status", "blocked"), "direction": "CALL"},
+                "m5_engine": {"status": "inference_ok", "direction": "CALL", "snapshot_id": bundle_id},
+            }
+            consultation.components["core_analysis"] = SharedAI._direction_breakdown(
+                chart_evidence, component_status, xgb_item, bundle_id, "EURUSD",
+            )
             return consultation
         with patch("shared_ai.consultation.SharedAI.consult", side_effect=fake_consult):
             return _analyse("binary", "EURUSD", m1, observed, m5_candles=m5)
