@@ -73,6 +73,24 @@ class ScanScoreDirectionContractTest(unittest.TestCase):
                       fields["direction_source_status"]["m5_engine"]["reason"])
         self.assertIn("M5_ENGINE_STATUS_BLOCKED", fields["direction_vote_reasons"]["m5_engine"])
 
+    def test_snapshot_bound_m5_direction_is_a_vote_but_confirmation_only_is_not(self):
+        valid_m5 = SharedAI._direction_breakdown(
+            {"direction": "CALL", "smc": {"status": "inference_ok", "direction": "CALL"},
+             "m5_engine": {"status": "inference_ok", "direction": "CALL", "snapshot_id": "bundle"}},
+            {"smc": {"status": "inference_ok"}, "xgboost": {"status": "blocked"}},
+            {}, "bundle", "EURUSD",
+        )
+        self.assertEqual(valid_m5["direction_confirmed"], "CALL")
+        self.assertEqual(valid_m5["direction_votes"]["m5_engine"], "CALL")
+        confirmation_only = SharedAI._direction_breakdown(
+            {"direction": "CALL", "smc": {"status": "inference_ok"},
+             "m5_engine": {"status": "inference_ok", "confirmed": True, "snapshot_id": "bundle"}},
+            {"smc": {"status": "inference_ok"}, "xgboost": {"status": "blocked"}},
+            {}, "bundle", "EURUSD",
+        )
+        self.assertEqual(confirmation_only["direction_confirmed"], "NEUTRAL")
+        self.assertIn("NO_EXPLICIT_DIRECTION", confirmation_only["direction_vote_reasons"]["m5_engine"])
+
     def test_missing_or_mismatched_direction_sources_stay_unconfirmed(self):
         fields = SharedAI._direction_breakdown(
             {"direction": "PUT", "smc": {"status": "inference_ok"}},

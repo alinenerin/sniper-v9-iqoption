@@ -118,9 +118,9 @@ class SharedAI:
             m5_evidence = {**artifact, "_source": "m5_inference.json"} if artifact else None
         if not isinstance(m5_evidence, dict) or not m5_evidence:
             m5_evidence = {"status": "blocked", "reason": "M5_DIRECTION_SOURCE_MISSING"}
-        elif (m5_evidence.get("_source") == "m5_inference.json"
-              and (not market_snapshot_id or m5_evidence.get("snapshot_id") != market_snapshot_id)):
-            m5_evidence = {"status": "blocked", "reason": "M5_SNAPSHOT_MISMATCH"}
+        elif (not market_snapshot_id
+              or m5_evidence.get("snapshot_id") != market_snapshot_id):
+            m5_evidence = {"status": "blocked", "reason": "M5_SNAPSHOT_MISSING_OR_MISMATCH"}
         aggregation = aggregate_direction(
             smc=analysis.get("smc"), xgboost=xgb_evidence, m5_engine=m5_evidence,
         )
