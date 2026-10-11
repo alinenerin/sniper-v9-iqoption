@@ -1,19 +1,34 @@
 """Gateway HTTP read-only IQ Option via mandatory Webshare proxy."""
 from __future__ import annotations
-import json, os
+import hmac, json, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from current_iq import IQOptionReadonly, connection_status
 
 SESSION = IQOptionReadonly()
 
+
+def _balance_authorized(expected, supplied):
+    return bool(expected) and hmac.compare_digest(str(supplied or ''), 'Bearer ' + expected)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, payload, code=200):
         body=json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
-        q=parse_qs(urlparse(self.path).query)
-        if self.path.startswith('/health'):
+        parsed=urlparse(self.path)
+        q=parse_qs(parsed.query)
+        if parsed.path == '/api/account/balance':
+            expected = os.getenv('IQ_BALANCE_READ_TOKEN', '')
+            supplied = self.headers.get('Authorization', '')
+            if not expected:
+                self._send({'ok': False, 'error': 'BALANCE_QUERY_DISABLED', 'read_only': True}, 503); return
+            if not _balance_authorized(expected, supplied):
+                self._send({'ok': False, 'error': 'UNAUTHORIZED', 'read_only': True}, 401); return
+            result = SESSION.account_balance_readonly()
+            self._send(result, 200 if result.get('ok') else 503); return
+        if parsed.path == '/health':
             s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-direct-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_DIRECT','gateway_version':'market-data-trace-v1','connection':s}); return
         if self.path.startswith('/api/market/collector'):
             self._send(SESSION.collector_status()); return

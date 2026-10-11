@@ -603,6 +603,33 @@ class IQOptionReadonly:
             return {'ok': True, 'symbol': symbol, 'realtime': self.realtime_candles(symbol, interval, 10), 'assets': assets, 'payouts': payouts, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception as exc: return {'ok': False, 'reason': f'SNAPSHOT_UNAVAILABLE:{type(exc).__name__}', 'read_only': True}
 
+    def account_balance_readonly(self):
+        """Read the balance for the already-selected account mode; never switch modes."""
+        with _lock:
+            api = self.api
+            connected = bool(self.connected and _state.get('status') == 'connected')
+        base = {'read_only': True, 'execution_allowed': False,
+                'balance_mode': str(self.balance_mode or 'UNKNOWN').upper(),
+                'source': 'IQ_OPTION_DIRECT'}
+        if not connected or api is None:
+            return {**base, 'ok': False, 'reason': 'IQ_OPTION_NOT_CONNECTED'}
+        getter = getattr(api, 'get_balance', None)
+        if not callable(getter):
+            return {**base, 'ok': False, 'reason': 'IQ_OPTION_BALANCE_METHOD_UNAVAILABLE'}
+        amount = _bounded_call(getter, timeout=10)
+        if amount is None:
+            return {**base, 'ok': False, 'reason': 'IQ_OPTION_BALANCE_READ_FAILED'}
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            return {**base, 'ok': False, 'reason': 'IQ_OPTION_BALANCE_INVALID_RESPONSE'}
+        currency = None
+        currency_getter = getattr(api, 'get_currency', None)
+        if callable(currency_getter):
+            currency = _bounded_call(currency_getter, timeout=5)
+        return {**base, 'ok': True, 'balance': amount,
+                'currency': str(currency) if currency else None}
+
     def assets(self, instrument='all'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
