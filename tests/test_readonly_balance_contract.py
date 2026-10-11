@@ -19,6 +19,13 @@ class FakeAccountAPI:
     def get_currency(self):
         return "USD"
 
+    def get_profile_ansyc(self):
+        return {"balances": [{"id": 101, "type": 1}, {"id": 202, "type": 4}]}
+
+    def get_balances(self):
+        return {"msg": [{"id": 101, "amount": 765.43, "currency": "USD"},
+                        {"id": 202, "amount": 123.45, "currency": "USD"}]}
+
     def change_balance(self, mode):
         self.mode_changes += 1
 
@@ -32,6 +39,13 @@ class FakeSession:
         return {"ok": True, "balance": 123.45, "currency": "USD",
                 "balance_mode": "PRACTICE", "read_only": True,
                 "execution_allowed": False}
+
+    def account_balance_for_mode(self, mode):
+        self.calls += 1
+        return {"ok": True, "balance": 765.43, "currency": "USD",
+                "balances": [{"balance": 765.43, "currency": "USD"}],
+                "balance_mode": mode, "read_only": True,
+                "execution_allowed": False, "account_mode_changed": False}
 
 
 class ReadOnlyBalanceContractTests(unittest.TestCase):
@@ -88,6 +102,32 @@ class ReadOnlyBalanceContractTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["balance"], 123.45)
         self.assertTrue(captured["payload"]["read_only"])
         self.assertFalse(captured["payload"]["execution_allowed"])
+        self.assertEqual(self.fake_session.calls, 1)
+
+    def test_reads_real_balance_without_switching_the_active_account_mode(self):
+        session = object.__new__(current_iq.IQOptionReadonly)
+        api = FakeAccountAPI()
+        session.api = api
+        session.connected = True
+        session.balance_mode = "PRACTICE"
+        with mock.patch.dict(current_iq._state, {"status": "connected"}), \
+             mock.patch.object(current_iq, "_bounded_call", side_effect=lambda fn, *a, **k: fn()):
+            payload = session.account_balance_for_mode("REAL")
+        self.assertEqual(payload["balance"], 765.43)
+        self.assertEqual(payload["currency"], "USD")
+        self.assertEqual(payload["balance_mode"], "REAL")
+        self.assertFalse(payload["account_mode_changed"])
+        self.assertEqual(session.balance_mode, "PRACTICE")
+        self.assertEqual(api.mode_changes, 0)
+
+    def test_endpoint_can_select_real_balance_read_only(self):
+        handler, captured = self._handler("Bearer secret")
+        handler.path = "/api/account/balance?mode=REAL"
+        with mock.patch.dict(os.environ, {"IQ_BALANCE_READ_TOKEN": "secret"}):
+            handler.do_GET()
+        self.assertEqual(captured["code"], 200)
+        self.assertEqual(captured["payload"]["balance_mode"], "REAL")
+        self.assertFalse(captured["payload"]["account_mode_changed"])
         self.assertEqual(self.fake_session.calls, 1)
 
     def test_endpoint_is_disabled_when_no_token_is_configured(self):

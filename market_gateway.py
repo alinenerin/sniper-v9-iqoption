@@ -26,7 +26,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({'ok': False, 'error': 'BALANCE_QUERY_DISABLED', 'read_only': True}, 503); return
             if not _balance_authorized(expected, supplied):
                 self._send({'ok': False, 'error': 'UNAUTHORIZED', 'read_only': True}, 401); return
-            result = SESSION.account_balance_readonly()
+            mode = str(q.get('mode', ['CURRENT'])[0]).strip().upper()
+            if mode == 'CURRENT':
+                result = SESSION.account_balance_readonly()
+            elif mode in {'REAL', 'PRACTICE', 'TOURNAMENT'}:
+                result = SESSION.account_balance_for_mode(mode)
+            else:
+                self._send({'ok': False, 'error': 'UNSUPPORTED_BALANCE_MODE',
+                            'read_only': True, 'execution_allowed': False}, 400); return
             self._send(result, 200 if result.get('ok') else 503); return
         if parsed.path == '/health':
             s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-direct-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_DIRECT','gateway_version':'market-data-trace-v1','connection':s}); return

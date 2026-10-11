@@ -609,6 +609,7 @@ class IQOptionReadonly:
             api = self.api
             connected = bool(self.connected and _state.get('status') == 'connected')
         base = {'read_only': True, 'execution_allowed': False,
+                'account_mode_changed': False,
                 'balance_mode': str(self.balance_mode or 'UNKNOWN').upper(),
                 'source': 'IQ_OPTION_DIRECT'}
         if not connected or api is None:
@@ -629,6 +630,57 @@ class IQOptionReadonly:
             currency = _bounded_call(currency_getter, timeout=5)
         return {**base, 'ok': True, 'balance': amount,
                 'currency': str(currency) if currency else None}
+
+    def account_balance_for_mode(self, requested_mode):
+        """Read a requested account-type balance without changing the active mode."""
+        mode = str(requested_mode or '').strip().upper()
+        type_codes = {'REAL': {1}, 'PRACTICE': {4}, 'TOURNAMENT': {2}}
+        if mode not in type_codes:
+            return {'ok': False, 'reason': 'UNSUPPORTED_BALANCE_MODE',
+                    'read_only': True, 'execution_allowed': False}
+        with _lock:
+            api = self.api
+            connected = bool(self.connected and _state.get('status') == 'connected')
+        base = {'read_only': True, 'execution_allowed': False,
+                'account_mode_changed': False,
+                'balance_mode': mode, 'source': 'IQ_OPTION_DIRECT'}
+        if not connected or api is None:
+            return {**base, 'ok': False, 'reason': 'IQ_OPTION_NOT_CONNECTED'}
+        profile_getter = getattr(api, 'get_profile_ansyc', None)
+        balances_getter = getattr(api, 'get_balances', None)
+        if not callable(profile_getter) or not callable(balances_getter):
+            return {**base, 'ok': False, 'reason': 'IQ_OPTION_BALANCE_METHOD_UNAVAILABLE'}
+        profile = _bounded_call(profile_getter, timeout=10)
+        if not isinstance(profile, dict):
+            return {**base, 'ok': False, 'reason': 'IQ_OPTION_PROFILE_READ_FAILED'}
+        profile_rows = profile.get('balances') or []
+        wanted_ids = set()
+        for item in profile_rows:
+            if not isinstance(item, dict):
+                continue
+            try:
+                if int(item.get('type')) in type_codes[mode]:
+                    wanted_ids.add(item.get('id'))
+            except (TypeError, ValueError):
+                continue
+        if not wanted_ids:
+            return {**base, 'ok': False, 'reason': 'IQ_OPTION_ACCOUNT_MODE_NOT_FOUND'}
+        snapshot = _bounded_call(balances_getter, timeout=10)
+        rows = snapshot.get('msg', []) if isinstance(snapshot, dict) else []
+        matches = []
+        for item in rows if isinstance(rows, list) else []:
+            if not isinstance(item, dict) or item.get('id') not in wanted_ids:
+                continue
+            try:
+                amount = float(item.get('amount'))
+            except (TypeError, ValueError):
+                continue
+            matches.append({'balance': amount,
+                            'currency': str(item.get('currency')) if item.get('currency') else None})
+        if not matches:
+            return {**base, 'ok': False, 'reason': 'IQ_OPTION_BALANCE_READ_FAILED'}
+        return {**base, 'ok': True, 'balances': matches,
+                **(matches[0] if len(matches) == 1 else {})}
 
     def assets(self, instrument='all'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
