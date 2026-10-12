@@ -153,14 +153,16 @@ jobs:
           python scripts/run_timesfm_inference.py > reports/module-logs/timesfm.log 2>&1 & p2=$!
           python scripts/run_finbert_inference.py > reports/module-logs/finbert.log 2>&1 & p3=$!
           python scripts/train_xgboost_inference.py > reports/module-logs/xgboost.log 2>&1 & p4=$!
-          wait $p1; r1=$?; wait $p2; r2=$?; wait $p3; r3=$?; wait $p4; r4=$?
-          echo "module_exit_codes darts=$r1 timesfm=$r2 finbert=$r3 xgboost=$r4"
+          python scripts/run_m5_inference.py > reports/module-logs/m5_shadow.log 2>&1 & p5=$!
+          wait $p1; r1=$?; wait $p2; r2=$?; wait $p3; r3=$?; wait $p4; r4=$?; wait $p5; r5=$?
+          echo "module_exit_codes darts=$r1 timesfm=$r2 finbert=$r3 xgboost=$r4 m5_shadow=$r5"
           echo "--- xgboost.log ---"; cat reports/module-logs/xgboost.log || true
           echo "--- timesfm.log ---"; tail -80 reports/module-logs/timesfm.log || true
+          echo "--- m5_shadow.log ---"; cat reports/module-logs/m5_shadow.log || true
           # Modules are advisory/read-only; their evidence is inspected by the report.
           exit 0
       - name: Compile read-only analysis modules
-        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py
+        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py scripts/run_m5_inference.py
       - name: Refresh live timing snapshot without replacing agent evidence
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
@@ -320,4 +322,6 @@ jobs:
             reports/tradingagents_shadow.json
             reports/darts_inference.json
             reports/finbert_inference.json
+            reports/m5_shadow_inference.json
+            reports/module-logs/m5_shadow.log
 

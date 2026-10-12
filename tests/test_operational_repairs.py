@@ -36,6 +36,20 @@ class WorkflowRepairContractTests(unittest.TestCase):
             self.assertIn("iqoption-readonly-gateway.onrender.com", source)
             self.assertNotIn("RAILWAY_GATEWAY_URL", source)
 
+    def test_m5_shadow_runs_and_is_artifact_only(self):
+        workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
+        parallel_step = workflow.split("- name: Run intelligence modules in parallel (read-only)", 1)[1].split("- name:", 1)[0]
+        compile_step = workflow.split("- name: Compile read-only analysis modules", 1)[1].split("- name:", 1)[0]
+        upload_step = workflow.split("- name: Upload latest scan", 1)[1]
+        script = (ROOT / "scripts/run_m5_inference.py").read_text()
+        self.assertIn("python scripts/run_m5_inference.py", parallel_step)
+        self.assertIn("scripts/run_m5_inference.py", compile_step)
+        self.assertIn("reports/m5_shadow_inference.json", upload_step)
+        self.assertIn('ARTIFACT_PATH = Path("reports/m5_shadow_inference.json")', script)
+        self.assertIn('"official_integration": False', script)
+        self.assertIn('"official_vote": False', script)
+        self.assertNotIn('Path("reports/m5_inference.json")', script)
+
 class MacroProvenanceTests(unittest.TestCase):
     def test_raw_response_hash_headers_and_missing_quote_times_are_explicit(self):
         import macro_source

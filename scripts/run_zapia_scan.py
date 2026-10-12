@@ -15,8 +15,15 @@ def main() -> int:
     mode.add_argument("--fast", action="store_true", help="fast IQ read-only lane; heavy agents remain advisory")
     mode.add_argument("--full", action="store_true", help="run the full read-only lane")
     args = parser.parse_args()
+    symbols = [symbol for raw in args.symbols for symbol in raw.replace(",", " ").split()]
+    if not symbols:
+        parser.error("--symbols needs at least one valid pair")
     bridge = GitHubScanBridge()
-    result = bridge.dispatch(args.symbols, include_otc=args.otc, otc_only=args.otc, fast=(not args.full or args.fast))
+    # Match the workflow's fast default for ordinary scans. This only triages
+    # collection depth; official gates remain mandatory, and OTC/full requests
+    # always use complete isolated coverage.
+    fast = bool(not args.full and not args.otc)
+    result = bridge.dispatch(symbols, include_otc=args.otc, otc_only=args.otc, fast=fast)
     if not args.wait:
         print(json.dumps(result, ensure_ascii=False)); return 0
     run = bridge.run_after(result["dispatched_at"], ref=result.get("ref", "main"))

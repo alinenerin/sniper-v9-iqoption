@@ -1,3 +1,5 @@
+import unittest
+
 import numpy as np
 import pandas as pd
 
@@ -12,23 +14,26 @@ def candles(n=120, volume=0):
     })
 
 
-def test_otc_zero_volume_keeps_ohlc_features_and_quality_flag():
-    features = FeatureExtractor.extract_features(candles(), "EURUSD-OTC")
-    assert not features.drop(columns="volume_ratio").isna().any().any()
-    assert features["volume_ratio"].eq(1.0).all()
-    assert features.attrs["quality_flags"]["volume_available"] is False
-    assert features.attrs["quality_flags"]["volume_feature"] == "unavailable_neutral"
+class DartsOTCVolumeTest(unittest.TestCase):
+    def test_otc_zero_volume_keeps_ohlc_features_and_quality_flag(self):
+        features = FeatureExtractor.extract_features(candles(), "EURUSD-OTC")
+        self.assertFalse(features.drop(columns="volume_ratio").isna().any().any())
+        self.assertTrue(features["volume_ratio"].eq(1.0).all())
+        self.assertFalse(features.attrs["quality_flags"]["volume_available"])
+        self.assertEqual(features.attrs["quality_flags"]["volume_feature"], "unavailable_neutral")
+
+    def test_otc_zero_volume_can_train_with_valid_ohlc(self):
+        shield = DartsAnomalyShield(DartsShieldConfig(training_window=120))
+        result = shield.train("EURUSD-OTC", candles())
+        self.assertEqual(result["status"], "TRAINED")
+        self.assertEqual(result["samples"], 120)
+        self.assertFalse(result["quality_flags"]["volume_available"])
+
+    def test_audusd_otc_zero_candles_remains_insufficient_data(self):
+        shield = DartsAnomalyShield(DartsShieldConfig(training_window=120))
+        result = shield.train("AUDUSD-OTC", candles(0))
+        self.assertEqual(result["status"], "INSUFFICIENT_DATA")
 
 
-def test_otc_zero_volume_can_train_with_valid_ohlc():
-    shield = DartsAnomalyShield(DartsShieldConfig(training_window=120))
-    result = shield.train("EURUSD-OTC", candles())
-    assert result["status"] == "TRAINED"
-    assert result["samples"] == 120
-    assert result["quality_flags"]["volume_available"] is False
-
-
-def test_audusd_otc_zero_candles_remains_insufficient_data():
-    shield = DartsAnomalyShield(DartsShieldConfig(training_window=120))
-    result = shield.train("AUDUSD-OTC", candles(0))
-    assert result["status"] == "INSUFFICIENT_DATA"
+if __name__ == "__main__":
+    unittest.main()
