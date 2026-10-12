@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from market_universes import REAL_SYMBOLS, OTC_SYMBOLS
 from market_data_contract import validate_candles
 
-BASE = os.getenv("RAILWAY_GATEWAY_URL", "https://trader-analysis-api-production-82ba.up.railway.app").rstrip("/")
+BASE = os.getenv("MARKET_GATEWAY_URL", "https://iqoption-readonly-gateway.onrender.com").rstrip("/")
 MAX_AGE = int(os.getenv("MAX_CANDLE_AGE_SECONDS", "900"))
 
 def fetch(symbol, market, interval, required):

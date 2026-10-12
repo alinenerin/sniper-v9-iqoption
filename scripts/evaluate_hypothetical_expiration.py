@@ -4,7 +4,7 @@ import json, os, time, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-BASE = os.getenv('RAILWAY_GATEWAY_URL', 'https://trader-analysis-api-production-82ba.up.railway.app').rstrip('/')
+BASE = os.getenv('MARKET_GATEWAY_URL', 'https://iqoption-readonly-gateway.onrender.com').rstrip('/')
 REPORT = Path('reports/latest_scan.json')
 WAIT_SECONDS = int(os.getenv('PAPER_EXPIRATION_WAIT_SECONDS', '65'))
 

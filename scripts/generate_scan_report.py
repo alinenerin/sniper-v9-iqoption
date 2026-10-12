@@ -1,4 +1,4 @@
-"""Generate a read-only Forex/Binary scan report from Railway market_data.json.
+"""Generate a read-only Forex/Binary scan report from read-only gateway market_data.json.
 
 This module must remain valid UTF-8 Python: it is compiled before any market
 -data fetch, and compilation failure must prevent the scan from starting.
@@ -334,7 +334,7 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
                                else None)
     final_ts = (final_timing or {}).get("final_completed_timestamp")
     timing = _timing_fields(candles, observed_at, final_ts)
-    timing["source"] = "RAILWAY_DIRECT_PER_SYMBOL_NO_CACHE" if final_ts is not None else "analysis_snapshot"
+    timing["source"] = "READONLY_GATEWAY_DIRECT_PER_SYMBOL_NO_CACHE" if final_ts is not None else "analysis_snapshot"
     timing["cache_used"] = False if final_ts is not None else None
     last_ts = candles[-1].get('timestamp') if candles else None
     expiry_seconds = 60
@@ -387,19 +387,19 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
     # and previously raised (for example missing pytz/numpy), causing the
     # workflow to publish REPORT_GENERATOR_FAILED instead of a real report.
     if not candles:
-        components = _blocked_components("NO_RAILWAY_CANDLES")
+        components = _blocked_components("NO_FRESH_GATEWAY_CANDLES")
         if market == "otc":
             components.update(_auxiliary(symbol))
         blocked_result = {"market": market, "symbol": symbol, "status": "blocked",
-                "reason": "NO_RAILWAY_CANDLES", "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "MISSING_INVALID_CANDLES",
+                "reason": "NO_FRESH_GATEWAY_CANDLES", "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "MISSING_INVALID_CANDLES",
                 "chart_evidence": {"ema_cascade": "engine", "algorithmic_cycle": "blocked",
                                    "wick_rejection": "blocked", "previous_candle": "blocked",
                                    "vsa": "blocked", "m5_confirmation": "blocked"} if market == "otc" else {},
                 "components": components, "read_only": True,
                 "execution_allowed": False, "executor_enabled": False,
                 "shadow_policy": _shadow_policy(market, None, None, candles), **timing,
-                "score_mode": _mode_contract({"vetoes": ["NO_RAILWAY_CANDLES"]})["score_mode"],
-                "no_score_mode": _mode_contract({"vetoes": ["NO_RAILWAY_CANDLES"]})["no_score_mode"]}
+                "score_mode": _mode_contract({"vetoes": ["NO_FRESH_GATEWAY_CANDLES"]})["score_mode"],
+                "no_score_mode": _mode_contract({"vetoes": ["NO_FRESH_GATEWAY_CANDLES"]})["no_score_mode"]}
         if market in {"binary", "otc"}:
             blocked_result["m5_confirmation"] = {
                 "timeframe": "M5", "status": "blocked", "confirmed": False,
@@ -416,7 +416,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
     from shared_ai.consultation import SharedAI
     try:
         if market == "forex":
-            result = ForexV16ReadOnly(score_minimum=0).analyze(symbol, candles, {"source": "Railway market_data.json"})
+            result = ForexV16ReadOnly(score_minimum=0).analyze(symbol, candles, {"source": "read-only gateway market_data.json"})
             result["market"] = market
             result.update(_analysis_timing(market, result, candles, observed_at, final_timing))
             result = _apply_direction_veto(result)
@@ -434,7 +434,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         consultation = SharedAI(score_minimum=0).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={
-                "source": "Railway market_data.json",
+                "source": "read-only gateway market_data.json",
                 "snapshot_id": bundle_snapshot_id,
             },
         ))
@@ -636,7 +636,7 @@ def main() -> int:
         "macro_data": macro_data,
         "agent_dashboard": agent_dashboard,
         "evidence_manifest_by_market": manifests_by_market,
-        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Railway"},
+        "inputs": {"symbols": symbols, "include_otc": include_otc, "otc_only": otc_only, "source": "Render read-only gateway"},
         "filters": {"score_minimum": TRADING_CONFIG.diamond_threshold,
                     "diamond_threshold": TRADING_CONFIG.diamond_threshold,
                     "supreme_threshold": TRADING_CONFIG.supreme_threshold,

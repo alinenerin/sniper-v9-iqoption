@@ -1,4 +1,4 @@
-"""Fetch fresh read-only candles from Railway, preferring per-symbol endpoints."""
+"""Fetch fresh read-only candles from the active read-only gateway, preferring per-symbol endpoints."""
 import json, os, sys, time, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 # Allow imports from the repository root when executed as scripts/fetch_....py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-base = os.getenv('RAILWAY_GATEWAY_URL', 'https://iqoption-readonly-gateway-production.up.railway.app').rstrip('/')
+base = os.getenv('MARKET_GATEWAY_URL', 'https://iqoption-readonly-gateway.onrender.com').rstrip('/')
 fetch_started = time.perf_counter()
 requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
 include_otc = os.getenv('INCLUDE_OTC', 'false').lower() == 'true'
@@ -98,7 +98,7 @@ for _ in range(health_attempts):
         pass
     time.sleep(health_sleep)
 if not health:
-    raise RuntimeError('RAILWAY_NOT_CONNECTED_AFTER_WARMUP')
+    raise RuntimeError('READONLY_GATEWAY_NOT_CONNECTED_AFTER_WARMUP')
 
 # Discovery runs only after the gateway is functionally connected.
 base_symbols = discover_symbols()
@@ -294,7 +294,7 @@ if not fresh:
         rows = (item.get('m1') or {}).get('candles') or []
         if rows and rows[-1].get('timestamp') is not None:
             ages.append(round(time.time() - float(rows[-1]['timestamp']), 1))
-    raise RuntimeError(f'NO_FRESH_RAILWAY_CANDLES:age_seconds={max(ages) if ages else None}:max_age_seconds={max_age}')
+    raise RuntimeError(f'NO_FRESH_GATEWAY_CANDLES:age_seconds={max(ages) if ages else None}:max_age_seconds={max_age}')
 
 # Payout is current binary metadata and must travel with the same scan snapshot.
 payouts = {symbol: {'ok': True, 'symbol': symbol, 'payout': values.get('binary') or values.get('turbo'), 'source': 'IQ_OPTION_DIRECT_SNAPSHOT', 'read_only': True}
@@ -327,4 +327,4 @@ for symbol, item in collected.items():
         'candles': item.get('m1', {}), 'm3_candles': item.get('m3', {}), 'm5_candles': item.get('m5', {})}
 Path('reports').mkdir(exist_ok=True)
 Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
-print('railway_market_per_symbol=OK', len(fresh), 'fresh_of', len(symbols))
+print('market_data_per_symbol=OK', len(fresh), 'fresh_of', len(symbols))

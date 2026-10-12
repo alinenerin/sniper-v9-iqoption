@@ -3,11 +3,11 @@ import json, os, time, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-base = os.getenv("RAILWAY_GATEWAY_URL", "https://iqoption-readonly-gateway-production.up.railway.app").rstrip("/")
+base = os.getenv("MARKET_GATEWAY_URL", "https://iqoption-readonly-gateway.onrender.com").rstrip("/")
 symbols = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY").replace(",", " ").split()
 observed = time.time()
 out = {"observed_at_utc": datetime.fromtimestamp(observed, timezone.utc).isoformat(),
-       "symbols": {}, "source": "RAILWAY_DIRECT_PER_SYMBOL_NO_CACHE",
+       "symbols": {}, "source": "READONLY_GATEWAY_DIRECT_PER_SYMBOL_NO_CACHE",
        "read_only": True, "execution_allowed": False, "cache_used": False}
 for symbol in symbols:
     query = urllib.parse.urlencode({"symbol": symbol, "interval": 60, "count": 120,

@@ -63,7 +63,7 @@ assert module.TRADING_CONFIG is not None
             self.assertNotIn("REPORT_GENERATOR_FAILED", encoded)
             self.assertEqual(report["mode"], "read_only")
             self.assertIs(report["execution_allowed"], False)
-            self.assertEqual(report["binary"]["analyses"][0]["reason"], "NO_RAILWAY_CANDLES")
+            self.assertEqual(report["binary"]["analyses"][0]["reason"], "NO_FRESH_GATEWAY_CANDLES")
             self.assertIn("score_mode", report["binary"]["analyses"][0])
             self.assertIn("no_score_mode", report["binary"]["analyses"][0])
             self.assertIs(report["binary"]["analyses"][0]["no_score_mode"]["approved"], False)

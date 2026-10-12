@@ -52,6 +52,13 @@ class TradingAgentsShadowCommittee:
 
         # The committee can veto or flag; it cannot approve an operation.
         verdict = "REJECTED" if vetoes else "WATCHLIST"
+        manifest = item.get("evidence_manifest") or {}
+        snapshot_id = manifest.get("market_snapshot_id") or manifest.get("snapshot_id")
+        snapshot_consistent = manifest.get("snapshot_consistent") is True
+        provenance_ok = isinstance(snapshot_id, str) and bool(snapshot_id) and snapshot_consistent
+        if not provenance_ok:
+            flags.append("SNAPSHOT_PROVENANCE_MISSING_OR_INCONSISTENT")
+
         return {
             "status": "completed",
             "committee": "tradingagents_shadow_v1",
@@ -67,6 +74,14 @@ class TradingAgentsShadowCommittee:
             "read_only": True,
             "score_unchanged": True,
             "otc_news_isolated": market == "otc",
+            "source_run_id": item.get("source_run_id"),
+            "source_commit": item.get("source_commit"),
+            "snapshot_provenance": {
+                "snapshot_id": snapshot_id if provenance_ok else None,
+                "snapshot_consistent": snapshot_consistent,
+                "status": "ok" if provenance_ok else "blocked",
+                "reason": None if provenance_ok else "MISSING_OR_INCONSISTENT_SOURCE_MANIFEST",
+            },
         }
 
     def evaluate_report(self, report: Dict[str, Any]) -> Dict[str, Any]:
@@ -75,6 +90,8 @@ class TradingAgentsShadowCommittee:
             book = report.get(book_name) or {}
             for item in book.get("analyses", []) if isinstance(book, dict) else []:
                 enriched = dict(item)
+                enriched["source_run_id"] = report.get("workflow_run_id") or report.get("run_id")
+                enriched["source_commit"] = report.get("commit") or report.get("analysis_commit")
                 if str(item.get("market", "")).lower() == "otc":
                     enriched["components"] = {
                         k: v for k, v in (item.get("components") or {}).items()
@@ -90,6 +107,8 @@ class TradingAgentsShadowCommittee:
             "execution_allowed": False,
             "read_only": True,
             "source_report_mode": report.get("mode", "unknown"),
+            "source_run_id": report.get("workflow_run_id") or report.get("run_id"),
+            "source_commit": report.get("commit") or report.get("analysis_commit"),
             "analyses": results,
             "summary": {
                 "total": len(results),
