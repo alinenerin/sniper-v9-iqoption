@@ -80,8 +80,31 @@ class M5SignalGateTest(unittest.TestCase):
         evidence = _m5_confirmation_evidence(rows, "CALL", observed, "bundle-1")
         self.assertEqual(evidence["status"], "inference_ok")
         self.assertTrue(evidence["confirmed"])
+        self.assertEqual(evidence["m5_bias"], "CALL")
+        self.assertEqual(evidence["candidate_direction"], "CALL")
+        self.assertEqual(evidence["confirmation_state"], "confirmed")
         self.assertEqual(evidence["timeframe"], "M5")
         self.assertEqual(evidence["snapshot_id"], "bundle-1")
+
+    def test_m5_bias_is_reported_without_candidate_but_cannot_confirm(self):
+        rows = self.candles_m5()
+        observed = datetime.fromtimestamp(rows[-1]["timestamp"] + 330, timezone.utc)
+        evidence = _m5_confirmation_evidence(rows, "NEUTRAL", observed, "bundle-1")
+        self.assertEqual(evidence["m5_bias"], "CALL")
+        self.assertIsNone(evidence["candidate_direction"])
+        self.assertFalse(evidence["confirmed"])
+        self.assertEqual(evidence["reason"], "DIRECTION_UNCONFIRMED")
+        self.assertEqual(evidence["confirmation_state"], "no_candidate_direction")
+
+    def test_opposing_m5_bias_reports_exact_mismatch(self):
+        rows = self.candles_m5()
+        observed = datetime.fromtimestamp(rows[-1]["timestamp"] + 330, timezone.utc)
+        evidence = _m5_confirmation_evidence(rows, "PUT", observed, "bundle-1")
+        self.assertEqual(evidence["m5_bias"], "CALL")
+        self.assertEqual(evidence["candidate_direction"], "PUT")
+        self.assertFalse(evidence["confirmed"])
+        self.assertEqual(evidence["reason"], "M5_DIRECTION_NOT_CONFIRMED")
+        self.assertEqual(evidence["confirmation_state"], "m5_bias_did_not_confirm_candidate")
 
     def test_incomplete_or_stale_m5_is_blocked(self):
         rows = self.candles_m5()
