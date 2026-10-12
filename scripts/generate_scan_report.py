@@ -152,9 +152,36 @@ def _timing_fields(candles: list[dict[str, Any]], observed_at: datetime,
             'candle_age_seconds': round(age, 3) if age is not None else None}
 
 
+def _native_m5_bias(closed_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Report M5 trend independently of a candidate direction; never approves a trade."""
+    import pandas as pd
+
+    close = pd.to_numeric(pd.Series([row.get("close") for row in closed_rows]), errors="coerce").dropna()
+    if len(close) < 25:
+        return {"m5_bias": None, "m5_bias_reason": "M5_INSUFFICIENT_CLOSES"}
+    fast = close.ewm(span=9, adjust=False).mean()
+    slow = close.ewm(span=21, adjust=False).mean()
+    last_fast, last_slow, last_close = float(fast.iloc[-1]), float(slow.iloc[-1]), float(close.iloc[-1])
+    slope = float(fast.iloc[-1] - fast.iloc[-4])
+    if last_fast > last_slow and last_close > last_slow and slope > 0:
+        bias = "CALL"
+    elif last_fast < last_slow and last_close < last_slow and slope < 0:
+        bias = "PUT"
+    else:
+        bias = "NEUTRAL"
+    return {
+        "m5_bias": bias,
+        "m5_bias_method": "closed_M5_EMA9_vs_EMA21_and_EMA9_slope_3_candles",
+        "m5_ema9": last_fast,
+        "m5_ema21": last_slow,
+        "m5_ema9_slope_3_candles": slope,
+        "m5_last_close": last_close,
+    }
+
+
 def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
                               observed_at: datetime, bundle_snapshot_id: str) -> dict[str, Any]:
-    """Confirm direction using only valid, closed, native M5 candles."""
+    """Report native M5 bias and confirm only against an independent candidate direction."""
     observed_ts = observed_at.timestamp()
     completed: list[tuple[float, dict[str, Any]]] = []
     invalid_count = 0
@@ -210,8 +237,15 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
     if any(abs((b[0] - a[0]) - M5_INTERVAL_SECONDS) > 2 for a, b in zip(recent, recent[1:])):
         base["reason"] = "M5_CANDLE_GAP"
         return base
+
+    # Always publish the observed M5 bias when its candles are valid, even if
+    # the independent M1/SMC/XGBoost direction is missing. Bias is diagnostic
+    # only; it must not manufacture a candidate or satisfy its own confirmation.
+    base.update(_native_m5_bias(closed_rows))
+    base["candidate_direction"] = direction if direction in {"CALL", "PUT"} else None
     if direction not in {"CALL", "PUT"}:
         base["reason"] = "DIRECTION_UNCONFIRMED"
+        base["confirmation_state"] = "no_candidate_direction"
         return base
 
     from engines.binary.operational import BinaryPolicy
@@ -220,6 +254,7 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
         "status": "inference_ok",
         "confirmed": bool(confirmed),
         "reason": None if confirmed else "M5_DIRECTION_NOT_CONFIRMED",
+        "confirmation_state": "confirmed" if confirmed else "m5_bias_did_not_confirm_candidate",
         "valid_closed_candles": len(closed_rows),
     })
     return base
