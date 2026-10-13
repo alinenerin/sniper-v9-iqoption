@@ -5,7 +5,7 @@ import time
 import threading
 import uuid
 from datetime import datetime, timezone
-from market_data_contract import validate_candles, MINIMUMS, TIMEFRAME_NAMES
+from market_data_contract import aggregate_m1_to_m3, validate_candles, MINIMUMS, TIMEFRAME_NAMES
 
 _LOG = logging.getLogger("iqoption_connection")
 
@@ -567,9 +567,22 @@ class IQOptionReadonly:
             realtime = self.realtime_candles(symbol, 60, 20)
             realtime_rows = realtime.get('candles', []) if isinstance(realtime, dict) else []
             live_quote = realtime_rows[-1].get('close') if realtime_rows else None
+            m1 = self.candles(symbol, 60, 1000, kind, allow_cache=False)
+            m1_rows = m1.get('candles', []) if isinstance(m1, dict) else []
+            m3_rows = aggregate_m1_to_m3(m1_rows, required=120)
+            m3_ok = m1.get('status') == 'OK' and len(m3_rows) >= 120
+            m3 = {
+                'status': 'OK' if m3_ok else 'DATA_INSUFFICIENT',
+                'provider_status': 'OK' if m3_ok else 'AGGREGATED_M3_INSUFFICIENT',
+                'validation_status': 'PASS' if m3_ok else 'INSUFFICIENT_DATA',
+                'freshness_status': m1.get('freshness_status', 'ERROR'),
+                'candles_received': len(m3_rows), 'candles': m3_rows,
+                'timeframe': 'M3', 'interval': 180,
+                'source': 'IQ_OPTION_M1_AGGREGATED_3M', 'read_only': True,
+            }
             rows = {
-                'm1': self.candles(symbol, 60, 1000, kind, allow_cache=False),
-                'm3': self.candles(symbol, 180, 120, kind, allow_cache=False),
+                'm1': m1,
+                'm3': m3,
                 'm5': self.candles(symbol, 300, 30, kind, allow_cache=False),
                 'realtime': realtime_rows, 'quote': live_quote,
                 'quote_source': 'IQ_OPTION_REALTIME_CANDLE' if live_quote is not None else 'UNAVAILABLE',

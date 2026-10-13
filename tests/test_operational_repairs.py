@@ -32,12 +32,14 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("Acionável agora", workflow)
         self.assertIn("actionable_without_valid_timing", workflow)
 
-    def test_live_scan_uses_single_full_universe_gateway_batch_and_records_latency(self):
+    def test_live_scan_uses_bounded_single_pair_batches_and_records_latency(self):
         fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
-        self.assertIn("SNAPSHOT_BATCH_SIZE', '10'", fetcher)
+        self.assertIn("SNAPSHOT_BATCH_SIZE = 1", fetcher)
         self.assertIn("range(0, len(symbols), SNAPSHOT_BATCH_SIZE)", fetcher)
         self.assertIn("batch_diagnostics", fetcher)
-        self.assertIn("gateway_batch10_with_bounded_recovery", fetcher)
+        self.assertIn("gateway_batch1_bounded_recovery", fetcher)
+        self.assertIn("aggregate_m1_to_m3", fetcher)
+        self.assertNotIn("'interval': 180", fetcher)
         self.assertNotIn("range(0, len(symbols), 2)", fetcher)
 
     def test_helper_scripts_use_active_gateway(self):

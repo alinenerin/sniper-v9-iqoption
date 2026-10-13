@@ -1,5 +1,5 @@
 import unittest
-from market_data_contract import validate_candles
+from market_data_contract import aggregate_m1_to_m3, validate_candles
 
 
 def candle(t=1700000000):
@@ -33,6 +33,37 @@ class TestMarketDataContract(unittest.TestCase):
         self.assertEqual(out.age_seconds, 50)
         self.assertEqual(out.freshness_status, 'PASS')
         self.assertEqual(out.status, 'PASS')
+
+    def test_aggregates_only_complete_aligned_closed_m3_bars(self):
+        rows = [
+            {'symbol': 'EURUSD', 'timestamp': t, 'open': o, 'high': h,
+             'low': l, 'close': c, 'volume': v}
+            for t, o, h, l, c, v in (
+                (1800, 1.00, 1.10, .99, 1.05, 2),
+                (1860, 1.05, 1.12, 1.02, 1.08, 3),
+                (1920, 1.08, 1.15, 1.04, 1.12, 4),
+                (1980, 1.12, 1.20, 1.10, 1.18, 5),
+                (2040, 1.18, 1.25, 1.16, 1.22, 6),
+                (2100, 1.22, 1.24, 1.19, 1.20, 7),
+                (2160, 1.20, 1.30, 1.18, 1.28, 8),
+            )
+        ]
+        out = aggregate_m1_to_m3(rows, now=2160, required=10)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]['timestamp'], 1800)
+        self.assertEqual(out[0]['timeframe'], 'M3')
+        self.assertEqual(out[0]['open'], 1.00)
+        self.assertEqual(out[0]['high'], 1.15)
+        self.assertEqual(out[0]['low'], .99)
+        self.assertEqual(out[0]['close'], 1.12)
+        self.assertEqual(out[0]['volume'], 9)
+        # The 2160 bucket is incomplete and must not be emitted.
+        self.assertEqual(out[-1]['timestamp'], 1980)
+
+    def test_m3_aggregation_does_not_fill_missing_minutes(self):
+        rows = [candle(1800), candle(1860), candle(1980)]
+        out = aggregate_m1_to_m3(rows, now=2160, required=10)
+        self.assertEqual(out, [])
 
 
 if __name__ == '__main__':

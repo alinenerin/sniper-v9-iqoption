@@ -8,6 +8,60 @@ MINIMUMS = {60: 120, 300: 30}
 TIMEFRAME_NAMES = {60: "M1", 300: "M5"}
 
 
+def aggregate_m1_to_m3(rows: Any, *, now: float | None = None,
+                       required: int = 120) -> list[dict[str, Any]]:
+    """Aggregate complete, aligned provider M1 candles into M3 bars.
+
+    No price is interpolated: a bar is emitted only when its three expected
+    one-minute candles are present and its 3-minute interval has closed.
+    """
+    observed = time.time() if now is None else float(now)
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            stamp = float(row.get("timestamp"))
+            if stamp > 10_000_000_000:
+                stamp /= 1000.0
+            if not math.isfinite(stamp) or stamp <= 0:
+                continue
+            bucket = int(stamp // 180) * 180
+            if bucket + 180 > observed:
+                continue
+            groups.setdefault(bucket, []).append(row)
+        except (TypeError, ValueError, OverflowError):
+            continue
+
+    aggregated: list[dict[str, Any]] = []
+    for bucket, items in sorted(groups.items()):
+        items.sort(key=lambda x: float(x["timestamp"]) / (1000.0 if float(x["timestamp"]) > 10_000_000_000 else 1.0))
+        normalized_stamps = []
+        for item in items:
+            stamp = float(item["timestamp"])
+            normalized_stamps.append(stamp / 1000.0 if stamp > 10_000_000_000 else stamp)
+        expected = [bucket, bucket + 60, bucket + 120]
+        if len(items) != 3 or any(abs(a - b) > 2 for a, b in zip(normalized_stamps, expected)):
+            continue
+        try:
+            opens = [float(x["open"]) for x in items]
+            highs = [float(x["high"]) for x in items]
+            lows = [float(x["low"]) for x in items]
+            closes = [float(x["close"]) for x in items]
+            volumes = [float(x.get("volume") or 0) for x in items]
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not all(math.isfinite(v) for v in opens + highs + lows + closes + volumes):
+            continue
+        aggregated.append({
+            "symbol": items[0].get("symbol"), "timeframe": "M3",
+            "timestamp": float(bucket), "open": opens[0],
+            "high": max(highs), "low": min(lows), "close": closes[-1],
+            "volume": sum(volumes),
+        })
+    return aggregated[-max(1, int(required)):]
+
+
 class CandleContractError(ValueError):
     """Strict candle-contract failure used by provider-neutral consumers."""
 
