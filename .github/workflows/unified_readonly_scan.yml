@@ -1,5 +1,11 @@
 name: Unified V16 Scan - Read Only
 
+# The gateway uses one serialized IQ Option session. Overlapping scans queue
+# provider calls and make live candles stale, so only the newest scan may run.
+concurrency:
+  group: bqx-single-iqoption-session
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
     inputs:

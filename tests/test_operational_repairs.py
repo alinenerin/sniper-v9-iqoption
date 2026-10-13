@@ -10,6 +10,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 class WorkflowRepairContractTests(unittest.TestCase):
+    def test_scans_serialize_single_iq_option_gateway_session(self):
+        workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
+        concurrency = workflow.split("concurrency:", 1)[1].split("jobs:", 1)[0]
+        self.assertIn("group: bqx-single-iqoption-session", concurrency)
+        self.assertIn("cancel-in-progress: true", concurrency)
+
     def test_full_and_fast_history_modes_render_gateway_and_cache_dependency_repair(self):
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         self.assertIn("MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com", workflow)
