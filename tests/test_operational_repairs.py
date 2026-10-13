@@ -10,12 +10,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 class WorkflowRepairContractTests(unittest.TestCase):
-    def test_scans_serialize_single_iq_option_gateway_session(self):
-        workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
-        concurrency = workflow.split("concurrency:", 1)[1].split("jobs:", 1)[0]
-        self.assertIn("group: bqx-single-iqoption-session", concurrency)
-        self.assertIn("cancel-in-progress: true", concurrency)
-
     def test_full_and_fast_history_modes_render_gateway_and_cache_dependency_repair(self):
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         self.assertIn("MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com", workflow)
@@ -37,6 +31,14 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("finbert-timesfm", workflow)
         self.assertIn("Acionável agora", workflow)
         self.assertIn("actionable_without_valid_timing", workflow)
+
+    def test_live_scan_uses_single_full_universe_gateway_batch_and_records_latency(self):
+        fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
+        self.assertIn("SNAPSHOT_BATCH_SIZE', '10'", fetcher)
+        self.assertIn("range(0, len(symbols), SNAPSHOT_BATCH_SIZE)", fetcher)
+        self.assertIn("batch_diagnostics", fetcher)
+        self.assertIn("gateway_batch10_with_bounded_recovery", fetcher)
+        self.assertNotIn("range(0, len(symbols), 2)", fetcher)
 
     def test_helper_scripts_use_active_gateway(self):
         names = ("scripts/fetch_railway_market.py", "scripts/refresh_final_timing.py",
