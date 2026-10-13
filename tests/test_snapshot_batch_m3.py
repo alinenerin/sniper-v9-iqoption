@@ -9,8 +9,6 @@ class TestSnapshotBatchM3(unittest.TestCase):
         reader.connected = True
         reader.api = object()
         reader.assets = lambda _instrument: {"ok": True, "assets": []}
-        reader.realtime_candles = lambda *_args: {"candles": []}
-
         start = (1_700_000_000 // 180) * 180
         m1_rows = [
             {"symbol": "EURUSD", "timeframe": "M1", "timestamp": start + i * 60,
@@ -20,9 +18,18 @@ class TestSnapshotBatchM3(unittest.TestCase):
             for i in range(360)
         ]
         calls = []
+        snapshot_order = []
+
+        def fake_realtime(*_args):
+            snapshot_order.append('realtime')
+            return {"ok": True, "candles": [{"timestamp": 1_700_000_000, "close": 1.234}],
+                    "retrieved_at": 1_700_000_001, "source": "IQ_OPTION_DIRECT", "read_only": True}
+
+        reader.realtime_candles = fake_realtime
 
         def fake_candles(symbol, interval, count, market_type, allow_cache):
-            calls.append(interval)
+            calls.append((interval, count))
+            snapshot_order.append(interval)
             if interval == 60:
                 return {"status": "OK", "freshness_status": "PASS", "candles": m1_rows}
             if interval == 300:
@@ -34,7 +41,11 @@ class TestSnapshotBatchM3(unittest.TestCase):
         result = reader.snapshot_batch(["EURUSD"])
 
         self.assertTrue(result["ok"])
-        self.assertEqual(calls, [60, 300])
+        self.assertEqual(calls, [(60, 1000), (300, 31)])
+        self.assertEqual(snapshot_order, [60, 300, 'realtime'])
+        self.assertEqual(result['symbols']['EURUSD']['quote'], 1.234)
+        self.assertEqual(result['symbols']['EURUSD']['realtime_retrieved_at'], 1_700_000_001)
+        self.assertEqual(result['symbols']['EURUSD']['quote_candle_bucket_timestamp'], 1_700_000_000)
         m3 = result["symbols"]["EURUSD"]["m3"]
         self.assertEqual(m3["status"], "OK")
         self.assertEqual(m3["source"], "IQ_OPTION_M1_AGGREGATED_3M")

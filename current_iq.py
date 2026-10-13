@@ -30,6 +30,14 @@ _collector_started = False
 _stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'collector_error': None, 'polls': 0}
 _request_trace = []
 _TRACE_LIMIT = 500
+# The legacy IQ Option SDK owns one websocket-backed client. Never create a new
+# worker for each timeout: a timed-out call may still be running in Python.
+# Keep one single-flight executor and refuse overlap until the SDK call returns.
+_sdk_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='iqoption-sdk')
+_sdk_call_guard = threading.Lock()
+_sdk_active_future = None
+_sdk_active_method = None
+_sdk_last_timeout_at = None
 
 def _trace(entry):
     with _lock:
@@ -45,16 +53,31 @@ def _is_fx_otc(symbol):
 
 
 def _bounded_call(fn, *args, timeout=8):
-    pool = ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(fn, *args)
+    """Run one SDK operation at a time; a timeout never spawns an overlapping call.
+
+    Python cannot stop a running thread. The previous per-call executor returned
+    on timeout and left its SDK operation alive while the next request created a
+    second worker against the same websocket. A persistent single worker plus a
+    non-queuing gate keeps the IQ SDK session serialized even after timeouts.
+    """
+    global _sdk_active_future, _sdk_active_method, _sdk_last_timeout_at
+    with _sdk_call_guard:
+        if _sdk_active_future is not None and not _sdk_active_future.done():
+            return None
+        method = getattr(fn, '__name__', type(fn).__name__)
+        future = _sdk_executor.submit(fn, *args)
+        _sdk_active_future = future
+        _sdk_active_method = method
     try:
-        return future.result(timeout=timeout)
-    except (FutureTimeout, Exception):
+        return future.result(timeout=max(0.01, float(timeout)))
+    except FutureTimeout:
+        with _sdk_call_guard:
+            _sdk_last_timeout_at = time.time()
+        return None
+    except Exception:
         # SDK websocket calls may raise on partial/None IQ responses; callers
         # must be able to use their fallback parser instead of aborting.
         return None
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
 
 class IQOptionReadonly:
     def __init__(self):
@@ -144,7 +167,7 @@ class IQOptionReadonly:
             ok, reason = result
             if not ok:
                 _state.update(status='error', reason=str(reason or 'IQ_OPTION_LOGIN_FAILED')[:180]); _start_once=False; return
-            try: api.change_balance(self.balance_mode)
+            try: _bounded_call(api.change_balance, self.balance_mode, timeout=10)
             except Exception: pass
             global _session_id
             with _lock:
@@ -255,7 +278,11 @@ class IQOptionReadonly:
                 for symbol in batch:
                     for interval in (60, 300):
                         try:
-                            api.start_candles_stream(symbol, interval, 120)
+                            def start_stream(api=api, symbol=symbol, interval=interval):
+                                api.start_candles_stream(symbol, interval, 120)
+                                return True
+                            if not _bounded_call(start_stream, timeout=8):
+                                raise TimeoutError('IQ_OPTION_SDK_BUSY_OR_TIMEOUT')
                             with _lock:
                                 _stream_diag['subscribed'][f'{symbol}:{interval}'] = time.time()
                         except Exception as exc:
@@ -268,7 +295,7 @@ class IQOptionReadonly:
                 for _ in range(3):
                     for symbol in batch:
                         for interval in (60, 300):
-                            raw = api.get_realtime_candles(symbol, interval) or {}
+                            raw = _bounded_call(api.get_realtime_candles, symbol, interval, timeout=8) or {}
                             rows = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)} for ts, c in raw.items()]
                             # Some OTC symbols accept subscription but emit no
                             # realtime map. Fall back to bounded REST candles.
@@ -482,7 +509,7 @@ class IQOptionReadonly:
                 # Some IQ sessions expose real binary/turbo profit through
                 # get_all_profit instead of the init snapshot.
                 try:
-                    profits = self.api.get_all_profit() if callable(getattr(self.api, 'get_all_profit', None)) else {}
+                    profits = _bounded_call(self.api.get_all_profit, timeout=15) if callable(getattr(self.api, 'get_all_profit', None)) else {}
                     if isinstance(profits, dict):
                         # iqoptionapi normally returns {SYMBOL: {turbo: ..., binary: ...}},
                         # while some gateway builds return the inverse orientation.
@@ -513,20 +540,33 @@ class IQOptionReadonly:
 
     def realtime_candles(self, symbol, interval=60, maxdict=20):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
-        try:
-            symbol = str(symbol).upper().replace('/', '')
-            self.api.start_candles_stream(symbol, int(interval), int(maxdict))
-            data = self.api.get_realtime_candles(symbol, int(interval)) or {}
-            candles = []
-            for ts, c in data.items():
-                candles.append({'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'), 'low': c.get('min'), 'close': c.get('close'), 'volume': c.get('volume', 0)})
-            result = {'ok': True, 'symbol': symbol, 'interval_seconds': int(interval), 'candles': sorted(candles, key=lambda x: x['timestamp'])[-2:], 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
-            stop = getattr(self.api, 'stop_candles_stream', None)
-            if callable(stop):
-                try: stop(symbol, int(interval))
-                except Exception: pass
-            return result
-        except Exception: return {'ok': False, 'reason': 'IQ_OPTION_REALTIME_STREAM_UNAVAILABLE', 'read_only': True}
+        symbol = str(symbol).upper().replace('/', '')
+        interval = int(interval)
+        api = self.api
+
+        def read_stream():
+            api.start_candles_stream(symbol, interval, int(maxdict))
+            try:
+                data = api.get_realtime_candles(symbol, interval) or {}
+                candles = [{'timestamp': ts, 'open': c.get('open'), 'high': c.get('max'),
+                            'low': c.get('min'), 'close': c.get('close'),
+                            'volume': c.get('volume', 0)} for ts, c in data.items()]
+                return {'ok': bool(candles), 'symbol': symbol, 'interval_seconds': interval,
+                        'candles': sorted(candles, key=lambda x: x['timestamp'])[-2:],
+                        'retrieved_at': time.time(), 'source': 'IQ_OPTION_DIRECT',
+                        'read_only': True,
+                        **({} if candles else {'reason': 'REALTIME_STREAM_EMPTY'})}
+            finally:
+                stop = getattr(api, 'stop_candles_stream', None)
+                if callable(stop):
+                    try: stop(symbol, interval)
+                    except Exception: pass
+
+        result = _bounded_call(read_stream, timeout=10)
+        if result is None:
+            return {'ok': False, 'symbol': symbol, 'interval_seconds': interval,
+                    'reason': 'IQ_OPTION_SDK_BUSY_OR_TIMEOUT', 'read_only': True}
+        return result
 
     def digital_strike(self, symbol, duration=60):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
@@ -534,16 +574,23 @@ class IQOptionReadonly:
             symbol = str(symbol).upper().replace('/', '')
             fn = getattr(self.api, 'get_realtime_strike_list', None)
             if not callable(fn): return {'ok': False, 'reason': 'DIGITAL_STRIKE_NOT_EXPOSED_BY_SDK', 'read_only': True}
-            return {'ok': True, 'symbol': symbol, 'duration': int(duration), 'strike': fn(symbol, int(duration)), 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
+            strike = _bounded_call(fn, symbol, int(duration), timeout=10)
+            if strike is None: return {'ok': False, 'reason': 'IQ_OPTION_SDK_BUSY_OR_TIMEOUT', 'read_only': True}
+            return {'ok': True, 'symbol': symbol, 'duration': int(duration), 'strike': strike, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception: return {'ok': False, 'reason': 'DIGITAL_STRIKE_UNAVAILABLE', 'read_only': True}
 
     def commission(self, instrument='binary'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
         try:
             sub = getattr(self.api, 'subscribe_commission_changed', None); get = getattr(self.api, 'get_commission_change', None)
-            if callable(sub): sub(instrument)
-            value = get(instrument) if callable(get) else None
-            return {'ok': value is not None, 'instrument': instrument, 'commission': value, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
+            if not callable(get): return {'ok': False, 'reason': 'COMMISSION_METHOD_UNAVAILABLE', 'read_only': True}
+            def read_commission():
+                if callable(sub): sub(instrument)
+                return get(instrument)
+            value = _bounded_call(read_commission, timeout=10)
+            return {'ok': value is not None, 'instrument': instrument, 'commission': value,
+                    'reason': None if value is not None else 'IQ_OPTION_SDK_BUSY_OR_TIMEOUT',
+                    'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception: return {'ok': False, 'reason': 'COMMISSION_UNAVAILABLE', 'read_only': True}
 
     def snapshot_batch(self, symbols):
@@ -564,9 +611,6 @@ class IQOptionReadonly:
         data, failures = {}, {}
         for symbol in requested:
             kind = 'OTC' if symbol.endswith('-OTC') else 'REAL'
-            realtime = self.realtime_candles(symbol, 60, 20)
-            realtime_rows = realtime.get('candles', []) if isinstance(realtime, dict) else []
-            live_quote = realtime_rows[-1].get('close') if realtime_rows else None
             m1 = self.candles(symbol, 60, 1000, kind, allow_cache=False)
             m1_rows = m1.get('candles', []) if isinstance(m1, dict) else []
             m3_rows = aggregate_m1_to_m3(m1_rows, required=120)
@@ -583,11 +627,26 @@ class IQOptionReadonly:
             rows = {
                 'm1': m1,
                 'm3': m3,
-                'm5': self.candles(symbol, 300, 30, kind, allow_cache=False),
-                'realtime': realtime_rows, 'quote': live_quote,
-                'quote_source': 'IQ_OPTION_REALTIME_CANDLE' if live_quote is not None else 'UNAVAILABLE',
+                # Request one extra M5 bar because the latest provider bar may
+                # still be forming; downstream consumers must retain 30 closed bars.
+                'm5': self.candles(symbol, 300, 31, kind, allow_cache=False),
                 'cache_policy': 'bypass',
             }
+            # Sample the realtime stream only after historical retrieval so its
+            # retrieval metadata truthfully reflects a recent quote observation.
+            realtime = self.realtime_candles(symbol, 60, 20)
+            realtime_rows = realtime.get('candles', []) if isinstance(realtime, dict) else []
+            live_quote = realtime_rows[-1].get('close') if realtime_rows else None
+            rows.update({
+                'realtime': realtime_rows, 'quote': live_quote,
+                'quote_source': 'IQ_OPTION_REALTIME_CANDLE' if live_quote is not None else 'UNAVAILABLE',
+                'realtime_retrieved_at': realtime.get('retrieved_at') if isinstance(realtime, dict) else None,
+                'realtime_source': realtime.get('source') if isinstance(realtime, dict) else None,
+                'realtime_read_only': bool(realtime.get('read_only')) if isinstance(realtime, dict) else True,
+                'realtime_status': 'OK' if isinstance(realtime, dict) and realtime.get('ok') else 'UNAVAILABLE',
+                # Candle timestamps are bucket timestamps, not exchange tick timestamps.
+                'quote_candle_bucket_timestamp': realtime_rows[-1].get('timestamp') if realtime_rows else None,
+            })
             data[symbol] = rows
             bad = [tf for tf in ('m1', 'm3', 'm5') if rows[tf].get('status') != 'OK']
             if bad:

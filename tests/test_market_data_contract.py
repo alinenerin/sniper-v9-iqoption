@@ -1,5 +1,6 @@
 import unittest
-from market_data_contract import aggregate_m1_to_m3, validate_candles
+from market_data_contract import (aggregate_m1_to_m3, closed_candles,
+                                  validate_candles, validate_snapshot_freshness)
 
 
 def candle(t=1700000000):
@@ -64,6 +65,42 @@ class TestMarketDataContract(unittest.TestCase):
         rows = [candle(1800), candle(1860), candle(1980)]
         out = aggregate_m1_to_m3(rows, now=2160, required=10)
         self.assertEqual(out, [])
+
+    def test_closed_candles_excludes_forming_m5_bar(self):
+        rows = [candle(9300), candle(9600)]
+        closed = closed_candles(rows, 300, now=9750)
+        self.assertEqual([row['timestamp'] for row in closed], [9300.0])
+
+    def test_snapshot_requires_every_symbol_fresh_and_time_aligned(self):
+        now = 9750
+        m5 = [candle(300 * i) for i in range(1, 32)]
+        data = {
+            'EURUSD': {'m1': [candle(9720)], 'm5': m5},
+            'GBPUSD': {'m1': [candle(9660)], 'm5': m5},
+        }
+        result = validate_snapshot_freshness(data, now=now)
+        self.assertTrue(result['ok'], result['errors'])
+        self.assertEqual(result['m1_spread_seconds'], 60)
+        self.assertEqual(result['symbols']['EURUSD']['m5_closed_count'], 31)
+
+    def test_snapshot_rejects_stale_symbol_even_if_others_are_fresh(self):
+        now = 9750
+        m5 = [candle(300 * i) for i in range(1, 32)]
+        data = {
+            'EURUSD': {'m1': [candle(9720)], 'm5': m5},
+            'GBPUSD': {'m1': [candle(9000)], 'm5': m5},
+        }
+        result = validate_snapshot_freshness(data, now=now)
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('GBPUSD:M1_STALE' in error for error in result['errors']))
+
+    def test_snapshot_rejects_if_latest_m5_is_forming_and_only_29_closed(self):
+        now = 9750
+        m5 = [candle(300 * i) for i in range(1, 30)] + [candle(9600)]
+        data = {'EURUSD': {'m1': [candle(9720)], 'm5': m5}}
+        result = validate_snapshot_freshness(data, now=now)
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('M5_CLOSED_INSUFFICIENT:29<30' in error for error in result['errors']))
 
 
 if __name__ == '__main__':

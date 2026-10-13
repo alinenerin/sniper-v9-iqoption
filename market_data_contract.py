@@ -127,6 +127,37 @@ def normalize_and_validate(rows: Any, symbol: str, interval_seconds: int) -> lis
     return out
 
 
+def _timestamp_seconds(row: Any) -> float | None:
+    if not isinstance(row, dict):
+        return None
+    try:
+        stamp = float(row.get("timestamp"))
+        if stamp > 10_000_000_000:
+            stamp /= 1000.0
+        return stamp if math.isfinite(stamp) and stamp > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def closed_candles(rows: Any, interval_seconds: int, *, now: float | None = None,
+                   clock_skew_seconds: float = 1.0) -> list[dict[str, Any]]:
+    """Return provider bars whose interval has ended; never confirm a forming bar."""
+    observed = time.time() if now is None else float(now)
+    interval = int(interval_seconds)
+    if interval <= 0 or not isinstance(rows, list):
+        return []
+    result = []
+    for row in rows:
+        stamp = _timestamp_seconds(row)
+        if stamp is None or stamp + interval > observed + float(clock_skew_seconds):
+            continue
+        normalized = dict(row)
+        normalized["timestamp"] = stamp
+        result.append(normalized)
+    result.sort(key=lambda item: float(item["timestamp"]))
+    return result
+
+
 def freshness(rows: Any, max_age_seconds: int | float = 900,
               now: float | None = None) -> tuple[bool, float | None]:
     """Return freshness and age for the latest normalized candle."""
@@ -134,6 +165,70 @@ def freshness(rows: Any, max_age_seconds: int | float = 900,
         return False, None
     age = (time.time() if now is None else float(now)) - float(rows[-1]["timestamp"])
     return age <= float(max_age_seconds), age
+
+
+def validate_snapshot_freshness(symbols: Any, *, now: float | None = None,
+                                max_m1_age_seconds: float = 120,
+                                max_m5_close_age_seconds: float = 300,
+                                max_m1_skew_seconds: float = 120,
+                                max_m5_skew_seconds: float = 300,
+                                min_m5_closed: int = 30) -> dict[str, Any]:
+    """Fail closed unless every symbol has fresh, aligned M1 and closed M5 bars."""
+    observed = time.time() if now is None else float(now)
+    if not isinstance(symbols, dict) or not symbols:
+        return {"ok": False, "errors": ["NO_SYMBOL_SNAPSHOTS"], "symbols": {}}
+    details: dict[str, Any] = {}
+    errors: list[str] = []
+    m1_stamps: list[float] = []
+    m5_close_stamps: list[float] = []
+    for symbol, data in symbols.items():
+        data = data if isinstance(data, dict) else {}
+        m1_payload = data.get("m1") or data.get("candles") or []
+        m5_payload = data.get("m5") or data.get("m5_candles") or []
+        m1_rows = m1_payload.get("candles", []) if isinstance(m1_payload, dict) else m1_payload
+        m5_rows = m5_payload.get("candles", []) if isinstance(m5_payload, dict) else m5_payload
+        m1_times = [stamp for row in (m1_rows if isinstance(m1_rows, list) else [])
+                    if (stamp := _timestamp_seconds(row)) is not None]
+        m1_latest = max(m1_times) if m1_times else None
+        m1_age = max(0.0, observed - m1_latest) if m1_latest is not None else None
+        m5_closed = closed_candles(m5_rows, 300, now=observed)
+        m5_latest = _timestamp_seconds(m5_closed[-1]) if m5_closed else None
+        m5_close_timestamp = m5_latest + 300 if m5_latest is not None else None
+        m5_close_age = max(0.0, observed - m5_close_timestamp) if m5_close_timestamp is not None else None
+        details[symbol] = {
+            "m1_latest_timestamp": m1_latest,
+            "m1_age_seconds": m1_age,
+            "m5_closed_count": len(m5_closed),
+            "m5_latest_closed_timestamp": m5_latest,
+            "m5_close_age_seconds": m5_close_age,
+        }
+        if m1_latest is None:
+            errors.append(f"{symbol}:M1_MISSING")
+        else:
+            m1_stamps.append(m1_latest)
+            if m1_latest > observed + 2:
+                errors.append(f"{symbol}:M1_FUTURE")
+            elif m1_age is not None and m1_age > float(max_m1_age_seconds):
+                errors.append(f"{symbol}:M1_STALE:{round(m1_age, 1)}s")
+        if len(m5_closed) < int(min_m5_closed):
+            errors.append(f"{symbol}:M5_CLOSED_INSUFFICIENT:{len(m5_closed)}<{int(min_m5_closed)}")
+        elif m5_close_timestamp is not None:
+            m5_close_stamps.append(m5_close_timestamp)
+            if m5_close_age is not None and m5_close_age > float(max_m5_close_age_seconds):
+                errors.append(f"{symbol}:M5_STALE:{round(m5_close_age, 1)}s")
+    m1_spread = max(m1_stamps) - min(m1_stamps) if len(m1_stamps) > 1 else 0.0
+    m5_spread = max(m5_close_stamps) - min(m5_close_stamps) if len(m5_close_stamps) > 1 else 0.0
+    if len(m1_stamps) != len(symbols):
+        errors.append("M1_SYMBOL_COVERAGE_INCOMPLETE")
+    if len(m5_close_stamps) != len(symbols):
+        errors.append("M5_SYMBOL_COVERAGE_INCOMPLETE")
+    if m1_spread > float(max_m1_skew_seconds):
+        errors.append(f"M1_SNAPSHOT_SKEW:{round(m1_spread, 1)}s")
+    if m5_spread > float(max_m5_skew_seconds):
+        errors.append(f"M5_SNAPSHOT_SKEW:{round(m5_spread, 1)}s")
+    return {"ok": not errors, "errors": errors, "m1_spread_seconds": m1_spread,
+            "m5_spread_seconds": m5_spread, "symbols": details,
+            "read_only": True}
 
 
 @dataclass

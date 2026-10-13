@@ -11,8 +11,13 @@ fetch_started = time.perf_counter()
 requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
 include_otc = os.getenv('INCLUDE_OTC', 'false').lower() == 'true'
 otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
-max_age = int(os.getenv('MAX_CANDLE_AGE_SECONDS', '900'))
+# Operational freshness is intentionally strict; an environment override may
+# tighten but cannot weaken the 120-second M1 freshness gate.
+max_age = min(int(os.getenv('MAX_CANDLE_AGE_SECONDS', '120')), 120)
 fast_triage = os.getenv('FAST_TRIAGE', 'false').lower() == 'true'
+REAL_SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY']
+OTC_SYMBOLS = [symbol + '-OTC' for symbol in REAL_SYMBOLS]
+
 # Never accept a partial batch as usable market data. The report contract
 # requires at least 120 M1 and 30 M5 candles; request the larger operational
 # targets and recover per symbol when a batch returns a short payload.
@@ -23,8 +28,10 @@ MIN_M3 = int(os.getenv('MIN_M3_CANDLES', '30'))
 MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
 # Darts requires >=1000 M1 candles for its training window.
 REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '120' if fast_triage else '1000'))
-REQUEST_M5 = int(os.getenv('REQUEST_M5_CANDLES', '100'))
-from market_data_contract import aggregate_m1_to_m3
+# Always ask for an extra provider bar so 30 closed M5 candles remain even
+# when the newest returned candle is still forming.
+REQUEST_M5 = max(MIN_M5 + 1, int(os.getenv('REQUEST_M5_CANDLES', '100')))
+from market_data_contract import aggregate_m1_to_m3, closed_candles, validate_snapshot_freshness
 
 # The provider websocket serializes candle calls. Keep batches at one symbol:
 # a multi-symbol request can exceed the gateway timeout and stall the scan.
@@ -50,18 +57,27 @@ def discover_symbols():
     import re
     fx_codes = {'USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','NOK','SEK','SGD','HKD','ZAR','TRY','MXN','PLN','BRL','INR','THB','CNH','CNY','DKK','HUF','CZK','ILS','AED','SAR','ARS','CLP','COP','PEN','NGN','PHP','IDR','MYR','VND','BDT','BOB','DOP'}
     if not any(s.upper() in ('ALL', 'ALL_AVAILABLE', '*') for s in requested):
+        allowed = set(OTC_SYMBOLS if otc_only else REAL_SYMBOLS)
         cleaned = []
+        rejected = []
         for raw in requested:
             name = raw.upper().replace('_OTC', '-OTC')
             base_name = name[:-4] if name.endswith('-OTC') else name
-            if re.fullmatch(r'[A-Z]{6}', base_name) and base_name[:3] in fx_codes and base_name[3:] in fx_codes:
-                name = base_name + '-OTC' if otc_only else base_name
-                if name not in cleaned: cleaned.append(name)
+            if base_name not in REAL_SYMBOLS or name.endswith('-OTC') != otc_only:
+                rejected.append(name)
+                continue
+            canonical = base_name + '-OTC' if otc_only else base_name
+            if canonical not in allowed:
+                rejected.append(name)
+                continue
+            if canonical not in cleaned:
+                cleaned.append(canonical)
+        if rejected:
+            raise RuntimeError('UNAUTHORIZED_SYMBOLS:' + ','.join(rejected))
         if not cleaned: raise RuntimeError('NO_VALID_FX_SYMBOLS')
         return cleaned
-    # ALL_AVAILABLE is still constrained by the canonical ten-pair contract;
+    # ALL_AVAILABLE is constrained by the user's canonical ten-pair contract;
     # provider discovery must never expand the operational universe.
-    from market_universes import REAL_SYMBOLS, OTC_SYMBOLS
     return list(OTC_SYMBOLS if otc_only else REAL_SYMBOLS)
     payload = get('/api/market/assets?instrument=all', timeout=30)
     # Assets endpoint also contains stocks/crypto. Keep currency pairs only.
@@ -116,7 +132,8 @@ else:
 
 # Use bounded per-symbol batches. Provider calls are sequential on one IQ
 # websocket; large requests can exceed HTTP timeouts and stall the whole scan.
-collected = {s: {'m1': {'candles': []}, 'm3': {'candles': []}, 'm5': {'candles': []}} for s in symbols}
+collected = {s: {'m1': {'candles': []}, 'm3': {'candles': []}, 'm5': {'candles': []},
+                 'realtime': [], 'quote': None, 'quote_metadata': {}} for s in symbols}
 errors = {}
 batch_diagnostics = []
 # Payouts returned by the same persistent snapshot are preferred; this avoids
@@ -139,13 +156,31 @@ for start in range(0, len(symbols), SNAPSHOT_BATCH_SIZE):
             if symbol not in collected or not isinstance(data, dict):
                 continue
             for key, interval in (('m1', 60), ('m3', 180), ('m5', 300)):
-                rows = data.get(key) or []
-                if isinstance(rows, dict):
-                    rows = rows.get('candles') or []
+                timeframe_data = data.get(key) or []
+                rows = timeframe_data.get('candles') or [] if isinstance(timeframe_data, dict) else timeframe_data
                 if not isinstance(rows, list):
                     rows = []
-                collected[symbol][key] = {'candles': rows, 'source': payload.get('source'),
+                collected[symbol][key] = {'candles': rows, 'source':
+                    (timeframe_data.get('source') if isinstance(timeframe_data, dict) else None) or payload.get('source'),
                     'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+            realtime = data.get('realtime') or []
+            if isinstance(realtime, dict):
+                realtime_rows = realtime.get('candles') or []
+                realtime_meta = {key: value for key, value in realtime.items() if key != 'candles'}
+            else:
+                realtime_rows = realtime if isinstance(realtime, list) else []
+                realtime_meta = {}
+            collected[symbol]['realtime'] = realtime_rows
+            collected[symbol]['quote'] = data.get('quote')
+            collected[symbol]['quote_metadata'] = {
+                'source': data.get('quote_source') or realtime_meta.get('source'),
+                'retrieved_at': data.get('realtime_retrieved_at') or realtime_meta.get('retrieved_at'),
+                'status': data.get('realtime_status') or realtime_meta.get('ok'),
+                'candle_bucket_timestamp': data.get('quote_candle_bucket_timestamp') or
+                    (realtime_rows[-1].get('timestamp') if realtime_rows and isinstance(realtime_rows[-1], dict) else None),
+                'timestamp_semantics': 'candle bucket timestamp; not an exchange tick timestamp',
+                'read_only': data.get('realtime_read_only', realtime_meta.get('read_only', True)),
+            }
             # Some gateway sessions acknowledge the batch but return an empty
             # symbol payload. Fall back per symbol, without fabricating data.
             if not collected[symbol]['m1']['candles']:
@@ -197,7 +232,7 @@ for recovery_attempt in range(1, 3):
     short_symbols = [
         s for s, item in collected.items()
         if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
-        or len((item.get('m5') or {}).get('candles') or []) < MIN_M5
+        or len(closed_candles((item.get('m5') or {}).get('candles') or [], 300)) < MIN_M5
     ]
     if not short_symbols:
         break
@@ -212,7 +247,8 @@ for recovery_attempt in range(1, 3):
             (300, 'm5', REQUEST_M5, MIN_M5),
         ):
             current = (collected[symbol].get(key) or {}).get('candles') or []
-            if len(current) >= minimum:
+            current_count = len(closed_candles(current, 300)) if key == 'm5' else len(current)
+            if current_count >= minimum:
                 continue
             try:
                 direct = get('/api/market/candles?' + urllib.parse.urlencode({
@@ -225,8 +261,9 @@ for recovery_attempt in range(1, 3):
                         'symbol': symbol, 'interval_seconds': interval,
                         'read_only': True,
                     }
-                if len(rows) < minimum:
-                    errors[f'short:{symbol}:{interval}'] = f'{len(rows)}<{minimum}'
+                received_count = len(closed_candles(rows, 300)) if key == 'm5' and isinstance(rows, list) else len(rows) if isinstance(rows, list) else 0
+                if received_count < minimum:
+                    errors[f'short:{symbol}:{interval}'] = f'{received_count}<{minimum}_CLOSED' if key == 'm5' else f'{received_count}<{minimum}'
             except Exception as exc:
                 errors[f'recovery:{symbol}:{interval}'] = type(exc).__name__
     time.sleep(min(2 * recovery_attempt, 10))
@@ -240,6 +277,15 @@ for symbol, item in collected.items():
     item['m3'] = {'candles': grouped, 'source': 'IQ_OPTION_M1_AGGREGATED_3M',
                   'symbol': symbol, 'interval_seconds': 180, 'read_only': True}
 
+# Remove all forming M5 bars before downstream consumers see the artifact.
+# Keep the raw provider count in diagnostics, but only closed candles in data.
+for symbol, item in collected.items():
+    raw_m5 = (item.get('m5') or {}).get('candles') or []
+    closed_m5 = closed_candles(raw_m5, 300)
+    item['m5']['provider_candles_received'] = len(raw_m5)
+    item['m5']['forming_candles_excluded'] = len(raw_m5) - len(closed_m5)
+    item['m5']['candles'] = closed_m5
+
 remaining_short = [s for s, item in collected.items()
                   if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
                   or len((item.get('m3') or {}).get('candles') or []) < MIN_M3
@@ -247,24 +293,15 @@ remaining_short = [s for s, item in collected.items()
 if remaining_short:
     raise RuntimeError('CANDLE_DATA_INCOMPLETE:' + ','.join(remaining_short))
 
-fresh = []
-for symbol, item in collected.items():
-    rows = (item.get('m1') or {}).get('candles') or []
-    timestamps = [float(row['timestamp']) for row in rows if row.get('timestamp') is not None]
-    if timestamps:
-        age = time.time() - max(timestamps)
-        if age <= max_age:
-            fresh.append(symbol)
-        else:
-            item['m1']['freshness_error'] = f'NO_FRESH_CANDLES:age_seconds={round(age, 1)}:max_age_seconds={max_age}'
-
-if not fresh:
-    ages = []
-    for item in collected.values():
-        rows = (item.get('m1') or {}).get('candles') or []
-        if rows and rows[-1].get('timestamp') is not None:
-            ages.append(round(time.time() - float(rows[-1]['timestamp']), 1))
-    raise RuntimeError(f'NO_FRESH_GATEWAY_CANDLES:age_seconds={max(ages) if ages else None}:max_age_seconds={max_age}')
+freshness_snapshot = {symbol: {'m1': item.get('m1'), 'm5': item.get('m5')}
+                      for symbol, item in collected.items()}
+freshness_validation = validate_snapshot_freshness(
+    freshness_snapshot, max_m1_age_seconds=max_age,
+    max_m5_close_age_seconds=300, max_m1_skew_seconds=120,
+    max_m5_skew_seconds=300, min_m5_closed=MIN_M5)
+if not freshness_validation.get('ok'):
+    raise RuntimeError('MARKET_SNAPSHOT_FRESHNESS_REJECTED:' + '|'.join(freshness_validation.get('errors') or []))
+fresh = list(collected)
 
 # Payout is current binary metadata and must travel with the same scan snapshot.
 payouts = {symbol: {'ok': True, 'symbol': symbol, 'payout': values.get('binary') or values.get('turbo'), 'source': 'IQ_OPTION_DIRECT_SNAPSHOT', 'read_only': True}
@@ -288,12 +325,18 @@ out = {'source': base, 'read_only': True, 'health': health,
        'assets': [], 'payouts': payouts, 'symbols': {}, 'fetch_mode': 'gateway_batch1_bounded_recovery',
        'batch_diagnostics': batch_diagnostics,
        'fresh_symbols': fresh, 'fetch_errors': errors,
+       'freshness_validation': freshness_validation,
+       'snapshot_alignment': {'m1_spread_seconds': freshness_validation.get('m1_spread_seconds'),
+                              'm5_spread_seconds': freshness_validation.get('m5_spread_seconds')},
        'observed_at_utc': datetime.now(timezone.utc).isoformat(),
        'latency_ms': round((time.perf_counter() - fetch_started) * 1000, 1)}
 for symbol, item in collected.items():
     out['symbols'][symbol] = {
         'snapshot': {'ok': True, 'assets': [], 'payouts': {}, 'read_only': True},
-        'candles': item.get('m1', {}), 'm3_candles': item.get('m3', {}), 'm5_candles': item.get('m5', {})}
+        'candles': item.get('m1', {}), 'm3_candles': item.get('m3', {}), 'm5_candles': item.get('m5', {}),
+        'realtime': item.get('realtime', []), 'quote': item.get('quote'),
+        'quote_metadata': item.get('quote_metadata', {}),
+    }
 Path('reports').mkdir(exist_ok=True)
 Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
 print('market_data_per_symbol=OK', len(fresh), 'fresh_of', len(symbols))
