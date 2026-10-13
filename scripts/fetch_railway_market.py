@@ -24,6 +24,12 @@ MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
 # Darts requires >=1000 M1 candles for its training window.
 REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '120' if fast_triage else '1000'))
 REQUEST_M5 = int(os.getenv('REQUEST_M5_CANDLES', '100'))
+# The gateway supports a ten-symbol batch. Use one batch by default so the
+# gateway's authenticated catalogue/session setup is not repeated five times.
+try:
+    SNAPSHOT_BATCH_SIZE = min(10, max(1, int(os.getenv('SNAPSHOT_BATCH_SIZE', '10'))))
+except ValueError:
+    SNAPSHOT_BATCH_SIZE = 10
 
 
 def get(path, timeout=30, attempts=2):
@@ -109,10 +115,12 @@ elif include_otc:
 else:
     symbols = base_symbols
 
-# Use the gateway batch route in small chunks. It keeps one authenticated
-# websocket session and avoids 2 HTTP reconnect-sensitive calls per symbol.
+# Use the gateway batch route with up to ten authorized symbols per request.
+# The previous size-two sweep repeated the gateway asset/session snapshot five
+# times for the standard universe, adding minutes before analysis could begin.
 collected = {s: {'m1': {'candles': []}, 'm3': {'candles': []}, 'm5': {'candles': []}} for s in symbols}
 errors = {}
+batch_diagnostics = []
 # Payouts returned by the same persistent snapshot are preferred; this avoids
 # one expensive IQ init request per symbol.
 batch_payouts = {}
@@ -132,11 +140,15 @@ for symbol in [s for s in ('EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC
                     'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
         except Exception as exc:
             errors[f'{symbol}:{interval}'] = type(exc).__name__
-for start in range(0, len(symbols), 2):
-    chunk = symbols[start:start + 2]
+for start in range(0, len(symbols), SNAPSHOT_BATCH_SIZE):
+    chunk = symbols[start:start + SNAPSHOT_BATCH_SIZE]
     path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
+    request_started = time.perf_counter()
     try:
-        payload = get(path, timeout=45, attempts=3)
+        # One ten-pair request avoids repeated gateway asset/session snapshots.
+        # Scale timeout to the bounded batch size; recovery below remains read-only.
+        batch_timeout = max(90, min(360, 35 * len(chunk)))
+        payload = get(path, timeout=batch_timeout, attempts=1)
         for symbol, values in (payload.get('payouts') or {}).items():
             if isinstance(values, dict):
                 batch_payouts[symbol] = values
@@ -169,6 +181,12 @@ for start in range(0, len(symbols), 2):
     except Exception as exc:
         for symbol in chunk:
             errors[symbol] = type(exc).__name__
+    finally:
+        batch_diagnostics.append({
+            'symbols': chunk,
+            'elapsed_seconds': round(time.perf_counter() - request_started, 3),
+            'returned_symbols': [s for s in chunk if (collected.get(s, {}).get('m1') or {}).get('candles')],
+        })
 
 # A successful batch response can still be an old gateway cache. Treat stale
 # candles exactly like an empty response so the per-symbol direct endpoint is
@@ -192,11 +210,12 @@ empty_symbols = [s for s, item in collected.items()
                  if not ((item.get('m1') or {}).get('candles') or [])]
 if empty_symbols:
     time.sleep(5)
-    for start in range(0, len(empty_symbols), 2):
-        chunk = empty_symbols[start:start + 2]
+    for start in range(0, len(empty_symbols), SNAPSHOT_BATCH_SIZE):
+        chunk = empty_symbols[start:start + SNAPSHOT_BATCH_SIZE]
+        request_started = time.perf_counter()
         try:
             payload = get('/api/market/snapshot_batch?' + urllib.parse.urlencode(
-                {'pairs': ','.join(chunk)}), timeout=45, attempts=3)
+                {'pairs': ','.join(chunk)}), timeout=max(90, min(360, 35 * len(chunk))), attempts=1)
             for symbol, data in (payload.get('symbols') or {}).items():
                 if symbol not in collected or not isinstance(data, dict):
                     continue
@@ -209,6 +228,12 @@ if empty_symbols:
                             'interval_seconds': interval, 'read_only': True}
         except Exception as exc:
             for symbol in chunk: errors[f'retry:{symbol}'] = type(exc).__name__
+        finally:
+            batch_diagnostics.append({
+                'phase': 'empty_retry', 'symbols': chunk,
+                'elapsed_seconds': round(time.perf_counter() - request_started, 3),
+                'returned_symbols': [s for s in chunk if (collected.get(s, {}).get('m1') or {}).get('candles')],
+            })
 
 # A non-empty response is not necessarily sufficient. Recover every symbol
 # whose batch/direct response is below the contract threshold, including
@@ -317,7 +342,8 @@ if missing_payout:
     raise RuntimeError('PAYOUT_DATA_INCOMPLETE:' + ','.join(missing_payout))
 
 out = {'source': base, 'read_only': True, 'health': health,
-       'assets': [], 'payouts': payouts, 'symbols': {}, 'fetch_mode': 'per_symbol_direct',
+       'assets': [], 'payouts': payouts, 'symbols': {}, 'fetch_mode': 'gateway_batch10_with_bounded_recovery',
+       'batch_diagnostics': batch_diagnostics,
        'fresh_symbols': fresh, 'fetch_errors': errors,
        'observed_at_utc': datetime.now(timezone.utc).isoformat(),
        'latency_ms': round((time.perf_counter() - fetch_started) * 1000, 1)}
