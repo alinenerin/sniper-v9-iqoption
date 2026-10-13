@@ -19,9 +19,9 @@ on:
         default: false
         type: boolean
       fast_mode:
-        description: 'Usar lane rápido read-only para sinais atuais'
+        description: 'Usar triagem rápida somente quando solicitado; o padrão cobre os 10 pares'
         required: true
-        default: true
+        default: false
         type: boolean
       no_score_mode:
         description: 'Ativar modo comparativo sem score (opcional)'
@@ -210,7 +210,7 @@ jobs:
           def blocked(m, s):
             return {'market': m, 'symbol': s, 'status': 'blocked', 'reason': 'REPORT_GENERATOR_FAILED',
                     'components': {x: {'status': 'blocked', 'reason': 'REPORT_GENERATOR_FAILED'} for x in ('darts','timesfm','finbert','news_api','xgboost','smc','vsa','m5')},
-                    'vetoes': ['REPORT_GENERATOR_FAILED'], 'approved': False, 'direction_calculated': 'NEUTRAL',
+                    'vetoes': ['REPORT_GENERATOR_FAILED'], 'approved': False, 'signal_actionable': False, 'actionability_reasons': ['REPORT_GENERATOR_FAILED'], 'direction_calculated': 'NEUTRAL',
                     'm5_confirmation': {'timeframe': 'M5', 'status': 'blocked', 'confirmed': False, 'reason': 'REPORT_GENERATOR_FAILED', 'execution_allowed': False},
                     'candle_timing': {'candle_count': 0, 'last_candle_timestamp_utc': None},
                     'expiration': {'hypothetical_result': None}, 'read_only': True, 'execution_allowed': False, 'executor_enabled': False}
@@ -229,7 +229,7 @@ jobs:
                   binary.extend(blocked('otc', s) for s in requested_otc)
           forex = [] if otc_only or market_name in ('binary', 'otc') else [blocked('forex', s) for s in real_symbols]
           binary_out = binary if market_name in ('binary', 'unified', 'otc') or otc_only else []
-          report = {'schema_version': '2.2', 'mode': 'read_only', 'execution_allowed': False, 'timestamp_utc': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(), 'forex': {'status': 'completed' if market_name in ('forex', 'unified') and not otc_only else 'not_requested', 'analyses': forex}, 'binary': {'status': 'completed' if binary_out or market_name in ('binary', 'unified', 'otc') or otc_only else 'not_requested', 'analyses': binary_out}, 'market_data': market, 'macro_data': {}, 'inputs': {'symbols': symbols, 'include_otc': not otc_only and include_otc, 'otc_only': otc_only}, 'read_only': True, 'executor_enabled': False, 'filters': {'score_minimum': TRADING_CONFIG.diamond_threshold, 'diamond_threshold': TRADING_CONFIG.diamond_threshold, 'supreme_threshold': TRADING_CONFIG.supreme_threshold, 'noise_threshold': TRADING_CONFIG.noise_threshold, 'zero_gale': True, 'payout_minimum': TRADING_CONFIG.payout_minimum}, 'gates': {'score_mode': {'score_gate': 'enforced', 'threshold': TRADING_CONFIG.diamond_threshold, 'other_gates': 'enforced'}, 'no_score_mode': {'score_gate': 'bypassed_only', 'threshold': TRADING_CONFIG.diamond_threshold, 'other_gates': 'enforced', 'ignored_vetoes': ['SCORE_BELOW_MINIMUM']}}, 'error': 'REPORT_GENERATOR_FAILED'}
+          report = {'schema_version': '2.3', 'mode': 'read_only', 'execution_allowed': False, 'timestamp_utc': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(), 'forex': {'status': 'completed' if market_name in ('forex', 'unified') and not otc_only else 'not_requested', 'analyses': forex}, 'binary': {'status': 'completed' if binary_out or market_name in ('binary', 'unified', 'otc') or otc_only else 'not_requested', 'analyses': binary_out}, 'market_data': market, 'macro_data': {}, 'inputs': {'symbols': symbols, 'include_otc': not otc_only and include_otc, 'otc_only': otc_only}, 'read_only': True, 'executor_enabled': False, 'filters': {'score_minimum': TRADING_CONFIG.diamond_threshold, 'diamond_threshold': TRADING_CONFIG.diamond_threshold, 'supreme_threshold': TRADING_CONFIG.supreme_threshold, 'noise_threshold': TRADING_CONFIG.noise_threshold, 'zero_gale': True, 'payout_minimum': TRADING_CONFIG.payout_minimum}, 'gates': {'score_mode': {'score_gate': 'enforced', 'threshold': TRADING_CONFIG.diamond_threshold, 'other_gates': 'enforced'}, 'no_score_mode': {'score_gate': 'bypassed_only', 'threshold': TRADING_CONFIG.diamond_threshold, 'other_gates': 'enforced', 'ignored_vetoes': ['SCORE_BELOW_MINIMUM']}}, 'error': 'REPORT_GENERATOR_FAILED'}
           Path('reports/latest_scan.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
           PYFALLBACK
           fi
@@ -277,6 +277,12 @@ jobs:
                   if not isinstance(m5,dict) or m5.get('confirmed') is not True: errors.append(f'{book_name}:{item.get("symbol")}:approved_without_m5')
                   committee=item.get('specialist_committee') or {}
                   if committee.get('consensus') != 'ready_for_fusion': errors.append(f'{book_name}:{item.get("symbol")}:approved_without_agent_consensus')
+              if item.get('signal_actionable') is True:
+                  timing=item.get('entry_timing') or {}
+                  if item.get('approved') is not True: errors.append(f'{book_name}:{item.get("symbol")}:actionable_without_approval')
+                  if timing.get('valid') is not True or timing.get('execution_allowed') is not False: errors.append(f'{book_name}:{item.get("symbol")}:actionable_without_valid_timing')
+                  if not timing.get('entry_timestamp') or not timing.get('exact_second') == 0: errors.append(f'{book_name}:{item.get("symbol")}:actionable_without_exact_entry')
+                  if item.get('actionability_reasons'): errors.append(f'{book_name}:{item.get("symbol")}:actionable_with_vetoes')
           finbert_path=Path('reports/finbert_inference.json')
           if finbert_path.exists():
             f=json.loads(finbert_path.read_text())
@@ -296,18 +302,28 @@ jobs:
           report=json.load(open('reports/latest_scan.json'))
           rows=[]
           for item in report.get('binary',{}).get('analyses',[]):
+              confirmed = item.get('direction_confirmed')
+              m5_bias = (item.get('m5_confirmation') or {}).get('m5_bias')
+              observed = item.get('direction_observed')
+              direction = confirmed or m5_bias or observed or 'NEUTRAL'
+              direction_state = 'confirmed' if confirmed else 'bias/observed'
+              entry = (item.get('entry_timing') or {}).get('execution_sniper_at') or '—'
               rows.append({
                   'symbol': item.get('symbol'),
                   'score': item.get('score'),
                   'approved': item.get('approved'),
-                  'direction': item.get('direction_calculated'),
+                  'actionable': item.get('signal_actionable'),
+                  'direction': direction,
+                  'direction_state': direction_state,
+                  'entry': entry,
                   'vetoes': item.get('vetoes',[]),
+                  'actionability_reasons': item.get('actionability_reasons',[]),
                   'fusion': item.get('score_fusion',{}),
               })
-          out=['## Binary Quant X — scan read-only', '', f"Schema: {report.get('schema_version')}", f"Execution allowed: {report.get('execution_allowed')}", '', '| Par | Score | Aprovado | Direção | Vetos |', '|---|---:|:---:|---|---|']
+          out=['## Binary Quant X — scan read-only', '', f"Schema: {report.get('schema_version')}", f"Execution allowed: {report.get('execution_allowed')}", '', '| Par | Score | Aprovado | Acionável agora | Direção | Entrada | Vetos |', '|---|---:|:---:|:---:|---|---|---|']
           for row in rows:
-              veto='; '.join(map(str,row['vetoes'])) or '—'
-              out.append(f"| {row['symbol']} | {row['score']} | {row['approved']} | {row['direction']} | {veto} |")
+              veto='; '.join(map(str,row['vetoes'] + row['actionability_reasons'])) or '—'
+              out.append(f"| {row['symbol']} | {row['score']} | {row['approved']} | {row['actionable']} | {row['direction']} ({row['direction_state']}) | {row['entry']} | {veto} |")
           Path('scan_summary.md').write_text('\n'.join(out)+'\n')
           Path('reports/scan_summary.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2))
           with open('${GITHUB_STEP_SUMMARY}','a') as f: f.write('\n'.join(out)+'\n')

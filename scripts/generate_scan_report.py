@@ -43,6 +43,7 @@ from market_data_contract import snapshot_id as make_snapshot_id
 M5_INTERVAL_SECONDS = 300
 M5_MIN_COMPLETED_CANDLES = 25
 M5_MAX_CLOSED_AGE_SECONDS = 300
+FINAL_M1_MAX_AGE_SECONDS = 90
 
 def _candles(payload: Any) -> list[dict[str, Any]]:
     """Accept the gateway's list or its usual {candles: [...]} envelope."""
@@ -86,6 +87,8 @@ def _agent_dashboard(analyses: list[dict[str, Any]], lane: str) -> dict[str, Any
             "market": analysis.get("market"),
             "score": analysis.get("score"),
             "approved": bool(analysis.get("approved", False)),
+            "signal_actionable": bool(analysis.get("signal_actionable", False)),
+            "actionability_reasons": analysis.get("actionability_reasons", []),
             "vetoes": analysis.get("vetoes", []),
             "specialists_executed": executed,
             "specialists_blocked": blocked,
@@ -367,11 +370,18 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
         observed_source = "candle_close_movement" if candle_observation else None
         confirmed_direction = (engine_direction if source == "engine" and engine_direction in valid_directions
                                else None)
-    final_ts = (final_timing or {}).get("final_completed_timestamp")
-    timing = _timing_fields(candles, observed_at, final_ts)
-    timing["source"] = "READONLY_GATEWAY_DIRECT_PER_SYMBOL_NO_CACHE" if final_ts is not None else "analysis_snapshot"
-    timing["cache_used"] = False if final_ts is not None else None
-    last_ts = candles[-1].get('timestamp') if candles else None
+    final_payload = final_timing if isinstance(final_timing, dict) else {}
+    final_ts = final_payload.get("final_completed_timestamp")
+    final_verified = (
+        final_ts is not None
+        and final_payload.get("read_only") is True
+        and final_payload.get("cache_used") is False
+    )
+    timing = _timing_fields(candles, observed_at, final_ts if final_verified else None)
+    timing["source"] = "READONLY_GATEWAY_DIRECT_PER_SYMBOL_NO_CACHE" if final_verified else "analysis_snapshot"
+    timing["cache_used"] = False if final_verified else None
+    last_ts = (final_ts if final_verified else
+               (candles[-1].get('timestamp') if candles else None))
     expiry_seconds = 60
     expiry_ts = None
     try: expiry_ts = float(last_ts) + expiry_seconds if last_ts is not None else None
@@ -391,6 +401,92 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
     if confirmed_direction in valid_directions:
         result_fields['direction_calculated'] = confirmed_direction
     return result_fields
+
+
+def _timestamp_epoch(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _finalize_signal_actionability(analysis: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
+    """Separate engine approval from a currently timed, usable signal candidate."""
+    market = str(analysis.get("market") or "").lower()
+    direction = str(analysis.get("direction_confirmed") or "").upper()
+    valid_directions = {"CALL", "PUT"} if market in {"binary", "otc"} else {"BUY", "SELL"}
+    reasons: list[str] = []
+
+    if direction in valid_directions:
+        try:
+            # Keep report importable in constrained/offline environments; missing
+            # timing infrastructure fails closed for actionability, never open.
+            from engines.binary.sniper_timing import plan_sniper_window
+            timing = plan_sniper_window(
+                epoch=checked_at.timestamp(), timeframe="M1", minimum_lead=120,
+            )
+        except (ImportError, ModuleNotFoundError):
+            timing = {"valid": False, "reason": "SNIPER_TIMING_PLANNER_UNAVAILABLE",
+                      "execution_allowed": False}
+    else:
+        timing = {
+            "valid": False, "reason": "DIRECTION_UNCONFIRMED",
+            "execution_allowed": False,
+        }
+    analysis["entry_timing"] = {
+        **timing,
+        "entry_at_utc": _iso(timing.get("entry_timestamp")),
+        "expiry_at_utc": _iso(timing.get("expiry_timestamp")),
+        "checked_at_utc": checked_at.isoformat(),
+        "read_only": True,
+        "execution_allowed": False,
+    }
+
+    if analysis.get("approved") is not True:
+        reasons.append("OFFICIAL_ANALYSIS_NOT_APPROVED")
+    if direction not in valid_directions:
+        reasons.append("DIRECTION_UNCONFIRMED")
+    if timing.get("valid") is not True:
+        reasons.append(str(timing.get("reason") or "SNIPER_TIMING_INVALID"))
+
+    candle_timing = analysis.get("candle_timing") or {}
+    last_m1 = _timestamp_epoch(candle_timing.get("last_candle_timestamp_utc"))
+    if (candle_timing.get("source") != "READONLY_GATEWAY_DIRECT_PER_SYMBOL_NO_CACHE"
+            or candle_timing.get("cache_used") is not False or last_m1 is None):
+        reasons.append("FINAL_M1_TIMING_UNVERIFIED")
+    else:
+        m1_age = max(0.0, checked_at.timestamp() - (last_m1 + 60.0))
+        candle_timing["age_at_actionability_check_seconds"] = round(m1_age, 3)
+        if m1_age > FINAL_M1_MAX_AGE_SECONDS:
+            reasons.append("FINAL_M1_CANDLE_STALE")
+
+    if market in {"binary", "otc"}:
+        m5 = analysis.get("m5_confirmation") or {}
+        if m5.get("confirmed") is not True:
+            reasons.append(str(m5.get("reason") or "M5_NOT_CONFIRMED"))
+        latest_m5_close = _timestamp_epoch(m5.get("latest_completed_candle_close_utc"))
+        if latest_m5_close is None:
+            reasons.append("M5_CLOSE_TIMESTAMP_UNVERIFIED")
+        else:
+            m5_age = max(0.0, checked_at.timestamp() - latest_m5_close)
+            m5["age_at_actionability_check_seconds"] = round(m5_age, 3)
+            if m5_age > M5_MAX_CLOSED_AGE_SECONDS:
+                reasons.append("M5_CLOSED_CANDLES_STALE_AT_PUBLICATION")
+            lead = float(timing.get("lead_time_seconds") or 0.0)
+            if timing.get("valid") is True and m5_age + lead > M5_MAX_CLOSED_AGE_SECONDS:
+                reasons.append("M5_CONFIRMATION_EXPIRES_BEFORE_ENTRY")
+
+    analysis["actionability_checked_at_utc"] = checked_at.isoformat()
+    analysis["actionability_reasons"] = list(dict.fromkeys(reasons))
+    analysis["signal_actionable"] = not analysis["actionability_reasons"]
+    analysis["read_only"] = True
+    analysis["execution_allowed"] = False
+    analysis["executor_enabled"] = False
+    return analysis
 
 
 def _apply_direction_veto(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -630,9 +726,16 @@ def main() -> int:
         if run_otc:
             append_otc(symbol + "-OTC")
 
+    # Finalize actionability only after every pair and specialist has completed.
+    # Engine approval remains visible, while stale M1/M5 timing cannot be shown
+    # as a currently usable entry.
+    all_analyses = forex + binary
+    actionability_checked_at = datetime.now(timezone.utc)
+    for analysis in all_analyses:
+        _finalize_signal_actionability(analysis, actionability_checked_at)
+
     # Build every agent view from the actual component records on each analysis.
     # This prevents a separately maintained dashboard from overstating execution.
-    all_analyses = forex + binary
     manifests_by_market: dict[str, list[dict[str, Any]]] = {}
     for analysis in all_analyses:
         manifest = evidence_manifest(
@@ -660,8 +763,10 @@ def main() -> int:
     ranked = [a for a in binary if isinstance(a.get("score"), (int, float))]
     ranked.sort(key=lambda a: float(a["score"]), reverse=True)
     best_candidate = ranked[0] if ranked else None
+    actionable_ranked = [a for a in ranked if a.get("signal_actionable") is True]
+    best_actionable_candidate = actionable_ranked[0] if actionable_ranked else None
     result = {
-        "schema_version": "2.2", "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "schema_version": "2.3", "timestamp_utc": actionability_checked_at.isoformat(),
         "commit": os.getenv("GITHUB_SHA"), "workflow_run_id": os.getenv("GITHUB_RUN_ID"),
         "mode": "read_only", "read_only": True,
         "execution_allowed": False, "executor_enabled": False,
@@ -685,10 +790,13 @@ def main() -> int:
                                "ignored_vetoes": ["SCORE_BELOW_MINIMUM"]},
             "global": {"stale": "enforced", "timing": "enforced",
                         "anomaly": "enforced", "conflict": "enforced",
-                        "data": "enforced", "confluence": "enforced"},
+                        "data": "enforced", "confluence": "enforced",
+                        "current_actionability": "final M1 freshness, M5 freshness, and future sniper window"},
         },
         "best_candidate": best_candidate,
         "best_candidate_note": "Ranking only; does not approve a trade. Score and all vetoes remain mandatory.",
+        "best_actionable_candidate": best_actionable_candidate,
+        "best_actionable_candidate_note": "Only non-null when official gates and final live timing checks pass.",
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
     }
     Path("reports").mkdir(exist_ok=True)

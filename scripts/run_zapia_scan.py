@@ -19,10 +19,9 @@ def main() -> int:
     if not symbols:
         parser.error("--symbols needs at least one valid pair")
     bridge = GitHubScanBridge()
-    # Match the workflow's fast default for ordinary scans. This only triages
-    # collection depth; official gates remain mandatory, and OTC/full requests
-    # always use complete isolated coverage.
-    fast = bool(not args.full and not args.otc)
+    # Full ten-pair coverage is the default. Fast mode is opt-in only; OTC and
+    # explicit full scans always preserve complete isolated coverage.
+    fast = bool(args.fast and not args.full and not args.otc)
     result = bridge.dispatch(symbols, include_otc=args.otc, otc_only=args.otc, fast=fast)
     if not args.wait:
         print(json.dumps(result, ensure_ascii=False)); return 0

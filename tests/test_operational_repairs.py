@@ -17,6 +17,8 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}", workflow)
         self.assertIn("github.event.inputs.fast_mode == 'true' && '120' || '1000'", workflow)
         self.assertIn("REQUEST_M1_CANDLES: '1000'", workflow)
+        fast_input = workflow.split("      fast_mode:", 1)[1].split("      no_score_mode:", 1)[0]
+        self.assertIn("default: false", fast_input)
         self.assertIn("-intelligence-v5", workflow)
         repair = workflow.split("- name: Verify and repair cached dependencies", 1)[1].split("- name:", 1)[0]
         for dep in ("Darts>=0.30,<1.0", "timesfm>=1.3.0", "torch>=2.2", "transformers>=4.40", "sentencepiece", "requests", "xgboost>=2.0", "scikit-learn"):
@@ -27,6 +29,8 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("unittest discover -s tests -t . -v", workflow)
         self.assertIn("timeout-minutes: 30", workflow)
         self.assertIn("finbert-timesfm", workflow)
+        self.assertIn("Acionável agora", workflow)
+        self.assertIn("actionable_without_valid_timing", workflow)
 
     def test_helper_scripts_use_active_gateway(self):
         names = ("scripts/fetch_railway_market.py", "scripts/refresh_final_timing.py",

@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.score_mode_comparison import compare_snapshot
-from scripts.generate_scan_report import _analysis_timing, _apply_direction_veto
+from scripts.generate_scan_report import _analysis_timing, _apply_direction_veto, _iso
 from datetime import datetime, timezone
 
 
@@ -30,6 +30,38 @@ class LatestScanComparisonContract(unittest.TestCase):
         result = _apply_direction_veto({**fields, "approved": True})
         self.assertNotIn("DIRECTION_UNCONFIRMED", result.get("vetoes", []))
         self.assertTrue(result["approved"])
+
+    def test_verified_direct_final_timing_is_used_and_provenance_is_exposed(self):
+        observed_at = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+        candle_timestamp = observed_at.timestamp() - 600
+        final_timestamp = observed_at.timestamp() - 60
+        fields = _analysis_timing(
+            "binary", {}, [{"timestamp": candle_timestamp, "close": 1.0}], observed_at,
+            {"final_completed_timestamp": final_timestamp, "read_only": True, "cache_used": False},
+        )
+        timing = fields["candle_timing"]
+        self.assertEqual(timing["source"], "READONLY_GATEWAY_DIRECT_PER_SYMBOL_NO_CACHE")
+        self.assertIs(timing["cache_used"], False)
+        self.assertEqual(timing["last_candle_timestamp_utc"], _iso(final_timestamp))
+        self.assertEqual(fields["expiration"]["expected_timestamp_utc"], _iso(final_timestamp + 60))
+
+    def test_unverified_final_timing_is_rejected_and_analysis_timestamp_is_used(self):
+        observed_at = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+        candle_timestamp = observed_at.timestamp() - 120
+        unverified_payloads = (
+            {"final_completed_timestamp": observed_at.timestamp(), "read_only": False, "cache_used": False},
+            {"final_completed_timestamp": observed_at.timestamp(), "read_only": True, "cache_used": True},
+        )
+        for payload in unverified_payloads:
+            with self.subTest(payload=payload):
+                fields = _analysis_timing(
+                    "binary", {}, [{"timestamp": candle_timestamp, "close": 1.0}], observed_at, payload,
+                )
+                timing = fields["candle_timing"]
+                self.assertEqual(timing["source"], "analysis_snapshot")
+                self.assertIsNone(timing["cache_used"])
+                self.assertEqual(timing["last_candle_timestamp_utc"], _iso(candle_timestamp))
+                self.assertEqual(fields["expiration"]["expected_timestamp_utc"], _iso(candle_timestamp + 60))
 
     def test_paired_modes_are_read_only_and_share_snapshot(self):
         rows = {

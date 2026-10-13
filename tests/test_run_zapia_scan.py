@@ -28,13 +28,17 @@ class RunZapiaScanCliTest(unittest.TestCase):
             result = run_zapia_scan.main()
         return result, bridge.dispatch.call_args, json.loads(output.getvalue())
 
-    def test_default_mode_dispatches_fast_and_read_only(self):
+    def test_default_mode_dispatches_full_coverage_and_read_only(self):
         result, call, output = self.run_cli(["--symbols", "EURUSD", "GBPUSD"])
         self.assertEqual(result, 0)
-        self.assertEqual(call.kwargs["fast"], True)
-        self.assertEqual(call.kwargs["include_otc"], False)
-        self.assertEqual(call.kwargs["otc_only"], False)
+        self.assertIs(call.kwargs["fast"], False)
+        self.assertIs(call.kwargs["include_otc"], False)
+        self.assertIs(call.kwargs["otc_only"], False)
         self.assertIs(output["execution_allowed"], False)
+
+    def test_fast_mode_is_opt_in(self):
+        _, call, _ = self.run_cli(["--symbols", "EURUSD", "--fast"])
+        self.assertIs(call.kwargs["fast"], True)
 
     def test_full_mode_disables_fast_lane(self):
         _, call, _ = self.run_cli(["--symbols", "EURUSD", "--full"])
