@@ -114,6 +114,9 @@ jobs:
           SYMBOLS: ${{ github.event.inputs.symbols || 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY' }}
           FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}
           REQUEST_M1_CANDLES: ${{ github.event.inputs.fast_mode == 'true' && '120' || '1000' }}
+          FETCH_TIMEOUT_SECONDS: '25'
+          FETCH_RETRIES: '3'
+        # The fetcher exits 0 with any valid pair; zero usable pairs remain fatal.
         run: python scripts/fetch_railway_market.py
       - name: Select top three fast candidates
         if: github.event.inputs.fast_mode == 'true'
@@ -125,6 +128,8 @@ jobs:
           FAST_TRIAGE: 'false'
           REQUEST_M1_CANDLES: '1000'
           MAX_CANDLE_AGE_SECONDS: '90'
+          FETCH_TIMEOUT_SECONDS: '25'
+          FETCH_RETRIES: '3'
         run: python scripts/fetch_railway_market.py
       - name: Fetch canonical DXY/VIX macro snapshot
         run: python scripts/fetch_tradingview_macro.py

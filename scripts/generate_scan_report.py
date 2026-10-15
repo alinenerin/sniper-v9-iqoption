@@ -653,6 +653,32 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         return error_result
 
 
+def _analyse_with_fetch_status(market: str, symbol: str, symbol_data: dict[str, Any],
+                               observed_at: datetime, final_timing: dict[str, Any] | None = None,
+                               market_snapshot_id: str | None = None) -> dict[str, Any]:
+    """Keep failed market-data pairs explicitly blocked in the final report."""
+    fetch_status = symbol_data.get("fetch_status") if isinstance(symbol_data, dict) else None
+    if isinstance(fetch_status, dict) and fetch_status.get("status") == "blocked":
+        reason = str(fetch_status.get("reason") or "GATEWAY_FETCH_FAILED")
+        result = _analyse(market, symbol, [], observed_at, final_timing,
+                          [], market_snapshot_id)
+        result["reason"] = reason
+        result["vetoes"] = [reason]
+        result["components"] = _blocked_components(reason)
+        result["approved"] = False
+        result["signal_actionable"] = False
+        result["actionability_reasons"] = [reason]
+        if market in {"binary", "otc"}:
+            result["m5_confirmation"] = {
+                "timeframe": "M5", "status": "blocked", "confirmed": False,
+                "reason": reason, "received_candles": len(_candles(symbol_data.get("m5_candles"))),
+                "execution_allowed": False, "read_only": True,
+            }
+        return result
+    return _analyse(market, symbol, _candles(symbol_data.get("candles")), observed_at,
+                    final_timing, _candles(symbol_data.get("m5_candles")), market_snapshot_id)
+
+
 def main() -> int:
     requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
@@ -698,9 +724,9 @@ def main() -> int:
             return
         seen_otc.add(otc_symbol)
         otc_data = by_symbol.get(otc_symbol, {})
-        binary.append(_analyse("otc", otc_symbol, _candles(otc_data.get("candles")), observed_at,
+        binary.append(_analyse_with_fetch_status("otc", otc_symbol, otc_data, observed_at,
                                (final_by_symbol.get(otc_symbol, {}).get("m1") or {}),
-                               _candles(otc_data.get("m5_candles")), market_snapshot_id))
+                               market_snapshot_id))
 
     for raw_symbol in symbols:
         symbol = str(raw_symbol).upper()
@@ -717,11 +743,11 @@ def main() -> int:
         candles = _candles(symbol_data.get("candles"))
         m5_candles = _candles(symbol_data.get("m5_candles"))
         if run_forex:
-            forex.append(_analyse("forex", symbol, candles, observed_at,
+            forex.append(_analyse_with_fetch_status("forex", symbol, symbol_data, observed_at,
                                    (final_by_symbol.get(symbol, {}).get("m1") or {})))
         if run_real_binary:
-            binary.append(_analyse("binary", symbol, candles, observed_at,
-                                   (final_by_symbol.get(symbol, {}).get("m1") or {}), m5_candles,
+            binary.append(_analyse_with_fetch_status("binary", symbol, symbol_data, observed_at,
+                                   (final_by_symbol.get(symbol, {}).get("m1") or {}),
                                    market_snapshot_id))
         if run_otc:
             append_otc(symbol + "-OTC")

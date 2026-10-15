@@ -1,5 +1,5 @@
 """Fetch fresh read-only candles from the active read-only gateway, preferring per-symbol endpoints."""
-import json, os, sys, time, urllib.parse, urllib.request
+import json, os, socket, sys, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 base = os.getenv('MARKET_GATEWAY_URL', 'https://iqoption-readonly-gateway.onrender.com').rstrip('/')
 fetch_started = time.perf_counter()
+FETCH_TIMEOUT_SECONDS = min(max(int(os.getenv('FETCH_TIMEOUT_SECONDS', '25')), 1), 30)
+FETCH_RETRIES = max(0, int(os.getenv('FETCH_RETRIES', '3')))
+RETRY_BACKOFF_SECONDS = (2, 5, 10)
 requested = os.getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
 include_otc = os.getenv('INCLUDE_OTC', 'false').lower() == 'true'
 otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
@@ -18,9 +21,8 @@ fast_triage = os.getenv('FAST_TRIAGE', 'false').lower() == 'true'
 REAL_SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY']
 OTC_SYMBOLS = [symbol + '-OTC' for symbol in REAL_SYMBOLS]
 
-# Never accept a partial batch as usable market data. The report contract
-# requires at least 120 M1 and 30 M5 candles; request the larger operational
-# targets and recover per symbol when a batch returns a short payload.
+# Validate each symbol independently against the existing candle contract;
+# partial data remains available for diagnostics but is never passed as usable.
 # The full scan contract and Darts evidence both require the long M1 history.
 # Keep 120 only as an explicit emergency override, never as the default.
 MIN_M1 = int(os.getenv('MIN_M1_CANDLES', '100' if fast_triage else '1000'))
@@ -38,16 +40,33 @@ from market_data_contract import aggregate_m1_to_m3, closed_candles, validate_sn
 SNAPSHOT_BATCH_SIZE = 1
 
 
-def get(path, timeout=30, attempts=2):
+def failure_reason(exc):
+    reason = getattr(exc, 'reason', None)
+    if isinstance(exc, (TimeoutError, socket.timeout)) or isinstance(reason, (TimeoutError, socket.timeout)):
+        return 'TIMEOUT'
+    if isinstance(exc, urllib.error.HTTPError):
+        return f'GATEWAY_HTTP_{exc.code}'
+    if isinstance(exc, urllib.error.URLError) and 'timed out' in str(reason).lower():
+        return 'TIMEOUT'
+    return 'GATEWAY_FETCH_FAILED'
+
+
+def get(path, timeout=None, attempts=None):
+    """Bounded gateway request with three retries and 2/5/10-second backoff."""
+    timeout = FETCH_TIMEOUT_SECONDS if timeout is None else min(float(timeout), 30)
+    total_attempts = FETCH_RETRIES + 1 if attempts is None else max(1, int(attempts))
     last = None
-    for attempt in range(attempts):
+    for attempt in range(total_attempts):
         try:
             with urllib.request.urlopen(base + path, timeout=timeout) as response:
                 return json.load(response)
         except Exception as exc:
             last = exc
-            if attempt + 1 < attempts:
-                time.sleep(2)
+            if attempt + 1 < total_attempts:
+                delay = RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)]
+                print(f'gateway_retry path={path} attempt={attempt + 1}/{total_attempts} '
+                      f'reason={failure_reason(exc)} backoff_seconds={delay}', file=sys.stderr)
+                time.sleep(delay)
     raise last
 
 
@@ -106,22 +125,6 @@ def discover_symbols():
     return bases or [n for n in normalized if not n.endswith('-OTC')] or requested
 
 
-health = None
-health_attempts = 2 if fast_triage else 6
-health_sleep = 3 if fast_triage else 10
-for _ in range(health_attempts):
-    try:
-        candidate = get('/health', timeout=15, attempts=1)
-        if candidate.get('status') == 'connected':
-            health = candidate
-            break
-    except Exception:
-        pass
-    time.sleep(health_sleep)
-if not health:
-    raise RuntimeError('READONLY_GATEWAY_NOT_CONNECTED_AFTER_WARMUP')
-
-# Discovery runs only after the gateway is functionally connected.
 base_symbols = discover_symbols()
 if otc_only:
     symbols = base_symbols if all(s.endswith('-OTC') for s in base_symbols) else [s + '-OTC' for s in base_symbols]
@@ -129,6 +132,38 @@ elif include_otc:
     symbols = base_symbols + [s + '-OTC' for s in base_symbols]
 else:
     symbols = base_symbols
+
+health = None
+health_error = None
+try:
+    candidate = get('/health', timeout=FETCH_TIMEOUT_SECONDS)
+    if isinstance(candidate, dict) and candidate.get('status') == 'connected':
+        health = candidate
+    else:
+        health_error = 'GATEWAY_NOT_CONNECTED'
+except Exception as exc:
+    health_error = f'{failure_reason(exc)}:{type(exc).__name__}'
+if not health:
+    Path('reports').mkdir(exist_ok=True)
+    blocked_symbols = {symbol: {
+        'snapshot': {'ok': False, 'blocked': True, 'reason': health_error, 'assets': [], 'payouts': {}, 'read_only': True},
+        'candles': {'candles': [], 'symbol': symbol, 'read_only': True},
+        'm3_candles': {'candles': [], 'symbol': symbol, 'read_only': True},
+        'm5_candles': {'candles': [], 'symbol': symbol, 'read_only': True},
+        'realtime': [], 'quote': None, 'quote_metadata': {},
+        'fetch_status': {'status': 'blocked', 'blocked': True, 'reason': health_error},
+    } for symbol in symbols}
+    out = {'source': base, 'read_only': True, 'health': {'status': 'unavailable'},
+           'assets': [], 'payouts': {}, 'symbols': blocked_symbols,
+           'fetch_mode': 'gateway_batch1_bounded_recovery', 'fresh_symbols': [],
+           'fetch_errors': {symbol: health_error for symbol in symbols},
+           'freshness_validation': {'ok': False, 'errors': [health_error], 'symbols': {}},
+           'observed_at_utc': datetime.now(timezone.utc).isoformat(),
+           'latency_ms': round((time.perf_counter() - fetch_started) * 1000, 1)}
+    Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
+    print(f'market_fetch_summary ok=0 failed={len(symbols)} total={len(symbols)} reason={health_error} '
+          f'latency_seconds={(time.perf_counter() - fetch_started):.2f}')
+    raise SystemExit(1)
 
 # Use bounded per-symbol batches. Provider calls are sequential on one IQ
 # websocket; large requests can exceed HTTP timeouts and stall the whole scan.
@@ -146,9 +181,8 @@ for start in range(0, len(symbols), SNAPSHOT_BATCH_SIZE):
     path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
     request_started = time.perf_counter()
     try:
-        # A single pair is bounded at 90 seconds; no whole-batch retry follows.
-        batch_timeout = 90
-        payload = get(path, timeout=batch_timeout, attempts=1)
+        # Calls stay serialized; each request is bounded and retried by get().
+        payload = get(path, timeout=FETCH_TIMEOUT_SECONDS)
         for symbol, values in (payload.get('payouts') or {}).items():
             if isinstance(values, dict):
                 batch_payouts[symbol] = values
@@ -181,24 +215,9 @@ for start in range(0, len(symbols), SNAPSHOT_BATCH_SIZE):
                 'timestamp_semantics': 'candle bucket timestamp; not an exchange tick timestamp',
                 'read_only': data.get('realtime_read_only', realtime_meta.get('read_only', True)),
             }
-            # Some gateway sessions acknowledge the batch but return an empty
-            # symbol payload. Fall back per symbol, without fabricating data.
-            if not collected[symbol]['m1']['candles']:
-                for interval, key in ((60, 'm1'), (300, 'm5')):
-                    try:
-                        direct = get('/api/market/candles?' + urllib.parse.urlencode({
-                            'symbol': symbol, 'interval': interval, 'count': REQUEST_M1 if interval == 60 else REQUEST_M5}),
-                            timeout=30, attempts=2)
-                        rows = direct.get('candles') or []
-                        if isinstance(rows, list):
-                            collected[symbol][key] = {'candles': rows,
-                                'source': direct.get('source'), 'symbol': symbol,
-                                'interval_seconds': interval, 'read_only': True}
-                    except Exception as exc:
-                        errors[f'{symbol}:{interval}'] = type(exc).__name__
     except Exception as exc:
         for symbol in chunk:
-            errors[symbol] = type(exc).__name__
+            errors[symbol] = f'{failure_reason(exc)}:{type(exc).__name__}'
     finally:
         batch_diagnostics.append({
             'symbols': chunk,
@@ -217,7 +236,7 @@ def fresh_enough(rows):
 for symbol, item in collected.items():
     rows = (item.get('m1') or {}).get('candles') or []
     if rows and not fresh_enough(rows):
-        errors[f'stale_batch:{symbol}'] = 'FORCED_DIRECT_REFRESH'
+        errors[f'stale_batch:{symbol}'] = 'STALE_SNAPSHOT:FORCED_DIRECT_REFRESH'
         for key in ('m1', 'm3', 'm5'):
             item[key] = {'candles': [], 'source': 'STALE_BATCH_REJECTED',
                          'symbol': symbol, 'read_only': True}
@@ -228,7 +247,7 @@ for symbol, item in collected.items():
 # whose batch/direct response is below the contract threshold, including
 # partial payloads such as 30 M1 candles for GBPUSD.
 # Bound recovery to keep a live scan within its operational latency budget.
-for recovery_attempt in range(1, 3):
+for recovery_attempt in range(1, 2):
     short_symbols = [
         s for s, item in collected.items()
         if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
@@ -238,9 +257,9 @@ for recovery_attempt in range(1, 3):
         break
     # Refresh the persistent gateway state before recovering missing pieces.
     try:
-        health = get('/health', timeout=15, attempts=1)
+        health = get('/health', timeout=FETCH_TIMEOUT_SECONDS)
     except Exception as exc:
-        errors[f'health_recovery:{recovery_attempt}'] = type(exc).__name__
+        errors[f'health_recovery:{recovery_attempt}'] = f'{failure_reason(exc)}:{type(exc).__name__}'
     for symbol in short_symbols:
         for interval, key, target, minimum in (
             (60, 'm1', REQUEST_M1, MIN_M1),
@@ -253,7 +272,7 @@ for recovery_attempt in range(1, 3):
             try:
                 direct = get('/api/market/candles?' + urllib.parse.urlencode({
                     'symbol': symbol, 'interval': interval, 'count': target}),
-                    timeout=60, attempts=1)
+                    timeout=FETCH_TIMEOUT_SECONDS)
                 rows = direct.get('candles') or []
                 if isinstance(rows, list) and len(rows) > len(current):
                     collected[symbol][key] = {
@@ -263,10 +282,9 @@ for recovery_attempt in range(1, 3):
                     }
                 received_count = len(closed_candles(rows, 300)) if key == 'm5' and isinstance(rows, list) else len(rows) if isinstance(rows, list) else 0
                 if received_count < minimum:
-                    errors[f'short:{symbol}:{interval}'] = f'{received_count}<{minimum}_CLOSED' if key == 'm5' else f'{received_count}<{minimum}'
+                    errors[f'short:{symbol}:{interval}'] = f'CANDLES_INCOMPLETE:{received_count}<{minimum}_CLOSED' if key == 'm5' else f'CANDLES_INCOMPLETE:{received_count}<{minimum}'
             except Exception as exc:
-                errors[f'recovery:{symbol}:{interval}'] = type(exc).__name__
-    time.sleep(min(2 * recovery_attempt, 10))
+                errors[f'recovery:{symbol}:{interval}'] = f'{failure_reason(exc)}:{type(exc).__name__}'
 
 # Derive M3 only from aligned, complete, closed IQ M1 candles. Always replace
 # any batch M3 payload so an unsupported/native M3 response cannot bypass this
@@ -286,22 +304,71 @@ for symbol, item in collected.items():
     item['m5']['forming_candles_excluded'] = len(raw_m5) - len(closed_m5)
     item['m5']['candles'] = closed_m5
 
-remaining_short = [s for s, item in collected.items()
-                  if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
-                  or len((item.get('m3') or {}).get('candles') or []) < MIN_M3
-                  or len((item.get('m5') or {}).get('candles') or []) < MIN_M5]
-if remaining_short:
-    raise RuntimeError('CANDLE_DATA_INCOMPLETE:' + ','.join(remaining_short))
+pair_status = {}
+for symbol, item in collected.items():
+    m1_rows = (item.get('m1') or {}).get('candles') or []
+    m3_rows = (item.get('m3') or {}).get('candles') or []
+    m5_rows = (item.get('m5') or {}).get('candles') or []
+    pair_errors = []
+    if len(m1_rows) < MIN_M1:
+        pair_errors.append(f'CANDLES_INCOMPLETE:M1:{len(m1_rows)}<{MIN_M1}')
+    if len(m3_rows) < MIN_M3:
+        pair_errors.append(f'CANDLES_INCOMPLETE:M3:{len(m3_rows)}<{MIN_M3}')
+    if len(m5_rows) < MIN_M5:
+        pair_errors.append(f'CANDLES_INCOMPLETE:M5:{len(m5_rows)}<{MIN_M5}')
+    single_validation = validate_snapshot_freshness(
+        {symbol: {'m1': item.get('m1'), 'm5': item.get('m5')}},
+        max_m1_age_seconds=max_age, max_m5_close_age_seconds=300,
+        max_m1_skew_seconds=120, max_m5_skew_seconds=300,
+        min_m5_closed=MIN_M5)
+    pair_errors.extend(single_validation.get('errors') or [])
+    if pair_errors:
+        related_errors = [str(value) for key, value in errors.items() if symbol in key]
+        if any('TIMEOUT' in value for value in related_errors):
+            reason = 'TIMEOUT'
+        elif any('GATEWAY_' in value or 'GATEWAY_FETCH_FAILED' in value for value in related_errors):
+            reason = 'GATEWAY_FETCH_FAILED'
+        elif any('STALE' in value or 'FUTURE' in value for value in pair_errors) or any('STALE_SNAPSHOT' in value for value in related_errors):
+            reason = 'STALE_SNAPSHOT'
+        else:
+            reason = next((value.split(':', 1)[0] for value in pair_errors if value.startswith('CANDLES_INCOMPLETE')), 'SNAPSHOT_INVALID')
+        pair_status[symbol] = {'status': 'blocked', 'blocked': True, 'reason': reason,
+                               'details': list(dict.fromkeys(pair_errors + related_errors))}
+    else:
+        pair_status[symbol] = {'status': 'ok', 'blocked': False, 'reason': None,
+                               'details': []}
 
-freshness_snapshot = {symbol: {'m1': item.get('m1'), 'm5': item.get('m5')}
-                      for symbol, item in collected.items()}
+# Alignment is a per-pair gate: retain the newest coherent subset and block only
+# symbols whose latest closed timestamps fall outside the existing skew limits.
+preliminary = [s for s in symbols if pair_status.get(s, {}).get('status') == 'ok']
+if preliminary:
+    alignment_probe = validate_snapshot_freshness(
+        {s: {'m1': collected[s].get('m1'), 'm5': collected[s].get('m5')} for s in preliminary},
+        max_m1_age_seconds=max_age, max_m5_close_age_seconds=300,
+        max_m1_skew_seconds=120, max_m5_skew_seconds=300,
+        min_m5_closed=MIN_M5)
+    details = alignment_probe.get('symbols') or {}
+    m1_latest = [v.get('m1_latest_timestamp') for v in details.values() if v.get('m1_latest_timestamp') is not None]
+    m5_latest = [v.get('m5_latest_closed_timestamp') for v in details.values() if v.get('m5_latest_closed_timestamp') is not None]
+    newest_m1 = max(m1_latest) if m1_latest else None
+    newest_m5 = max(m5_latest) if m5_latest else None
+    for symbol in preliminary:
+        detail = details.get(symbol) or {}
+        misaligned = ((newest_m1 is not None and detail.get('m1_latest_timestamp') is not None
+                       and newest_m1 - detail['m1_latest_timestamp'] > 120)
+                      or (newest_m5 is not None and detail.get('m5_latest_closed_timestamp') is not None
+                          and newest_m5 - detail['m5_latest_closed_timestamp'] > 300))
+        if misaligned:
+            pair_status[symbol] = {'status': 'blocked', 'blocked': True,
+                                   'reason': 'SNAPSHOT_MISALIGNED',
+                                   'details': ['SNAPSHOT_MISALIGNED']}
+
+fresh = [s for s in symbols if pair_status.get(s, {}).get('status') == 'ok']
 freshness_validation = validate_snapshot_freshness(
-    freshness_snapshot, max_m1_age_seconds=max_age,
-    max_m5_close_age_seconds=300, max_m1_skew_seconds=120,
-    max_m5_skew_seconds=300, min_m5_closed=MIN_M5)
-if not freshness_validation.get('ok'):
-    raise RuntimeError('MARKET_SNAPSHOT_FRESHNESS_REJECTED:' + '|'.join(freshness_validation.get('errors') or []))
-fresh = list(collected)
+    {s: {'m1': collected[s].get('m1'), 'm5': collected[s].get('m5')} for s in fresh},
+    max_m1_age_seconds=max_age, max_m5_close_age_seconds=300,
+    max_m1_skew_seconds=120, max_m5_skew_seconds=300,
+    min_m5_closed=MIN_M5)
 
 # Payout is current binary metadata and must travel with the same scan snapshot.
 payouts = {symbol: {'ok': True, 'symbol': symbol, 'payout': values.get('binary') or values.get('turbo'), 'source': 'IQ_OPTION_DIRECT_SNAPSHOT', 'read_only': True}
@@ -312,14 +379,24 @@ for payout_attempt in range(1, 2):
         break
     for symbol in missing:
         try:
-            payout = get('/api/market/payout?' + urllib.parse.urlencode({'symbol': symbol, 'instrument': 'binary'}), timeout=30, attempts=1)
+            payout = get('/api/market/payout?' + urllib.parse.urlencode({'symbol': symbol, 'instrument': 'binary'}), timeout=FETCH_TIMEOUT_SECONDS)
             payouts[symbol] = payout
         except Exception as exc:
-            payouts[symbol] = {'ok': False, 'reason': 'PAYOUT_FETCH_ERROR:' + type(exc).__name__, 'read_only': True}
+            payouts[symbol] = {'ok': False, 'reason': f'{failure_reason(exc)}:{type(exc).__name__}', 'read_only': True}
 payout_required = [s for s in symbols if str(s).upper().endswith('-OTC') or os.getenv('REQUIRE_PAYOUT', 'false').lower() == 'true']
 missing_payout = [s for s in payout_required if not (payouts.get(s) or {}).get('ok') or (payouts.get(s) or {}).get('payout') is None]
-if missing_payout:
-    raise RuntimeError('PAYOUT_DATA_INCOMPLETE:' + ','.join(missing_payout))
+for symbol in missing_payout:
+    pair_status[symbol] = {'status': 'blocked', 'blocked': True,
+                           'reason': 'PAYOUT_FETCH_FAILED',
+                           'details': ['PAYOUT_FETCH_FAILED']}
+fresh = [s for s in symbols if pair_status.get(s, {}).get('status') == 'ok']
+freshness_validation = validate_snapshot_freshness(
+    {s: {'m1': collected[s].get('m1'), 'm5': collected[s].get('m5')} for s in fresh},
+    max_m1_age_seconds=max_age, max_m5_close_age_seconds=300,
+    max_m1_skew_seconds=120, max_m5_skew_seconds=300, min_m5_closed=MIN_M5)
+for symbol, status in pair_status.items():
+    if status.get('status') != 'ok':
+        errors.setdefault(symbol, status.get('reason') or 'SNAPSHOT_INVALID')
 
 out = {'source': base, 'read_only': True, 'health': health,
        'assets': [], 'payouts': payouts, 'symbols': {}, 'fetch_mode': 'gateway_batch1_bounded_recovery',
@@ -331,12 +408,30 @@ out = {'source': base, 'read_only': True, 'health': health,
        'observed_at_utc': datetime.now(timezone.utc).isoformat(),
        'latency_ms': round((time.perf_counter() - fetch_started) * 1000, 1)}
 for symbol, item in collected.items():
+    status = pair_status.get(symbol, {'status': 'blocked', 'blocked': True, 'reason': 'SNAPSHOT_INVALID', 'details': []})
+    if status.get('status') != 'ok':
+        # Preserve counts/reasons but do not let blocked or stale candles feed agents.
+        item = dict(item)
+        for key in ('m1', 'm3', 'm5'):
+            payload = dict(item.get(key) or {})
+            rows = payload.get('candles') or []
+            payload['provider_candles_received'] = len(rows)
+            payload['candles'] = []
+            payload['blocked_reason'] = status.get('reason')
+            item[key] = payload
     out['symbols'][symbol] = {
-        'snapshot': {'ok': True, 'assets': [], 'payouts': {}, 'read_only': True},
+        'snapshot': {'ok': status.get('status') == 'ok', 'blocked': status.get('status') != 'ok',
+                     'reason': status.get('reason'), 'assets': [], 'payouts': {}, 'read_only': True},
+        'fetch_status': status,
         'candles': item.get('m1', {}), 'm3_candles': item.get('m3', {}), 'm5_candles': item.get('m5', {}),
         'realtime': item.get('realtime', []), 'quote': item.get('quote'),
         'quote_metadata': item.get('quote_metadata', {}),
     }
 Path('reports').mkdir(exist_ok=True)
 Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
-print('market_data_per_symbol=OK', len(fresh), 'fresh_of', len(symbols))
+failed = [s for s in symbols if pair_status.get(s, {}).get('status') != 'ok']
+latency = time.perf_counter() - fetch_started
+print(f'market_fetch_summary ok={len(fresh)} failed={len(failed)} total={len(symbols)} latency_seconds={latency:.2f}')
+for symbol in failed:
+    print(f'market_fetch_blocked symbol={symbol} reason={pair_status.get(symbol, {}).get("reason")} details={pair_status.get(symbol, {}).get("details", [])}')
+raise SystemExit(0 if fresh else 1)
