@@ -547,7 +547,10 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
     from shared_ai.consultation import SharedAI
     try:
         if market == "forex":
-            result = ForexV16ReadOnly(score_minimum=0).analyze(symbol, candles, {"source": "read-only gateway market_data.json"})
+            result = ForexV16ReadOnly(score_minimum=0).analyze(
+                symbol, candles, {"source": "read-only gateway market_data.json",
+                                 "snapshot_id": market_snapshot_id},
+            )
             result["market"] = market
             result.update(_analysis_timing(market, result, candles, observed_at, final_timing))
             result = _apply_direction_veto(result)
