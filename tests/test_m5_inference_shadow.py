@@ -77,7 +77,7 @@ class M5ShadowInferenceTest(unittest.TestCase):
             "EURUSD", rows, observed, "snapshot-a", "IQ_OPTION_HISTORICAL", True,
         )
         self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["reason"], "M5_CLOSED_CANDLES_STALE")
+        self.assertEqual(result["reason"], "M5_CONFIRMATION_STALE_FOR_ENTRY")
 
     def test_gap_in_recent_closed_candles_blocks(self):
         rows = self.candles()

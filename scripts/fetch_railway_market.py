@@ -51,6 +51,24 @@ def failure_reason(exc):
     return 'GATEWAY_FETCH_FAILED'
 
 
+def latest_timestamp(rows):
+    stamps = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            stamp = float(row.get('timestamp'))
+            if stamp == stamp and abs(stamp) != float('inf'):
+                stamps.append(stamp)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return max(stamps) if stamps else None
+
+def latest_closed_m5_timestamp(rows, now=None):
+    now = time.time() if now is None else float(now)
+    return latest_timestamp(closed_candles(rows if isinstance(rows, list) else [], 300, now=now))
+
+
 def get(path, timeout=None, attempts=None):
     """Bounded gateway request with three retries and 2/5/10-second backoff."""
     timeout = FETCH_TIMEOUT_SECONDS if timeout is None else min(float(timeout), 30)
@@ -247,14 +265,19 @@ for symbol, item in collected.items():
 # whose batch/direct response is below the contract threshold, including
 # partial payloads such as 30 M1 candles for GBPUSD.
 # Bound recovery to keep a live scan within its operational latency budget.
-for recovery_attempt in range(1, 2):
+for recovery_attempt in range(1, 3):
+    recovery_now = time.time()
     short_symbols = [
         s for s, item in collected.items()
         if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
-        or len(closed_candles((item.get('m5') or {}).get('candles') or [], 300)) < MIN_M5
+        or len(closed_candles((item.get('m5') or {}).get('candles') or [], 300, now=recovery_now)) < MIN_M5
+        or latest_closed_m5_timestamp((item.get('m5') or {}).get('candles') or [], recovery_now) is None
+        or recovery_now - (latest_closed_m5_timestamp((item.get('m5') or {}).get('candles') or [], recovery_now) + 300) > 360
     ]
     if not short_symbols:
         break
+    if recovery_attempt > 1:
+        time.sleep(1)
     # Refresh the persistent gateway state before recovering missing pieces.
     try:
         health = get('/health', timeout=FETCH_TIMEOUT_SECONDS)
@@ -267,20 +290,29 @@ for recovery_attempt in range(1, 2):
         ):
             current = (collected[symbol].get(key) or {}).get('candles') or []
             current_count = len(closed_candles(current, 300)) if key == 'm5' else len(current)
-            if current_count >= minimum:
+            current_latest = (latest_closed_m5_timestamp(current) if key == 'm5' else latest_timestamp(current))
+            current_stale = (key == 'm5' and (current_latest is None or
+                               time.time() - (current_latest + 300) > 360))
+            if current_count >= minimum and not current_stale:
                 continue
             try:
                 direct = get('/api/market/candles?' + urllib.parse.urlencode({
-                    'symbol': symbol, 'interval': interval, 'count': target}),
+                    'symbol': symbol, 'interval': interval, 'count': target,
+                    'cache': 'false', 'fresh': 'true'}),
                     timeout=FETCH_TIMEOUT_SECONDS)
                 rows = direct.get('candles') or []
-                if isinstance(rows, list) and len(rows) > len(current):
+                received_count = (len(closed_candles(rows, 300)) if key == 'm5' and isinstance(rows, list)
+                                  else len(rows) if isinstance(rows, list) else 0)
+                received_latest = (latest_closed_m5_timestamp(rows) if key == 'm5' and isinstance(rows, list)
+                                   else latest_timestamp(rows))
+                newer_timestamp = (received_latest is not None and
+                                   (current_latest is None or received_latest > current_latest))
+                if isinstance(rows, list) and (len(rows) > len(current) or newer_timestamp):
                     collected[symbol][key] = {
                         'candles': rows, 'source': direct.get('source'),
                         'symbol': symbol, 'interval_seconds': interval,
                         'read_only': True,
                     }
-                received_count = len(closed_candles(rows, 300)) if key == 'm5' and isinstance(rows, list) else len(rows) if isinstance(rows, list) else 0
                 if received_count < minimum:
                     errors[f'short:{symbol}:{interval}'] = f'CANDLES_INCOMPLETE:{received_count}<{minimum}_CLOSED' if key == 'm5' else f'CANDLES_INCOMPLETE:{received_count}<{minimum}'
             except Exception as exc:
@@ -318,7 +350,7 @@ for symbol, item in collected.items():
         pair_errors.append(f'CANDLES_INCOMPLETE:M5:{len(m5_rows)}<{MIN_M5}')
     single_validation = validate_snapshot_freshness(
         {symbol: {'m1': item.get('m1'), 'm5': item.get('m5')}},
-        max_m1_age_seconds=max_age, max_m5_close_age_seconds=300,
+        max_m1_age_seconds=max_age, max_m5_close_age_seconds=360,
         max_m1_skew_seconds=120, max_m5_skew_seconds=300,
         min_m5_closed=MIN_M5)
     pair_errors.extend(single_validation.get('errors') or [])
@@ -344,7 +376,7 @@ preliminary = [s for s in symbols if pair_status.get(s, {}).get('status') == 'ok
 if preliminary:
     alignment_probe = validate_snapshot_freshness(
         {s: {'m1': collected[s].get('m1'), 'm5': collected[s].get('m5')} for s in preliminary},
-        max_m1_age_seconds=max_age, max_m5_close_age_seconds=300,
+        max_m1_age_seconds=max_age, max_m5_close_age_seconds=360,
         max_m1_skew_seconds=120, max_m5_skew_seconds=300,
         min_m5_closed=MIN_M5)
     details = alignment_probe.get('symbols') or {}
@@ -366,7 +398,7 @@ if preliminary:
 fresh = [s for s in symbols if pair_status.get(s, {}).get('status') == 'ok']
 freshness_validation = validate_snapshot_freshness(
     {s: {'m1': collected[s].get('m1'), 'm5': collected[s].get('m5')} for s in fresh},
-    max_m1_age_seconds=max_age, max_m5_close_age_seconds=300,
+    max_m1_age_seconds=max_age, max_m5_close_age_seconds=360,
     max_m1_skew_seconds=120, max_m5_skew_seconds=300,
     min_m5_closed=MIN_M5)
 
@@ -392,7 +424,7 @@ for symbol in missing_payout:
 fresh = [s for s in symbols if pair_status.get(s, {}).get('status') == 'ok']
 freshness_validation = validate_snapshot_freshness(
     {s: {'m1': collected[s].get('m1'), 'm5': collected[s].get('m5')} for s in fresh},
-    max_m1_age_seconds=max_age, max_m5_close_age_seconds=300,
+    max_m1_age_seconds=max_age, max_m5_close_age_seconds=360,
     max_m1_skew_seconds=120, max_m5_skew_seconds=300, min_m5_closed=MIN_M5)
 for symbol, status in pair_status.items():
     if status.get('status') != 'ok':

@@ -42,7 +42,11 @@ from market_data_contract import snapshot_id as make_snapshot_id
 
 M5_INTERVAL_SECONDS = 300
 M5_MIN_COMPLETED_CANDLES = 25
-M5_MAX_CLOSED_AGE_SECONDS = 300
+# A closed M5 candle remains usable for directional bias for up to six minutes.
+# Entry confirmation/actionability keeps the original five-minute age ceiling.
+M5_BIAS_MAX_CLOSED_AGE_SECONDS = 360
+M5_ENTRY_MAX_CLOSED_AGE_SECONDS = 300
+M5_MAX_CLOSED_AGE_SECONDS = M5_ENTRY_MAX_CLOSED_AGE_SECONDS
 M5_DATA_UNAVAILABLE_REASONS = {
     "M5_INVALID_CANDLES", "M5_INSUFFICIENT_COMPLETED_CANDLES",
     "M5_CLOSED_CANDLES_STALE", "M5_CANDLE_GAP",
@@ -191,7 +195,8 @@ def _native_m5_bias(closed_rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
-                              observed_at: datetime, bundle_snapshot_id: str) -> dict[str, Any]:
+                              observed_at: datetime, bundle_snapshot_id: str,
+                              source: str = "market_data.json:m5_candles") -> dict[str, Any]:
     """Report native M5 bias and confirm only against an independent candidate direction."""
     observed_ts = observed_at.timestamp()
     completed: list[tuple[float, dict[str, Any]]] = []
@@ -227,6 +232,9 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
         "m5_confirmed": False,
         "m5_bias": None,
         "m5_vote": None,
+        "m5_bias_status": "blocked",
+        "m5_confirmation_status": "blocked",
+        "m5_confirmation_reason": None,
         "reason": None,
         "received_candles": len(candles),
         "valid_closed_candles": len(closed_rows),
@@ -234,7 +242,7 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
         "latest_completed_candle_close_utc": _iso(latest_close_ts),
         "closed_candle_age_seconds": round(closed_age, 3) if closed_age is not None else None,
         "snapshot_id": bundle_snapshot_id,
-        "source": "market_data.json:m5_candles",
+        "source": source,
         "read_only": True,
         "execution_allowed": False,
     }
@@ -244,7 +252,7 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
     if len(closed_rows) < M5_MIN_COMPLETED_CANDLES:
         base["reason"] = "M5_INSUFFICIENT_COMPLETED_CANDLES"
         return base
-    if closed_age is None or closed_age > M5_MAX_CLOSED_AGE_SECONDS:
+    if closed_age is None or closed_age > M5_BIAS_MAX_CLOSED_AGE_SECONDS:
         base["reason"] = "M5_CLOSED_CANDLES_STALE"
         return base
     recent = completed[-M5_MIN_COMPLETED_CANDLES:]
@@ -264,11 +272,21 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
         base["reason"] = "M5_BIAS_CALCULATION_ERROR"
         return base
     base["status"] = "inference_ok"
+    base["m5_bias_status"] = "inference_ok"
     base["candidate_direction"] = direction if direction in {"CALL", "PUT"} else None
     if direction not in {"CALL", "PUT"}:
         base["reason"] = ("M5_CONFIRMATION_AWAITING_DIRECTION"
                            if base.get("m5_vote") else "M5_BIAS_NEUTRAL")
+        base["m5_confirmation_status"] = "awaiting_direction"
+        base["m5_confirmation_reason"] = base["reason"]
         base["confirmation_state"] = "no_candidate_direction"
+        return base
+
+    if closed_age > M5_ENTRY_MAX_CLOSED_AGE_SECONDS:
+        base["m5_confirmation_status"] = "blocked"
+        base["m5_confirmation_reason"] = "M5_CONFIRMATION_STALE_FOR_ENTRY"
+        base["reason"] = "M5_CONFIRMATION_STALE_FOR_ENTRY"
+        base["confirmation_state"] = "stale_for_entry"
         return base
 
     try:
@@ -276,14 +294,19 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
         confirmed = BinaryPolicy.m5_confirmation(closed_rows, direction)
     except Exception as exc:
         base["status"] = "blocked"
-        base["reason"] = f"M5_CONFIRMATION_CALCULATION_ERROR:{type(exc).__name__}"
+        base["m5_confirmation_status"] = "error"
+        base["m5_confirmation_reason"] = f"M5_CONFIRMATION_CALCULATION_ERROR:{type(exc).__name__}"
+        base["reason"] = base["m5_confirmation_reason"]
         base["confirmation_state"] = "calculation_error"
         return base
+    entry_reason = None if confirmed else "M5_DIRECTION_NOT_CONFIRMED"
     base.update({
         "status": "inference_ok",
+        "m5_confirmation_status": "confirmed" if confirmed else "not_confirmed",
+        "m5_confirmation_reason": entry_reason,
         "confirmed": bool(confirmed),
         "m5_confirmed": bool(confirmed),
-        "reason": None if confirmed else "M5_DIRECTION_NOT_CONFIRMED",
+        "reason": entry_reason,
         "confirmation_state": "confirmed" if confirmed else "m5_bias_did_not_confirm_candidate",
         "valid_closed_candles": len(closed_rows),
     })
@@ -514,10 +537,11 @@ def _finalize_signal_actionability(analysis: dict[str, Any], checked_at: datetim
         else:
             m5_age = max(0.0, checked_at.timestamp() - latest_m5_close)
             m5["age_at_actionability_check_seconds"] = round(m5_age, 3)
-            if m5_age > M5_MAX_CLOSED_AGE_SECONDS:
+            m5["closed_candle_age_at_publication_seconds"] = round(m5_age, 3)
+            if m5_age > M5_ENTRY_MAX_CLOSED_AGE_SECONDS:
                 reasons.append("M5_CLOSED_CANDLES_STALE_AT_PUBLICATION")
             lead = float(timing.get("lead_time_seconds") or 0.0)
-            if timing.get("valid") is True and m5_age + lead > M5_MAX_CLOSED_AGE_SECONDS:
+            if timing.get("valid") is True and m5_age + lead > M5_ENTRY_MAX_CLOSED_AGE_SECONDS:
                 reasons.append("M5_CONFIRMATION_EXPIRES_BEFORE_ENTRY")
 
     analysis["actionability_checked_at_utc"] = checked_at.isoformat()
@@ -551,7 +575,9 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
              final_timing: dict[str, Any] | None = None,
              m5_candles: list[dict[str, Any]] | None = None,
              market_snapshot_id: str | None = None) -> dict[str, Any]:
-    timing = _analysis_timing(market, {}, candles, observed_at, final_timing)
+    final_payload = final_timing if isinstance(final_timing, dict) else {}
+    final_m1_timing = final_payload.get("m1") if isinstance(final_payload.get("m1"), dict) else final_payload
+    timing = _analysis_timing(market, {}, candles, observed_at, final_m1_timing)
 
     # Empty/invalid gateway payloads are a valid fail-closed outcome.  Handle
     # them before importing model/engine modules: those imports are optional
@@ -592,7 +618,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                                  "snapshot_id": market_snapshot_id},
             )
             result["market"] = market
-            result.update(_analysis_timing(market, result, candles, observed_at, final_timing))
+            result.update(_analysis_timing(market, result, candles, observed_at, final_m1_timing))
             result = _apply_direction_veto(result)
             result.update(_mode_contract(result))
             return result
@@ -605,12 +631,20 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             "market": market, "symbol": symbol, "m1_candles": candles,
             "m5_candles": m5_candles,
         })
-        # Compute validated native M5 bias before SharedAI aggregates direction,
-        # so the confirmation lane can cast its independent vote without a
-        # candidate-direction prerequisite.
+        # The counted M5 direction vote is bound to the immutable analysis
+        # snapshot. Measure it immediately before aggregation; final timing data
+        # is deliberately kept out of this vote's provenance.
+        aggregation_at = max(observed_at, datetime.now(timezone.utc))
         m5_vote_evidence = _m5_confirmation_evidence(
-            m5_candles, "NEUTRAL", observed_at, bundle_snapshot_id,
+            m5_candles, "NEUTRAL", aggregation_at, bundle_snapshot_id,
+            source="market_data.json:m5_candles",
         )
+        m5_vote_evidence.update({
+            "snapshot_id": bundle_snapshot_id,
+            "aggregation_at_utc": aggregation_at.isoformat(),
+            "age_at_aggregation_seconds": m5_vote_evidence.get("closed_candle_age_seconds"),
+            "vote_source": "immutable_market_data_snapshot",
+        })
         consultation = SharedAI(score_minimum=0).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={
@@ -622,18 +656,62 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         ))
         chart_components = dict(consultation.components.get("component_status", {}))
         m5_direction = str(getattr(consultation, "direction", "NEUTRAL") or "NEUTRAL").upper()
-        m5_evidence = _m5_confirmation_evidence(
-            m5_candles, m5_direction, observed_at, bundle_snapshot_id,
+        # Committee evidence remains attached to the frozen analysis snapshot.
+        # Its M5 artifact is not overwritten by the subsequent timing refresh.
+        m5_snapshot_confirmation = _m5_confirmation_evidence(
+            m5_candles, m5_direction, aggregation_at, bundle_snapshot_id,
+            source="market_data.json:m5_candles",
         )
         chart_components["m5"] = {
-            "status": m5_evidence["status"],
-            "reason": m5_evidence["reason"],
+            "status": m5_snapshot_confirmation["status"],
+            "reason": m5_snapshot_confirmation["reason"],
             "role": "confirmation",
-            "confirmed": m5_evidence["confirmed"],
+            "confirmed": m5_snapshot_confirmation["confirmed"],
+            "m5_bias": m5_snapshot_confirmation.get("m5_bias"),
+            "m5_vote": m5_snapshot_confirmation.get("m5_vote"),
             "snapshot_id": bundle_snapshot_id,
+            "source": "market_data.json:m5_candles",
             "timeframe": "M5",
             "read_only": True,
         }
+        # Fresh final-refresh M5 is a separate entry-confirmation snapshot.
+        # Missing, blocked, or cache-ambiguous data cannot fall back to the old
+        # analysis M5 rows for entry approval.
+        final_m5_payload = final_payload.get("m5") if isinstance(final_payload.get("m5"), dict) else {}
+        final_m5_rows = _candles(final_m5_payload.get("candles"))
+        final_m5_verified = (final_m5_payload.get("status") == "ok"
+                             and final_m5_payload.get("read_only") is True
+                             and final_m5_payload.get("cache_used") is False)
+        entry_observed_at = max(observed_at, datetime.now(timezone.utc))
+        if final_m5_verified:
+            final_m5_snapshot_id = make_snapshot_id({
+                "market": market, "symbol": symbol, "timeframe": "M5",
+                "source": "final_timing.json:m5", "candles": final_m5_rows,
+            })
+            m5_evidence = _m5_confirmation_evidence(
+                final_m5_rows, m5_direction, entry_observed_at, final_m5_snapshot_id,
+                source="final_timing.json:m5:READONLY_GATEWAY_DIRECT_PER_SYMBOL_NO_CACHE",
+            )
+            m5_evidence["analysis_snapshot_id"] = bundle_snapshot_id
+            m5_evidence["timing_snapshot_id"] = final_m5_snapshot_id
+        else:
+            final_reason = str(final_m5_payload.get("reason") or "FINAL_M5_REFRESH_UNAVAILABLE")
+            m5_evidence = {
+                "timeframe": "M5", "status": "blocked", "confirmed": False,
+                "m5_confirmed": False, "m5_bias": None, "m5_vote": None,
+                "m5_bias_status": "blocked", "m5_confirmation_status": "blocked",
+                "m5_confirmation_reason": final_reason, "reason": final_reason,
+                "received_candles": len(final_m5_rows), "valid_closed_candles": 0,
+                "latest_completed_candle_close_utc": final_m5_payload.get("latest_completed_candle_close_utc"),
+                "closed_candle_age_seconds": final_m5_payload.get("closed_candle_age_seconds"),
+                "snapshot_id": None, "analysis_snapshot_id": bundle_snapshot_id,
+                "source": "final_timing.json:m5", "read_only": True,
+                "execution_allowed": False,
+            }
+        m5_vote_entered = ((consultation.components.get("core_analysis", {}).get("direction_votes") or {})
+                           .get("m5_engine") in {"CALL", "PUT"})
+        m5_vote_evidence["entered_direction_votes"] = bool(m5_vote_entered)
+        m5_vote_evidence["direction_vote"] = (consultation.components.get("core_analysis", {}).get("direction_votes") or {}).get("m5_engine")
         from core.trading_crew import crew_v16
         specialist_committee = crew_v16.evaluate(
             symbol, chart_components, bundle_snapshot_id, "M1+M5",
@@ -687,6 +765,8 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             "anomaly_score": consultation.anomaly_score,
             "vetoes": vetoes, "explanation": "; ".join(vetoes) if vetoes else consultation.explanation,
             "m5_confirmation": m5_evidence,
+            "m5_vote_evidence": m5_vote_evidence,
+            "m5_vote_entered_direction_votes": bool(m5_vote_entered),
             "decision_basis": "OTC_IQ_CHART_AUTHORITATIVE" if market == "otc" else "CORE_ENGINE",
             "chart_evidence": {"ema_cascade": "engine", "algorithmic_cycle": "engine",
                                "wick_rejection": "engine", "previous_candle": "engine",
@@ -694,7 +774,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             "components": chart_components,
             "specialist_committee": specialist_committee,
             "read_only": True, "execution_allowed": False, "executor_enabled": False,
-            **_analysis_timing(market, direction_report_fields, candles, observed_at, final_timing),
+            **_analysis_timing(market, direction_report_fields, candles, observed_at, final_m1_timing),
         }
         result = _apply_direction_veto(result)
         if market == "otc":
@@ -788,8 +868,7 @@ def main() -> int:
         seen_otc.add(otc_symbol)
         otc_data = by_symbol.get(otc_symbol, {})
         binary.append(_analyse_with_fetch_status("otc", otc_symbol, otc_data, observed_at,
-                               (final_by_symbol.get(otc_symbol, {}).get("m1") or {}),
-                               market_snapshot_id))
+                               final_by_symbol.get(otc_symbol) or {}, market_snapshot_id))
 
     for raw_symbol in symbols:
         symbol = str(raw_symbol).upper()
@@ -807,12 +886,10 @@ def main() -> int:
         m5_candles = _candles(symbol_data.get("m5_candles"))
         if run_forex:
             forex.append(_analyse_with_fetch_status("forex", symbol, symbol_data, observed_at,
-                                   (final_by_symbol.get(symbol, {}).get("m1") or {}),
-                                   market_snapshot_id))
+                                   final_by_symbol.get(symbol) or {}, market_snapshot_id))
         if run_real_binary:
             binary.append(_analyse_with_fetch_status("binary", symbol, symbol_data, observed_at,
-                                   (final_by_symbol.get(symbol, {}).get("m1") or {}),
-                                   market_snapshot_id))
+                                   final_by_symbol.get(symbol) or {}, market_snapshot_id))
         if run_otc:
             append_otc(symbol + "-OTC")
 

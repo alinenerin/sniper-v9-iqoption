@@ -101,5 +101,19 @@ class DirectionAggregatorTest(unittest.TestCase):
         self.assertEqual(result["directional_sources"], ["smc", "m5_engine"])
 
 
+    def test_m5_does_not_override_explicit_cross_source_conflict(self):
+        # A CALL/PUT conflict remains neutral even when the third source aligns
+        # with one side; this preserves the established conflict veto.
+        result = aggregate_direction(
+            smc=ok("CALL"),
+            xgboost=ok("PUT"),
+            m5_engine={"status": "inference_ok", "m5_vote": "PUT",
+                       "vote_reason": "M5_BIAS_EMA9_EMA21_SLOPE"},
+        )
+        self.assertEqual(result["votes"]["m5_engine"], "PUT")
+        self.assertEqual(result["direction_confirmed"], "NEUTRAL")
+        self.assertIn("DIRECTIONAL_CONFLICT", result["direction_reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

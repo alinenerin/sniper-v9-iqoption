@@ -10,7 +10,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.generate_scan_report import _analyse, _m5_confirmation_evidence
+from scripts.generate_scan_report import _analyse, _m5_confirmation_evidence, _analyse_with_fetch_status
 from core.trading_crew import TradingCrewV16
 from shared_ai.consultation import SharedAI
 
@@ -49,8 +49,21 @@ class M5SignalGateTest(unittest.TestCase):
                 m5_engine_override=request.metadata.get("m5_engine"),
             )
             return consultation
+        check_time = max(observed, datetime.now(timezone.utc))
+        closed = [row for row in m5 if float(row["timestamp"]) + 300 <= check_time.timestamp()]
+        age = (check_time.timestamp() - (float(closed[-1]["timestamp"]) + 300)) if closed else None
+        final_payload = {"m1": {}, "m5": {
+            "candles": closed,
+            "status": "ok" if len(closed) >= 25 and age is not None and age <= 300 else "blocked",
+            "reason": None if len(closed) >= 25 and age is not None and age <= 300 else
+                      "M5_INSUFFICIENT_COMPLETED_CANDLES" if len(closed) < 25 else "M5_CONFIRMATION_STALE_FOR_ENTRY",
+            "read_only": True, "cache_used": False,
+            "closed_candle_age_seconds": age,
+            "latest_completed_candle_close_utc": (datetime.fromtimestamp(float(closed[-1]["timestamp"]) + 300, timezone.utc).isoformat() if closed else None),
+        }}
         with patch("shared_ai.consultation.SharedAI.consult", side_effect=fake_consult):
-            return _analyse("binary", "EURUSD", m1, observed, m5_candles=m5)
+            return _analyse("binary", "EURUSD", m1, observed, final_payload,
+                            m5_candles=m5)
 
     @classmethod
     def fake_consultation(cls, include_xgboost=True):
@@ -114,9 +127,27 @@ class M5SignalGateTest(unittest.TestCase):
         now = datetime.fromtimestamp(rows[-1]["timestamp"] + 330, timezone.utc)
         short = _m5_confirmation_evidence(rows[-10:], "CALL", now, "bundle-1")
         self.assertEqual(short["reason"], "M5_INSUFFICIENT_COMPLETED_CANDLES")
-        stale_now = datetime.fromtimestamp(rows[-1]["timestamp"] + 300 + 301, timezone.utc)
+        stale_now = datetime.fromtimestamp(rows[-1]["timestamp"] + 300 + 601, timezone.utc)
         stale = _m5_confirmation_evidence(rows, "CALL", stale_now, "bundle-1")
         self.assertEqual(stale["reason"], "M5_CLOSED_CANDLES_STALE")
+
+    def test_m5_three_to_five_minute_age_votes_but_does_not_confirm_entry(self):
+        rows = self.candles_m5()
+        observed = datetime.fromtimestamp(rows[-1]["timestamp"] + 300 + 350, timezone.utc)
+        evidence = _m5_confirmation_evidence(rows, "CALL", observed, "bundle-1")
+        self.assertEqual(evidence["status"], "inference_ok")
+        self.assertEqual(evidence["m5_vote"], "CALL")
+        self.assertEqual(evidence["m5_confirmation_status"], "blocked")
+        self.assertEqual(evidence["m5_confirmation_reason"], "M5_CONFIRMATION_STALE_FOR_ENTRY")
+        self.assertEqual(evidence["closed_candle_age_seconds"], 350)
+
+    def test_m5_older_than_fifteen_minutes_is_not_a_direction_vote(self):
+        rows = self.candles_m5()
+        observed = datetime.fromtimestamp(rows[-1]["timestamp"] + 300 + 901, timezone.utc)
+        evidence = _m5_confirmation_evidence(rows, "NEUTRAL", observed, "bundle-1")
+        self.assertEqual(evidence["reason"], "M5_CLOSED_CANDLES_STALE")
+        self.assertIsNone(evidence["m5_vote"])
+        self.assertEqual(evidence["m5_bias_status"], "blocked")
 
     def test_forming_m5_candle_is_ignored(self):
         rows = self.candles_m5()
@@ -169,9 +200,12 @@ class M5SignalGateTest(unittest.TestCase):
         self.assertEqual(report["specialist_committee"]["consensus"], "ready_for_fusion")
         self.assertTrue(report["approved"])
         self.assertFalse(report["execution_allowed"])
-        bundle_id = report["m5_confirmation"]["snapshot_id"]
+        bundle_id = report["m5_confirmation"]["analysis_snapshot_id"]
         self.assertEqual(report["specialist_committee"]["snapshot_id"], bundle_id)
         self.assertEqual(report["components"]["m5"]["snapshot_id"], bundle_id)
+        self.assertNotEqual(report["m5_confirmation"]["snapshot_id"], bundle_id)
+        self.assertTrue(report["m5_vote_entered_direction_votes"])
+        self.assertTrue(report["m5_vote_evidence"]["entered_direction_votes"])
 
     def test_missing_required_specialist_blocks_candidate_even_with_m5(self):
         m1 = [{"timestamp": 1_800_000_000 + i * 60, "open": 1, "high": 2,
@@ -196,6 +230,52 @@ class M5SignalGateTest(unittest.TestCase):
         self.assertFalse(report["approved"])
         self.assertIn("xgboost", report["specialist_committee"]["snapshot_mismatch"])
         self.assertIn("xgboost", report["specialist_committee"]["missing_required"])
+
+
+    def test_final_m5_refresh_failure_blocks_entry_without_using_snapshot_rows(self):
+        rows = self.candles_m5()
+        observed = datetime.fromtimestamp(rows[-1]["timestamp"] + 330, timezone.utc)
+        m1 = [{"timestamp": 1_800_000_000 + i * 60, "open": 1, "high": 2,
+               "low": 0.5, "close": 1.1 + i * 0.001, "volume": 10} for i in range(30)]
+        # Force final timing unavailable even though the frozen analysis snapshot
+        # has valid M5; entry confirmation must not silently reuse those rows.
+        consultation = self.fake_consultation()
+        final_payload = {"m1": {}, "m5": {"status": "blocked", "reason": "M5_FETCH_FAILED:TimeoutError",
+                       "candles": [], "read_only": True, "cache_used": False}}
+        def fake_consult(request):
+            bundle_id = request.metadata["snapshot_id"]
+            component_status = consultation.components["component_status"]
+            for item in component_status.values():
+                item["snapshot_id"] = bundle_id
+            xgb_item = dict(component_status.get("xgboost", {}), direction="CALL")
+            consultation.components["core_analysis"] = SharedAI._direction_breakdown(
+                {"direction": "CALL", "smc": {"status": "inference_ok", "direction": "CALL"}},
+                component_status, xgb_item, bundle_id, "EURUSD",
+                m5_engine_override=request.metadata.get("m5_engine"),
+            )
+            return consultation
+        with patch("shared_ai.consultation.SharedAI.consult", side_effect=fake_consult):
+            report = _analyse("binary", "EURUSD", m1, observed, final_payload, m5_candles=rows)
+        self.assertFalse(report["m5_confirmation"]["confirmed"])
+        self.assertEqual(report["m5_confirmation"]["reason"], "M5_FETCH_FAILED:TimeoutError")
+        self.assertFalse(report["signal_actionable"] if "signal_actionable" in report else False)
+
+    def test_incomplete_pair_is_reported_blocked_independently(self):
+        blocked = _analyse_with_fetch_status(
+            "binary", "GBPUSD", {"fetch_status": {"status": "blocked", "reason": "CANDLES_INCOMPLETE:M5:4<25"},
+                                  "m5_candles": {"candles": []}},
+            datetime.now(timezone.utc), {}, "snapshot-1",
+        )
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["reason"], "CANDLES_INCOMPLETE:M5:4<25")
+        # A separate complete symbol remains analyzable in its own call.
+        rows = self.candles_m5()
+        observed = datetime.fromtimestamp(rows[-1]["timestamp"] + 330, timezone.utc)
+        m1 = [{"timestamp": 1_800_000_000 + i * 60, "open": 1, "high": 2,
+               "low": 0.5, "close": 1.1 + i * 0.001, "volume": 10} for i in range(30)]
+        good = self.run_analysis(self.fake_consultation(), m1, observed, rows)
+        self.assertEqual(good["symbol"], "EURUSD")
+        self.assertEqual(good["m5_confirmation"]["status"], "inference_ok")
 
 
 if __name__ == "__main__":
