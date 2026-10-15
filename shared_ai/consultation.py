@@ -101,6 +101,25 @@ class SharedAI:
         }
 
     @staticmethod
+    def _committee_veto(market: str, committee_report: dict[str, Any] | None) -> str | None:
+        """Fail closed in Forex when required same-snapshot consensus is incomplete."""
+        if str(market).lower() != "forex":
+            return None
+        if not isinstance(committee_report, dict):
+            return "AGENT_COMMITTEE_UNAVAILABLE"
+        if committee_report.get("consensus") == "ready_for_fusion":
+            return None
+        missing = committee_report.get("missing_required", [])
+        mismatches = committee_report.get("snapshot_mismatch", [])
+        details = set()
+        if isinstance(missing, (list, tuple, set)):
+            details.update(str(x) for x in missing if x)
+        if isinstance(mismatches, (list, tuple, set)):
+            details.update(str(x) for x in mismatches if x)
+        suffix = ",".join(sorted(details)) if details else "unknown"
+        return "AGENT_CONSENSUS_INCOMPLETE:" + suffix
+
+    @staticmethod
     def _direction_breakdown(analysis: Dict[str, Any], component_status: dict[str, Any],
                              xgb_item: dict[str, Any], market_snapshot_id: str | None,
                              symbol: str) -> dict[str, Any]:
@@ -442,6 +461,9 @@ class SharedAI:
             direction = direction_fields["direction_confirmed"]
             analysis["direction"] = direction
             approved, reason = engine.is_supreme_approved(analysis)
+            committee_veto = self._committee_veto(request.market, committee_report)
+            if committee_veto:
+                approved = False
             anomaly = self._anomaly_score(analysis)
             # Final authority for the anomaly field is the dedicated Darts
             # agent artifact, not a CI-local fallback inside SupremeIntelligence.
@@ -458,6 +480,8 @@ class SharedAI:
                 vetoes.append(str(analysis.get("veto_reason") or "CORE_VETO"))
             if not approved and reason not in vetoes:
                 vetoes.append(str(reason))
+            if committee_veto and committee_veto not in vetoes:
+                vetoes.append(committee_veto)
             direction = str(analysis.get("direction", "NEUTRAL")).upper()
             if direction not in ("CALL", "PUT") and "DIRECTION_UNCONFIRMED" not in vetoes:
                 vetoes.append("DIRECTION_UNCONFIRMED")
