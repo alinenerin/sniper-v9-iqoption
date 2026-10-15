@@ -43,6 +43,10 @@ from market_data_contract import snapshot_id as make_snapshot_id
 M5_INTERVAL_SECONDS = 300
 M5_MIN_COMPLETED_CANDLES = 25
 M5_MAX_CLOSED_AGE_SECONDS = 300
+M5_DATA_UNAVAILABLE_REASONS = {
+    "M5_INVALID_CANDLES", "M5_INSUFFICIENT_COMPLETED_CANDLES",
+    "M5_CLOSED_CANDLES_STALE", "M5_CANDLE_GAP",
+}
 FINAL_M1_MAX_AGE_SECONDS = 90
 
 def _candles(payload: Any) -> list[dict[str, Any]]:
@@ -172,8 +176,12 @@ def _native_m5_bias(closed_rows: list[dict[str, Any]]) -> dict[str, Any]:
         bias = "PUT"
     else:
         bias = "NEUTRAL"
+    bias_reason = "M5_BIAS_EMA9_EMA21_SLOPE" if bias in {"CALL", "PUT"} else "M5_BIAS_NEUTRAL"
     return {
         "m5_bias": bias,
+        "m5_vote": bias if bias in {"CALL", "PUT"} else None,
+        "m5_bias_reason": bias_reason,
+        "vote_reason": bias_reason,
         "m5_bias_method": "closed_M5_EMA9_vs_EMA21_and_EMA9_slope_3_candles",
         "m5_ema9": last_fast,
         "m5_ema21": last_slow,
@@ -216,6 +224,9 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
         "timeframe": "M5",
         "status": "blocked",
         "confirmed": False,
+        "m5_confirmed": False,
+        "m5_bias": None,
+        "m5_vote": None,
         "reason": None,
         "received_candles": len(candles),
         "valid_closed_candles": len(closed_rows),
@@ -241,21 +252,37 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
         base["reason"] = "M5_CANDLE_GAP"
         return base
 
-    # Always publish the observed M5 bias when its candles are valid, even if
-    # the independent M1/SMC/XGBoost direction is missing. Bias is diagnostic
-    # only; it must not manufacture a candidate or satisfy its own confirmation.
-    base.update(_native_m5_bias(closed_rows))
+    # A valid closed-candle bias is an independent vote before any M1
+    # candidate exists. Final confirmation remains a separate later gate.
+    try:
+        bias_evidence = _native_m5_bias(closed_rows)
+    except Exception as exc:
+        base["reason"] = f"M5_BIAS_CALCULATION_ERROR:{type(exc).__name__}"
+        return base
+    base.update(bias_evidence)
+    if base.get("m5_bias") not in {"CALL", "PUT", "NEUTRAL"}:
+        base["reason"] = "M5_BIAS_CALCULATION_ERROR"
+        return base
+    base["status"] = "inference_ok"
     base["candidate_direction"] = direction if direction in {"CALL", "PUT"} else None
     if direction not in {"CALL", "PUT"}:
-        base["reason"] = "DIRECTION_UNCONFIRMED"
+        base["reason"] = ("M5_CONFIRMATION_AWAITING_DIRECTION"
+                           if base.get("m5_vote") else "M5_BIAS_NEUTRAL")
         base["confirmation_state"] = "no_candidate_direction"
         return base
 
-    from engines.binary.operational import BinaryPolicy
-    confirmed = BinaryPolicy.m5_confirmation(closed_rows, direction)
+    try:
+        from engines.binary.operational import BinaryPolicy
+        confirmed = BinaryPolicy.m5_confirmation(closed_rows, direction)
+    except Exception as exc:
+        base["status"] = "blocked"
+        base["reason"] = f"M5_CONFIRMATION_CALCULATION_ERROR:{type(exc).__name__}"
+        base["confirmation_state"] = "calculation_error"
+        return base
     base.update({
         "status": "inference_ok",
         "confirmed": bool(confirmed),
+        "m5_confirmed": bool(confirmed),
         "reason": None if confirmed else "M5_DIRECTION_NOT_CONFIRMED",
         "confirmation_state": "confirmed" if confirmed else "m5_bias_did_not_confirm_candidate",
         "valid_closed_candles": len(closed_rows),
@@ -392,6 +419,9 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
                      'direction_source': source,
                      'direction_votes': result.get("direction_votes"),
                      'direction_vote_reasons': result.get("direction_vote_reasons"),
+                     'direction_vote_counts': result.get("direction_vote_counts"),
+                     'direction_valid_votes': result.get("direction_valid_votes"),
+                     'direction_required_votes': result.get("direction_required_votes"),
                      'direction_source_status': result.get("direction_source_status"),
                      'direction_reason': result.get("direction_reason"),
                      'candle_timing': timing,
@@ -565,11 +595,18 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             "market": market, "symbol": symbol, "m1_candles": candles,
             "m5_candles": m5_candles,
         })
+        # Compute validated native M5 bias before SharedAI aggregates direction,
+        # so the confirmation lane can cast its independent vote without a
+        # candidate-direction prerequisite.
+        m5_vote_evidence = _m5_confirmation_evidence(
+            m5_candles, "NEUTRAL", observed_at, bundle_snapshot_id,
+        )
         consultation = SharedAI(score_minimum=0).consult(MarketRequest(
             market=market, symbol=symbol, timeframe="M1", candles=candles,
             account_mode="PRACTICE", metadata={
                 "source": "read-only gateway market_data.json",
                 "snapshot_id": bundle_snapshot_id,
+                "m5_engine": m5_vote_evidence,
             },
         ))
         chart_components = dict(consultation.components.get("component_status", {}))
@@ -594,13 +631,23 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             # OTC IQ chart is authoritative; Darts/FinBERT are context only.
             chart_components.update(_auxiliary(symbol))
         vetoes = list(consultation.vetoes or [])
+        missing_required = set(specialist_committee.get("missing_required") or [])
+        snapshot_mismatch = specialist_committee.get("snapshot_mismatch") or []
+        m5_data_unavailable_exception = (
+            m5_evidence.get("status") == "blocked"
+            and m5_evidence.get("reason") in M5_DATA_UNAVAILABLE_REASONS
+            and missing_required.issubset({"m5"})
+            and "m5" in missing_required
+            and not snapshot_mismatch
+        )
         consensus_ready = (
             specialist_committee.get("consensus") == "ready_for_fusion"
-            and not specialist_committee.get("snapshot_mismatch")
-            and not specialist_committee.get("missing_required")
-        )
-        if not m5_evidence["confirmed"]:
-            veto = str(m5_evidence.get("reason") or "M5_SEM_CONFIRMACAO")
+            and not snapshot_mismatch
+            and not missing_required
+        ) or m5_data_unavailable_exception
+        m5_gate_passed = bool(m5_evidence.get("confirmed") is True or m5_data_unavailable_exception)
+        if not m5_evidence["confirmed"] and not m5_data_unavailable_exception:
+            veto = str(m5_evidence.get("reason") or "M5_NOT_CONFIRMED")
             if veto not in vetoes:
                 vetoes.append(veto)
         if not consensus_ready:
@@ -614,13 +661,15 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
         direction_report_fields = {
             key: core_analysis.get(key) for key in (
                 "direction_observed", "direction_confirmed", "direction_source",
-                "direction_votes", "direction_vote_reasons", "direction_source_status",
+                "direction_votes", "direction_vote_reasons", "direction_vote_counts",
+                "direction_valid_votes", "direction_required_votes", "direction_source_status",
                 "direction_reason",
             )
         }
         result = {
             "market": market, "symbol": symbol, "status": "inference_ok",
-            "approved": bool(consultation.approved and m5_evidence["confirmed"] and consensus_ready), "score": consultation.score,
+            "approved": bool(consultation.approved and m5_gate_passed and consensus_ready), "score": consultation.score,
+            "m5_data_unavailable_exception": bool(m5_data_unavailable_exception),
             **_score_report_fields(core_analysis),
             "direction_aggregation": core_analysis.get("direction_aggregation"),
             "probability": consultation.probability,

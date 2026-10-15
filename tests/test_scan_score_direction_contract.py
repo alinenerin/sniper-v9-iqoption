@@ -91,6 +91,36 @@ class ScanScoreDirectionContractTest(unittest.TestCase):
         self.assertEqual(confirmation_only["direction_confirmed"], "NEUTRAL")
         self.assertIn("NO_EXPLICIT_DIRECTION", confirmation_only["direction_vote_reasons"]["m5_engine"])
 
+    def test_validated_native_m5_override_votes_before_candidate_confirmation(self):
+        fields = SharedAI._direction_breakdown(
+            {"smc": {"status": "inference_ok", "direction": "PUT"}},
+            {"smc": {"status": "inference_ok"}, "xgboost": {"status": "blocked"}},
+            {}, "bundle-1", "EURUSD",
+            m5_engine_override={"status": "inference_ok", "snapshot_id": "bundle-1",
+                                "m5_bias": "CALL", "m5_vote": "CALL",
+                                "confirmed": False,
+                                "reason": "M5_CONFIRMATION_AWAITING_DIRECTION",
+                                "vote_reason": "M5_BIAS_EMA9_EMA21_SLOPE"},
+        )
+        self.assertEqual(fields["direction_votes"]["m5_engine"], "CALL")
+        self.assertEqual(fields["direction_vote_reasons"]["m5_engine"],
+                         "M5_BIAS_EMA9_EMA21_SLOPE")
+        self.assertEqual(fields["direction_vote_counts"], {"CALL": 1, "PUT": 1})
+        self.assertEqual(fields["direction_valid_votes"], 2)
+        self.assertEqual(fields["direction_required_votes"], 2)
+        self.assertEqual(fields["direction_confirmed"], "NEUTRAL")
+        self.assertIn("DIRECTIONAL_CONFLICT", fields["direction_reason"])
+
+        stale = SharedAI._direction_breakdown(
+            {"smc": {"status": "inference_ok", "direction": "CALL"}},
+            {"smc": {"status": "inference_ok"}, "xgboost": {"status": "blocked"}},
+            {}, "bundle-1", "EURUSD",
+            m5_engine_override={"status": "inference_ok", "snapshot_id": "stale",
+                                "m5_bias": "CALL", "m5_vote": "CALL"},
+        )
+        self.assertIsNone(stale["direction_votes"]["m5_engine"])
+        self.assertEqual(stale["direction_valid_votes"], 1)
+
     def test_missing_or_mismatched_direction_sources_stay_unconfirmed(self):
         fields = SharedAI._direction_breakdown(
             {"direction": "PUT", "smc": {"status": "inference_ok"}},

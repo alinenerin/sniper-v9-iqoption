@@ -43,10 +43,10 @@ class M5SignalGateTest(unittest.TestCase):
             chart_evidence = {
                 "direction": "CALL",
                 "smc": {"status": component_status.get("smc", {}).get("status", "blocked"), "direction": "CALL"},
-                "m5_engine": {"status": "inference_ok", "direction": "CALL", "snapshot_id": bundle_id},
             }
             consultation.components["core_analysis"] = SharedAI._direction_breakdown(
                 chart_evidence, component_status, xgb_item, bundle_id, "EURUSD",
+                m5_engine_override=request.metadata.get("m5_engine"),
             )
             return consultation
         with patch("shared_ai.consultation.SharedAI.consult", side_effect=fake_consult):
@@ -93,7 +93,10 @@ class M5SignalGateTest(unittest.TestCase):
         self.assertEqual(evidence["m5_bias"], "CALL")
         self.assertIsNone(evidence["candidate_direction"])
         self.assertFalse(evidence["confirmed"])
-        self.assertEqual(evidence["reason"], "DIRECTION_UNCONFIRMED")
+        self.assertEqual(evidence["status"], "inference_ok")
+        self.assertEqual(evidence["m5_vote"], "CALL")
+        self.assertEqual(evidence["m5_bias_reason"], "M5_BIAS_EMA9_EMA21_SLOPE")
+        self.assertEqual(evidence["reason"], "M5_CONFIRMATION_AWAITING_DIRECTION")
         self.assertEqual(evidence["confirmation_state"], "no_candidate_direction")
 
     def test_opposing_m5_bias_reports_exact_mismatch(self):
@@ -132,16 +135,24 @@ class M5SignalGateTest(unittest.TestCase):
         evidence = _m5_confirmation_evidence(rows, "CALL", observed, "bundle-1")
         self.assertEqual(evidence["reason"], "M5_CANDLE_GAP")
 
-    def test_missing_m5_vetoes_otherwise_approved_analysis(self):
+    def test_m5_data_unavailable_does_not_alone_reject_quorate_candidate(self):
         m1 = [{"timestamp": 1_800_000_000 + i * 60, "open": 1, "high": 2,
                "low": 0.5, "close": 1.1 + i * 0.001, "volume": 10} for i in range(30)]
         m5 = self.candles_m5()
         observed = datetime.fromtimestamp(m5[-1]["timestamp"] + 330, timezone.utc)
-        consultation = self.fake_consultation()
-        report = self.run_analysis(consultation, m1, observed, [])
-        self.assertFalse(report["approved"])
-        self.assertIn("M5_INSUFFICIENT_COMPLETED_CANDLES", report["vetoes"])
+        report = self.run_analysis(self.fake_consultation(), m1, observed, [])
+        self.assertEqual(report["m5_confirmation"]["status"], "blocked")
+        self.assertEqual(report["m5_confirmation"]["reason"], "M5_INSUFFICIENT_COMPLETED_CANDLES")
+        self.assertTrue(report["m5_data_unavailable_exception"])
+        self.assertEqual(report["direction_valid_votes"], 2)
+        self.assertEqual(report["direction_required_votes"], 2)
+        self.assertEqual(report["direction_confirmed"], "CALL")
+        self.assertIsNone(report["direction_votes"]["m5_engine"])
+        self.assertEqual(report["specialist_committee"]["missing_required"], ["m5"])
+        self.assertTrue(report["approved"])
+        self.assertNotIn("signal_actionable", report)
         self.assertFalse(report["execution_allowed"])
+
 
     def test_valid_m5_and_required_agents_allow_read_only_candidate(self):
         m1 = [{"timestamp": 1_800_000_000 + i * 60, "open": 1, "high": 2,
@@ -150,6 +161,11 @@ class M5SignalGateTest(unittest.TestCase):
         observed = datetime.fromtimestamp(m5[-1]["timestamp"] + 330, timezone.utc)
         report = self.run_analysis(self.fake_consultation(), m1, observed, m5)
         self.assertTrue(report["m5_confirmation"]["confirmed"])
+        self.assertEqual(report["m5_confirmation"]["m5_bias"], "CALL")
+        self.assertEqual(report["m5_confirmation"]["m5_vote"], "CALL")
+        self.assertEqual(report["direction_votes"]["m5_engine"], "CALL")
+        self.assertEqual(report["direction_vote_reasons"]["m5_engine"], "M5_BIAS_EMA9_EMA21_SLOPE")
+        self.assertEqual(report["direction_required_votes"], 2)
         self.assertEqual(report["specialist_committee"]["consensus"], "ready_for_fusion")
         self.assertTrue(report["approved"])
         self.assertFalse(report["execution_allowed"])

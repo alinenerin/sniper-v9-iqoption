@@ -285,9 +285,44 @@ jobs:
                 if not isinstance(m5,dict): errors.append(f'{book_name}:{item.get("symbol")}:m5_missing')
                 elif m5.get('execution_allowed') is not False: errors.append(f'{book_name}:{item.get("symbol")}:m5_execution_guard')
                 if item.get('approved') is True:
-                  if not isinstance(m5,dict) or m5.get('confirmed') is not True: errors.append(f'{book_name}:{item.get("symbol")}:approved_without_m5')
+                  direction=item.get('direction_confirmed')
+                  direction_ok=isinstance(direction,str) and direction in {'CALL','PUT'}
+                  vote_info=item.get('direction_aggregation') or {}
+                  counts=vote_info.get('vote_counts') if isinstance(vote_info,dict) else None
+                  valid_votes=item.get('direction_valid_votes')
+                  required_votes=item.get('direction_required_votes')
+                  aggregate_valid=vote_info.get('valid_votes') if isinstance(vote_info,dict) else None
+                  aggregate_required=vote_info.get('required_votes') if isinstance(vote_info,dict) else None
+                  safe_int=lambda value: isinstance(value,int) and not isinstance(value,bool)
+                  votes=item.get('direction_votes')
+                  directional_votes=(list(votes.values()) if isinstance(votes,dict) else [])
                   committee=item.get('specialist_committee') or {}
-                  if committee.get('consensus') != 'ready_for_fusion': errors.append(f'{book_name}:{item.get("symbol")}:approved_without_agent_consensus')
+                  if not isinstance(committee,dict): committee={}
+                  opposing='PUT' if direction == 'CALL' else 'CALL'
+                  direction_count=(counts.get(direction) if isinstance(counts,dict) and direction_ok else None)
+                  opposing_count=(counts.get(opposing) if isinstance(counts,dict) and direction_ok else None)
+                  m5_data_exception=(item.get('m5_data_unavailable_exception') is True
+                    and isinstance(m5,dict) and m5.get('status') == 'blocked'
+                    and m5.get('reason') in {'M5_INVALID_CANDLES','M5_INSUFFICIENT_COMPLETED_CANDLES','M5_CLOSED_CANDLES_STALE','M5_CANDLE_GAP'}
+                    and committee.get('missing_required') == ['m5']
+                    and not committee.get('snapshot_mismatch')
+                    and direction_ok
+                    and safe_int(valid_votes) and valid_votes >= 2
+                    and safe_int(required_votes) and required_votes == 2
+                    and safe_int(aggregate_valid) and aggregate_valid == valid_votes
+                    and safe_int(aggregate_required) and aggregate_required == 2
+                    and safe_int(direction_count) and direction_count >= 2
+                    and safe_int(opposing_count) and opposing_count == 0
+                    and direction_count + opposing_count == valid_votes
+                    and directional_votes.count(direction) == direction_count
+                    and directional_votes.count(opposing) == 0
+                    and vote_info.get('direction_confirmed') == direction
+                    and not str(vote_info.get('direction_reason','')).startswith('DIRECTIONAL_CONFLICT'))
+                  if (not isinstance(m5,dict) or m5.get('confirmed') is not True) and not m5_data_exception: errors.append(f'{book_name}:{item.get("symbol")}:approved_without_m5')
+                  m5_only_committee_exception=(m5_data_exception
+                    and committee.get('missing_required') == ['m5']
+                    and not committee.get('snapshot_mismatch'))
+                  if committee.get('consensus') != 'ready_for_fusion' and not m5_only_committee_exception: errors.append(f'{book_name}:{item.get("symbol")}:approved_without_agent_consensus')
               if item.get('signal_actionable') is True:
                   timing=item.get('entry_timing') or {}
                   if item.get('approved') is not True: errors.append(f'{book_name}:{item.get("symbol")}:actionable_without_approval')

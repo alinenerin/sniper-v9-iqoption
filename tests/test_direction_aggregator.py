@@ -66,6 +66,26 @@ class DirectionAggregatorTest(unittest.TestCase):
         self.assertIn("NO_DIRECTIONAL_BOS_FVG", result["vote_reasons"]["smc"])
         self.assertIn("STATUS_BLOCKED", result["vote_reasons"]["m5_engine"])
 
+    def test_valid_m5_bias_votes_before_candidate_confirmation(self):
+        result = aggregate_direction(
+            smc=ok("CALL"),
+            m5_engine={"status": "inference_ok", "m5_bias": "CALL", "m5_vote": "CALL",
+                       "confirmed": False, "reason": "M5_CONFIRMATION_AWAITING_DIRECTION",
+                       "vote_reason": "M5_BIAS_EMA9_EMA21_SLOPE"},
+        )
+        self.assertEqual(result["votes"]["m5_engine"], "CALL")
+        self.assertEqual(result["vote_reasons"]["m5_engine"], "M5_BIAS_EMA9_EMA21_SLOPE")
+        self.assertEqual(result["direction_confirmed"], "CALL")
+        self.assertEqual(result["valid_votes"], 2)
+        self.assertEqual(result["required_votes"], 2)
+
+    def test_one_to_one_directional_conflict_stays_neutral(self):
+        result = aggregate_direction(smc=ok("CALL"), m5_engine=ok("PUT"))
+        self.assertEqual(result["direction_confirmed"], "NEUTRAL")
+        self.assertEqual(result["vote_counts"], {"CALL": 1, "PUT": 1})
+        self.assertEqual(result["valid_votes"], 2)
+        self.assertIn("DIRECTIONAL_CONFLICT", result["direction_reason"])
+
     def test_timesfm_is_advisory_and_cannot_create_vote(self):
         result = aggregate_direction(
             timesfm=ok("UP"), xgboost={"status": "inference_ok", "probability_up": .8},

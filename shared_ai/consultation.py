@@ -122,7 +122,7 @@ class SharedAI:
     @staticmethod
     def _direction_breakdown(analysis: Dict[str, Any], component_status: dict[str, Any],
                              xgb_item: dict[str, Any], market_snapshot_id: str | None,
-                             symbol: str) -> dict[str, Any]:
+                             symbol: str, m5_engine_override: dict[str, Any] | None = None) -> dict[str, Any]:
         """Aggregate only explicit SMC, snapshot-bound XGBoost and M5 outputs."""
         from core.direction_aggregator import aggregate_direction
 
@@ -131,7 +131,10 @@ class SharedAI:
                 or not market_snapshot_id
                 or xgb_item.get("snapshot_id") != market_snapshot_id):
             xgb_evidence = {"status": "blocked", "reason": "XGBOOST_SOURCE_MISSING_OR_SNAPSHOT_MISMATCH"}
-        m5_evidence = analysis.get("m5_engine")
+        # A validated, same-snapshot native M5 bias is available before final
+        # candidate confirmation; use it as an independent direction vote.
+        m5_evidence = (dict(m5_engine_override) if isinstance(m5_engine_override, dict)
+                       else analysis.get("m5_engine"))
         if not isinstance(m5_evidence, dict):
             artifact = SharedAI._artifact_item("m5_inference.json", symbol)
             m5_evidence = {**artifact, "_source": "m5_inference.json"} if artifact else None
@@ -156,6 +159,9 @@ class SharedAI:
             "direction_source": aggregation["source"],
             "direction_votes": votes,
             "direction_vote_reasons": aggregation["vote_reasons"],
+            "direction_vote_counts": aggregation["vote_counts"],
+            "direction_valid_votes": aggregation["valid_votes"],
+            "direction_required_votes": aggregation["required_votes"],
             "direction_reason": aggregation["direction_reason"],
             "direction_source_status": {
                 "smc": {"status": component_status.get("smc", {}).get("status", "blocked"),
@@ -454,8 +460,10 @@ class SharedAI:
             # Direction is confirmed only by the existing independent-source
             # aggregator. Never use candle-to-candle movement as a directional vote.
             xgb_item = self._artifact_item("xgboost_inference.json", request.symbol)
+            metadata = request.metadata if isinstance(request.metadata, dict) else {}
             direction_fields = self._direction_breakdown(
                 analysis, component_status, xgb_item, market_snapshot_id, request.symbol,
+                metadata.get("m5_engine") if isinstance(metadata.get("m5_engine"), dict) else None,
             )
             analysis.update(direction_fields)
             direction = direction_fields["direction_confirmed"]

@@ -113,7 +113,9 @@ class SupremeIntelligence:
         # =============================================
         # 💎 CENTRAL EVIDENCE SCORE (0-100)
         # =============================================
-        smc_direction = str(smc_details.get("direction", "NEUTRAL")).upper()
+        # Structural fallback can vote on direction, but score_direction keeps
+        # the original BOS/FVG-only scoring path unchanged.
+        smc_direction = str(smc_details.get("score_direction", smc_details.get("direction", "NEUTRAL"))).upper()
         close = pd.to_numeric(ohlcv_df["close"], errors="coerce").dropna()
         technical_core = 50.0
         if len(close) >= 21:
