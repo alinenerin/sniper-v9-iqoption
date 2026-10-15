@@ -113,9 +113,7 @@ class SupremeIntelligence:
         # =============================================
         # 💎 CENTRAL EVIDENCE SCORE (0-100)
         # =============================================
-        # Structural fallback can vote on direction, but score_direction keeps
-        # the original BOS/FVG-only scoring path unchanged.
-        smc_direction = str(smc_details.get("score_direction", smc_details.get("direction", "NEUTRAL"))).upper()
+        smc_direction = str(smc_details.get("direction", "NEUTRAL")).upper()
         close = pd.to_numeric(ohlcv_df["close"], errors="coerce").dropna()
         technical_core = 50.0
         if len(close) >= 21:
@@ -233,10 +231,10 @@ class SupremeIntelligence:
             return False, "DIRECTION_UNCONFIRMED"
 
         score = float(analysis.get("score", 0) or 0)
-        # Approval minimum and classification are separate: 75 is the single
-        # operational floor, while SUPREME remains the distinct 88+ category.
         if score >= TRADING_CONFIG.supreme_threshold:
             return True, "SUPREME_CONFLUENCE_TOTAL"
         if score >= TRADING_CONFIG.diamond_threshold:
             return True, "DIAMOND_CONFLUENCE_MAJORITY"
-        return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: {TRADING_CONFIG.diamond_threshold:.1f})"
+        if score >= TRADING_CONFIG.noise_threshold:
+            return True, "QUALIFIED_CANDIDATE"
+        return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: {TRADING_CONFIG.noise_threshold:.1f})"
