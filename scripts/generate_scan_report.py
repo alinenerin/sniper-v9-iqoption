@@ -747,7 +747,8 @@ def main() -> int:
         m5_candles = _candles(symbol_data.get("m5_candles"))
         if run_forex:
             forex.append(_analyse_with_fetch_status("forex", symbol, symbol_data, observed_at,
-                                   (final_by_symbol.get(symbol, {}).get("m1") or {})))
+                                   (final_by_symbol.get(symbol, {}).get("m1") or {}),
+                                   market_snapshot_id))
         if run_real_binary:
             binary.append(_analyse_with_fetch_status("binary", symbol, symbol_data, observed_at,
                                    (final_by_symbol.get(symbol, {}).get("m1") or {}),
