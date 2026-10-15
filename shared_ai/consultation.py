@@ -102,6 +102,135 @@ class SharedAI:
         }
 
     @staticmethod
+    def _closed_close_values(frame: Any, timeframe: str,
+                             observed_at: float | None = None) -> list[float]:
+        """Return close prices from completed bars only for score momentum."""
+        value = str(timeframe or "").strip().upper()
+        seconds = None
+        if len(value) > 1 and value[0] in {"M", "H"} and value[1:].isdigit():
+            seconds = int(value[1:]) * (60 if value[0] == "M" else 3600)
+        elif len(value) > 1 and value[-1] in {"M", "H"} and value[:-1].isdigit():
+            seconds = int(value[:-1]) * (60 if value[-1] == "M" else 3600)
+        if not seconds or frame is None or not hasattr(frame, "to_dict"):
+            return []
+        from market_data_contract import closed_candles
+        rows = closed_candles(frame.to_dict(orient="records"), seconds, now=observed_at)
+        closes = []
+        for row in rows:
+            try:
+                closes.append(float(row.get("close")))
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return closes
+
+    @staticmethod
+    def _direction_for_technical_core(direction_confirmed: Any,
+                                      smc_details: dict[str, Any] | None) -> tuple[str, str]:
+        """Use confirmed votes first; fall back only to explicit SMC direction."""
+        def normalize(value: Any) -> str | None:
+            direction = str(value or "").strip().upper()
+            if direction in {"CALL", "BUY"}:
+                return "CALL"
+            if direction in {"PUT", "SELL"}:
+                return "PUT"
+            return None
+
+        confirmed = normalize(direction_confirmed)
+        if confirmed:
+            return confirmed, "direction_confirmed"
+        if isinstance(smc_details, dict):
+            for key in ("score_direction", "direction"):
+                smc_direction = normalize(smc_details.get(key))
+                if smc_direction:
+                    return smc_direction, "smc"
+        return "NEUTRAL", "neutral"
+
+    @staticmethod
+    def _realign_technical_core(analysis: Dict[str, Any], direction_confirmed: Any,
+                                 closed_closes: list[float], fused_score: float,
+                                 fused_components: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+        """Re-score momentum after quorum, then refusion with unchanged weights."""
+        from core.supreme_intelligence import SupremeIntelligence
+
+        direction, direction_source = SharedAI._direction_for_technical_core(
+            direction_confirmed, analysis.get("smc"),
+        )
+        value, details = SupremeIntelligence._calculate_technical_core(direction, closed_closes)
+        analysis.update({
+            "technical_core_direction_source": direction_source,
+            "technical_core_momentum": details.get("momentum"),
+            "technical_core_aligned": details.get("aligned"),
+            "technical_core_reason": details.get("reason"),
+        })
+        core_components = analysis.get("score_components")
+        if isinstance(core_components, dict):
+            core_item = core_components.get("technical_core")
+            if isinstance(core_item, dict):
+                core_item.update({
+                    "value": round(value, 2),
+                    "direction_source": direction_source,
+                    "momentum": details.get("momentum"),
+                    "aligned": details.get("aligned"),
+                    "reason": details.get("reason"),
+                })
+            # Keep the core-level technical score consistent with its own
+            # component weights when there is no independent core hard veto.
+            if not analysis.get("veto") and isinstance(core_components, dict):
+                core_parts = []
+                for item in core_components.values():
+                    if not isinstance(item, dict) or item.get("value") is None:
+                        continue
+                    try:
+                        component_value = float(item["value"])
+                        weight = float(item.get("weight", 0) or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if weight > 0 and item.get("status") != "hard_veto":
+                        core_parts.append((component_value, weight))
+                core_weight = sum(weight for _, weight in core_parts)
+                if core_weight:
+                    analysis["technical_score"] = round(
+                        sum(component_value * weight for component_value, weight in core_parts) / core_weight, 1,
+                    )
+
+        updated_fusion = {
+            name: dict(item) if isinstance(item, dict) else item
+            for name, item in (fused_components or {}).items()
+        }
+        fusion_core = updated_fusion.get("technical_core")
+        score = float(fused_score)
+        if isinstance(fusion_core, dict) and fusion_core.get("status") != "hard_veto":
+            try:
+                weight = float(fusion_core.get("weight", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                weight = 0.0
+            if weight > 0:
+                fusion_core.update({
+                    "value": round(value, 2),
+                    "contribution": round(value * weight, 4),
+                    "direction_source": direction_source,
+                    "momentum": details.get("momentum"),
+                    "aligned": details.get("aligned"),
+                    "reason": details.get("reason"),
+                })
+                fusion_parts = []
+                for item in updated_fusion.values():
+                    if not isinstance(item, dict) or item.get("status") == "hard_veto" or item.get("value") is None:
+                        continue
+                    try:
+                        component_value = float(item["value"])
+                        component_weight = float(item.get("weight", 0) or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if component_weight > 0:
+                        fusion_parts.append((component_value, component_weight))
+                total_weight = sum(component_weight for _, component_weight in fusion_parts)
+                if total_weight:
+                    score = round(sum(component_value * component_weight
+                                      for component_value, component_weight in fusion_parts) / total_weight, 1)
+        return score, updated_fusion
+
+    @staticmethod
     def _apply_consensus_bonus(score: float, aggregation: dict[str, Any] | None) -> dict[str, Any]:
         """Add one bounded bonus after fusion, only for a conflict-free quorum."""
         try:
@@ -502,8 +631,19 @@ class SharedAI:
             analysis.update(direction_fields)
             direction = direction_fields["direction_confirmed"]
             analysis["direction"] = direction
-            # Apply the directional-confluence bonus once, after the final
-            # weighted fusion and the independent-source direction aggregation.
+            # Re-align the technical component only after consensus is known;
+            # use completed candles and preserve every existing fusion weight.
+            closed_closes = self._closed_close_values(
+                frame, request.timeframe, metadata.get("observed_at_epoch"),
+            )
+            score, fused_components = self._realign_technical_core(
+                analysis, direction, closed_closes, score, fused_components,
+            )
+            analysis["score"] = score
+            analysis["normalized_score"] = score
+            analysis["score_fusion"] = fused_components
+            analysis["score_breakdown"] = self._score_breakdown(analysis, fused_components, score)
+            # Apply the existing consensus bonus once, after refusion.
             bonus_fields = self._apply_consensus_bonus(
                 score, direction_fields.get("direction_aggregation"),
             )

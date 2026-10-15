@@ -357,6 +357,7 @@ def _score_report_fields(core_analysis: dict[str, Any]) -> dict[str, Any]:
         "score_before_bonus": core_analysis.get("score_before_bonus"),
         "consensus_bonus": core_analysis.get("consensus_bonus", 0),
         "consensus_bonus_reason": core_analysis.get("consensus_bonus_reason", "NO_CONFIRMED_DIRECTION"),
+        "technical_core_direction_source": core_analysis.get("technical_core_direction_source", "neutral"),
         "technical_core_momentum": core_analysis.get("technical_core_momentum"),
         "technical_core_aligned": core_analysis.get("technical_core_aligned"),
         "technical_core_reason": core_analysis.get("technical_core_reason"),
@@ -615,6 +616,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
             account_mode="PRACTICE", metadata={
                 "source": "read-only gateway market_data.json",
                 "snapshot_id": bundle_snapshot_id,
+                "observed_at_epoch": observed_at.timestamp(),
                 "m5_engine": m5_vote_evidence,
             },
         ))

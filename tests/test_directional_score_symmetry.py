@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 
 import pandas as pd
@@ -55,6 +56,67 @@ class DirectionalTechnicalCoreTest(unittest.TestCase):
         self.assertEqual(flat, 50.0)
         self.assertIsNone(flat_detail["aligned"])
 
+    @staticmethod
+    def realignment_fixture(smc=None):
+        core = {
+            "technical_core": {"value": 50.0, "weight": 0.35, "status": "executed"},
+            "smc": {"value": 50.0, "weight": 0.20, "status": "executed"},
+            "vsa": {"value": 50.0, "weight": 0.15, "status": "executed"},
+        }
+        fusion = {
+            name: {"value": 50.0, "weight": item["weight"], "status": "inference_ok"}
+            for name, item in core.items()
+        }
+        return {"smc": smc, "score_components": core, "veto": False}, fusion
+
+    def test_confirmed_put_realigns_when_smc_has_no_direction(self):
+        analysis, fusion = self.realignment_fixture(smc=None)
+        score, fusion = SharedAI._realign_technical_core(
+            analysis, "PUT", [1.0] * 21 + [0.999], 50.0, fusion,
+        )
+        self.assertEqual(analysis["technical_core_direction_source"], "direction_confirmed")
+        self.assertGreater(analysis["score_components"]["technical_core"]["value"], 50.0)
+        self.assertTrue(analysis["technical_core_aligned"])
+        self.assertGreater(score, 50.0)
+        self.assertGreater(fusion["technical_core"]["value"], 50.0)
+
+    def test_confirmed_call_realigns_when_smc_has_no_direction(self):
+        analysis, fusion = self.realignment_fixture(smc=None)
+        score, fusion = SharedAI._realign_technical_core(
+            analysis, "CALL", [1.0] * 21 + [1.001], 50.0, fusion,
+        )
+        self.assertEqual(analysis["technical_core_direction_source"], "direction_confirmed")
+        self.assertGreater(analysis["score_components"]["technical_core"]["value"], 50.0)
+        self.assertTrue(analysis["technical_core_aligned"])
+        self.assertGreater(score, 50.0)
+
+    def test_neutral_confirmation_with_no_smc_direction_stays_neutral(self):
+        analysis, fusion = self.realignment_fixture(smc=None)
+        score, _ = SharedAI._realign_technical_core(
+            analysis, "NEUTRAL", [1.0] * 21 + [0.999], 50.0, fusion,
+        )
+        self.assertEqual(analysis["technical_core_direction_source"], "neutral")
+        self.assertEqual(analysis["score_components"]["technical_core"]["value"], 50.0)
+        self.assertIsNone(analysis["technical_core_aligned"])
+        self.assertEqual(score, 50.0)
+
+    def test_neutral_confirmation_falls_back_to_explicit_smc_only(self):
+        analysis, fusion = self.realignment_fixture(smc={"score_direction": "PUT"})
+        SharedAI._realign_technical_core(
+            analysis, "NEUTRAL", [1.0] * 21 + [0.999], 50.0, fusion,
+        )
+        self.assertEqual(analysis["technical_core_direction_source"], "smc")
+        self.assertTrue(analysis["technical_core_aligned"])
+
+    def test_momentum_uses_only_closed_bars(self):
+        now = int(time.time())
+        frame = pd.DataFrame([
+            {"timestamp": now - 180, "close": 1.0},
+            {"timestamp": now - 120, "close": 1.001},
+            {"timestamp": now - 30, "close": 0.999},
+        ])
+        self.assertEqual(SharedAI._closed_close_values(frame, "M1", observed_at=now), [1.0, 1.001])
+
 
 class DirectionalConsensusBonusTest(unittest.TestCase):
     def apply(self, score: float, aggregation: dict) -> dict:
@@ -83,6 +145,7 @@ class DirectionalConsensusBonusTest(unittest.TestCase):
         neutral = aggregate_direction(smc={"status": "inference_ok"}, xgboost={"status": "blocked"})
         conflict_result = self.apply(60.0, conflict)
         neutral_result = self.apply(60.0, neutral)
+        self.assertEqual(conflict["direction_confirmed"], "NEUTRAL")
         self.assertEqual(conflict_result["consensus_bonus"], 0)
         self.assertEqual(conflict_result["consensus_bonus_reason"], "DIRECTIONAL_CONFLICT")
         self.assertEqual(neutral_result["consensus_bonus"], 0)
@@ -101,6 +164,7 @@ class DirectionalConsensusBonusTest(unittest.TestCase):
             "score_before_bonus": 68.0,
             "consensus_bonus": 10,
             "consensus_bonus_reason": "3_ALIGNED_VOTES_PUT",
+            "technical_core_direction_source": "direction_confirmed",
             "technical_core_momentum": -0.001,
             "technical_core_aligned": True,
             "technical_core_reason": "DIRECTIONAL_MOMENTUM_ALIGNED",
@@ -111,6 +175,7 @@ class DirectionalConsensusBonusTest(unittest.TestCase):
         self.assertEqual(fields["score_before_bonus"], 68.0)
         self.assertEqual(fields["consensus_bonus"], 10)
         self.assertEqual(fields["consensus_bonus_reason"], "3_ALIGNED_VOTES_PUT")
+        self.assertEqual(fields["technical_core_direction_source"], "direction_confirmed")
         self.assertEqual(fields["technical_core_momentum"], -0.001)
         self.assertEqual(contract["score_mode"]["consensus_bonus"], 10)
         self.assertEqual(contract["score_mode"]["score_before_bonus"], 68.0)

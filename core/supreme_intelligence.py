@@ -38,7 +38,7 @@ class SupremeIntelligence:
     @staticmethod
     def _calculate_technical_core(direction, close_values):
         """Score momentum symmetrically against CALL/PUT direction."""
-        close = pd.to_numeric(close_values, errors="coerce").dropna()
+        close = pd.to_numeric(pd.Series(close_values), errors="coerce").dropna()
         details = {"momentum": None, "aligned": None, "reason": "INSUFFICIENT_CLOSE_HISTORY"}
         if len(close) < 21:
             return 50.0, details
