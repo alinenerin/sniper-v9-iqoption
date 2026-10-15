@@ -64,6 +64,21 @@ class TradingCrewContract(unittest.TestCase):
         self.assertNotIn("finbert", report["snapshot_mismatch"])
         self.assertEqual(report["reports"]["finbert"]["snapshot_id"], "news-context-snapshot")
 
+    def test_forex_incomplete_committee_fails_closed(self):
+        report = {"consensus": "incomplete", "missing_required": ["m5"],
+                  "snapshot_mismatch": ["m5"]}
+        self.assertEqual(SharedAI._committee_veto("forex", report),
+                         "AGENT_CONSENSUS_INCOMPLETE:m5")
+        self.assertIsNone(SharedAI._committee_veto("forex", {
+            "consensus": "ready_for_fusion", "missing_required": [],
+            "snapshot_mismatch": [],
+        }))
+        self.assertIsNone(SharedAI._committee_veto("binary", report))
+
+    def test_forex_missing_committee_fails_closed(self):
+        self.assertEqual(SharedAI._committee_veto("forex", None),
+                         "AGENT_COMMITTEE_UNAVAILABLE")
+
     def test_artifact_snapshot_provenance_is_preserved(self):
         import json
         import os
