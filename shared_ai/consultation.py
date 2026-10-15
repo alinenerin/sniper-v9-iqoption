@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict
 from pathlib import Path
 import json
+import math
 
 from config.markets.contracts import AIConsultation, MarketRequest
 from config.settings import TRADING_CONFIG
@@ -44,6 +45,170 @@ class SharedAI:
         return float(details.get("anomaly_score", details.get("score", 0)) or 0)
 
     @staticmethod
+    def _artifact_item(filename: str, symbol: str) -> dict[str, Any]:
+        """Return a per-symbol artifact as-is; callers validate its provenance."""
+        try:
+            report = json.loads((Path("reports") / filename).read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        item = (report.get("components") or {}).get(symbol, {})
+        return item if isinstance(item, dict) else {}
+
+    @staticmethod
+    def _score_breakdown(analysis: Dict[str, Any], score_fusion: dict[str, Any],
+                         final_score: float) -> dict[str, Any]:
+        """Expose the actual inputs and arithmetic behind the reported score."""
+        raw_score = analysis.get("technical_score", analysis.get("score"))
+        try:
+            technical_score = float(raw_score) if raw_score is not None else None
+        except (TypeError, ValueError):
+            technical_score = None
+        core_components = analysis.get("score_components")
+        if isinstance(core_components, dict) and core_components:
+            technical_source = "SupremeIntelligence.weighted_score_components"
+        elif technical_score == 50.0:
+            technical_source = "SupremeIntelligence.empty_score_parts_fallback_50"
+        else:
+            technical_source = "SupremeIntelligence.score_without_score_components"
+
+        weights = [float(item.get("weight", 0) or 0) for item in score_fusion.values()
+                   if isinstance(item, dict) and item.get("status") != "hard_veto"]
+        total_weight = sum(weights)
+        expanded = {}
+        for name, item in score_fusion.items():
+            if not isinstance(item, dict):
+                continue
+            value = float(item["value"]) if item.get("value") is not None else None
+            weight = float(item.get("weight", 0) or 0)
+            weighted = value * weight if value is not None else None
+            expanded[name] = {
+                **item,
+                "weight": weight,
+                "weighted_contribution": round(weighted, 4) if weighted is not None else None,
+                "score_contribution": round(weighted / total_weight, 4) if weighted is not None and total_weight else None,
+            }
+        hard_veto = any(isinstance(item, dict) and item.get("status") == "hard_veto"
+                        for item in score_fusion.values())
+        return {
+            "technical_score": round(technical_score, 1) if technical_score is not None else None,
+            "technical_score_source": technical_source,
+            "score_components": core_components if isinstance(core_components, dict) else {},
+            "score_fusion": expanded,
+            "fusion_formula": None if hard_veto else "sum(value * weight) / sum(weight)",
+            "fusion_total_weight": round(total_weight, 6),
+            "score": round(float(final_score), 1),
+            "score_source": ("SharedAI._fuse_agent_evidence.darts_hard_veto" if hard_veto
+                             else "SharedAI._fuse_agent_evidence"),
+        }
+
+    @staticmethod
+    def _apply_consensus_bonus(score: float, aggregation: dict[str, Any] | None) -> dict[str, Any]:
+        """Add one bounded bonus after fusion, only for a conflict-free quorum."""
+        try:
+            score_before = float(score)
+        except (TypeError, ValueError):
+            score_before = 0.0
+        if not math.isfinite(score_before):
+            score_before = 0.0
+        direction = str((aggregation or {}).get("direction_confirmed") or "NEUTRAL").upper()
+        votes = (aggregation or {}).get("votes")
+        votes = votes if isinstance(votes, dict) else {}
+        directional = [votes.get(name) for name in ("smc", "xgboost", "m5_engine")
+                       if votes.get(name) in {"CALL", "PUT"}]
+        sides = set(directional)
+        if direction not in {"CALL", "PUT"}:
+            bonus, reason = 0, "DIRECTIONAL_CONFLICT" if len(sides) > 1 else "NO_CONFIRMED_DIRECTION"
+        elif not directional or any(vote != direction for vote in directional):
+            bonus, reason = 0, "DIRECTIONAL_CONFLICT" if sides - {direction} else "INSUFFICIENT_ALIGNED_VOTES"
+        elif len(directional) == 2:
+            bonus, reason = 5, f"2_ALIGNED_VOTES_{direction}"
+        elif len(directional) == 3:
+            bonus, reason = 10, f"3_ALIGNED_VOTES_{direction}"
+        else:
+            bonus, reason = 0, "INSUFFICIENT_ALIGNED_VOTES"
+        score_after = round(min(100.0, max(0.0, score_before + bonus)), 1)
+        return {
+            "score_before_bonus": round(score_before, 1),
+            "consensus_bonus": bonus,
+            "consensus_bonus_reason": reason,
+            "score": score_after,
+        }
+
+    @staticmethod
+    def _committee_veto(market: str, committee_report: dict[str, Any] | None) -> str | None:
+        """Fail closed in Forex when required same-snapshot consensus is incomplete."""
+        if str(market).lower() != "forex":
+            return None
+        if not isinstance(committee_report, dict):
+            return "AGENT_COMMITTEE_UNAVAILABLE"
+        if committee_report.get("consensus") == "ready_for_fusion":
+            return None
+        missing = committee_report.get("missing_required", [])
+        mismatches = committee_report.get("snapshot_mismatch", [])
+        details = set()
+        if isinstance(missing, (list, tuple, set)):
+            details.update(str(x) for x in missing if x)
+        if isinstance(mismatches, (list, tuple, set)):
+            details.update(str(x) for x in mismatches if x)
+        suffix = ",".join(sorted(details)) if details else "unknown"
+        return "AGENT_CONSENSUS_INCOMPLETE:" + suffix
+
+    @staticmethod
+    def _direction_breakdown(analysis: Dict[str, Any], component_status: dict[str, Any],
+                             xgb_item: dict[str, Any], market_snapshot_id: str | None,
+                             symbol: str, m5_engine_override: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Aggregate only explicit SMC, snapshot-bound XGBoost and M5 outputs."""
+        from core.direction_aggregator import aggregate_direction
+
+        xgb_evidence = dict(xgb_item)
+        if (component_status.get("xgboost", {}).get("status") != "inference_ok"
+                or not market_snapshot_id
+                or xgb_item.get("snapshot_id") != market_snapshot_id):
+            xgb_evidence = {"status": "blocked", "reason": "XGBOOST_SOURCE_MISSING_OR_SNAPSHOT_MISMATCH"}
+        # A validated, same-snapshot native M5 bias is available before final
+        # candidate confirmation; use it as an independent direction vote.
+        m5_evidence = (dict(m5_engine_override) if isinstance(m5_engine_override, dict)
+                       else analysis.get("m5_engine"))
+        if not isinstance(m5_evidence, dict):
+            artifact = SharedAI._artifact_item("m5_inference.json", symbol)
+            m5_evidence = {**artifact, "_source": "m5_inference.json"} if artifact else None
+        if not isinstance(m5_evidence, dict) or not m5_evidence:
+            m5_evidence = {"status": "blocked", "reason": "M5_DIRECTION_SOURCE_MISSING"}
+        elif (not market_snapshot_id
+              or m5_evidence.get("snapshot_id") != market_snapshot_id):
+            m5_evidence = {"status": "blocked", "reason": "M5_SNAPSHOT_MISSING_OR_MISMATCH"}
+        aggregation = aggregate_direction(
+            smc=analysis.get("smc"), xgboost=xgb_evidence, m5_engine=m5_evidence,
+        )
+        votes = aggregation.get("votes", {})
+        observed_votes = {value for value in votes.values() if value in {"CALL", "PUT"}}
+        observed = (next(iter(observed_votes)) if len(observed_votes) == 1
+                    else "NEUTRAL" if observed_votes else None)
+        return {
+            "direction_engine_observed": (str(analysis.get("direction") or "").upper()
+                                          if str(analysis.get("direction") or "").upper() in {"CALL", "PUT"} else None),
+            "direction_observed": observed,
+            "direction_observed_source": "independent_direction_votes" if observed_votes else None,
+            "direction_confirmed": aggregation["direction_confirmed"],
+            "direction_source": aggregation["source"],
+            "direction_votes": votes,
+            "direction_vote_reasons": aggregation["vote_reasons"],
+            "direction_vote_counts": aggregation["vote_counts"],
+            "direction_valid_votes": aggregation["valid_votes"],
+            "direction_required_votes": aggregation["required_votes"],
+            "direction_reason": aggregation["direction_reason"],
+            "direction_source_status": {
+                "smc": {"status": component_status.get("smc", {}).get("status", "blocked"),
+                        "reason": component_status.get("smc", {}).get("reason")},
+                "xgboost": {"status": xgb_evidence.get("status", "blocked"),
+                            "reason": xgb_evidence.get("reason")},
+                "m5_engine": {"status": m5_evidence.get("status", "blocked"),
+                              "reason": m5_evidence.get("reason") or "M5_DIRECTION_SOURCE_MISSING"},
+            },
+            "direction_aggregation": aggregation,
+        }
+
+    @staticmethod
     def _component_status(analysis: Dict[str, Any], advisory: Dict[str, Any]) -> Dict[str, Any]:
         """Report evidence, rather than claiming optional models are active."""
         darts = analysis.get("anomaly_details") or {}
@@ -68,14 +233,20 @@ class SharedAI:
         xgb_report=report_status("xgboost_inference.json", symbol)
         components = {
             "darts": {"status": darts_report.get("status", "inference_ok" if darts_available else "blocked"),
+                      "snapshot_id": darts_report.get("snapshot_id"),
                       "reason": darts_report.get("reason") or "DARTS_LIBRARY_OR_MODEL_UNAVAILABLE" if darts_report.get("status") != "inference_ok" else None},
             "timesfm": {"status": times_report.get("status", "inference_ok" if "TIMESFM" in times_source and "FALLBACK" not in times_source else "blocked"),
+                        "snapshot_id": times_report.get("snapshot_id"),
                         "reason": times_report.get("reason") or "TIMESFM_WEIGHTS_OR_LIBRARY_UNAVAILABLE" if times_report.get("status") != "inference_ok" else None},
-            "finbert": {"status": finbert_report.get("status", "blocked"), "reason": finbert_report.get("reason") or "FINBERT_INFERENCE_UNAVAILABLE" if finbert_report.get("status") != "inference_ok" else None},
+            "finbert": {"status": finbert_report.get("status", "blocked"),
+                        "snapshot_id": finbert_report.get("snapshot_id"),
+                        "reason": finbert_report.get("reason") or "FINBERT_INFERENCE_UNAVAILABLE" if finbert_report.get("status") != "inference_ok" else None},
             "news_api": {"status": "inference_ok" if (news_ok or finbert_report.get("status") == "inference_ok") else "blocked",
                          "reason": None if (news_ok or finbert_report.get("status") == "inference_ok") else "NEWS_API_UNAVAILABLE_OR_UNVERIFIED",
                          "source": "core_sentiment_or_finbert_report"},
-            "xgboost": {"status": xgb_report.get("status", "blocked"), "reason": xgb_report.get("reason") or "XGBOOST_INFERENCE_UNAVAILABLE" if xgb_report.get("status") != "inference_ok" else None},
+            "xgboost": {"status": xgb_report.get("status", "blocked"),
+                        "snapshot_id": xgb_report.get("snapshot_id"),
+                        "reason": xgb_report.get("reason") or "XGBOOST_INFERENCE_UNAVAILABLE" if xgb_report.get("status") != "inference_ok" else None},
             "liquidity": {"status": (advisory.get("liquidity") or {}).get("status", "blocked")},
             "probability_engine": {"status": (advisory.get("probability_engine") or {}).get("status", "blocked")},
             "mem0_semantic": {"status": (advisory.get("memory_context", {}).get("mem0_semantic", {}) or {}).get("status", "blocked"),
@@ -159,7 +330,9 @@ class SharedAI:
                 return 0.0, {"darts_safety": {"value": round(anomaly, 2), "weight": 0.0, "status": "hard_veto"}}
         total_weight = sum(weight for _, _, weight, _ in parts)
         fused = round(sum(value * weight for _, value, weight, _ in parts) / total_weight, 1)
-        return fused, {name: {"value": round(value, 2), "weight": weight, "role": role, "status": "inference_ok"} for name, value, weight, role in parts}
+        return fused, {name: {"value": round(value, 2), "weight": weight, "role": role,
+                              "status": "inference_ok", "contribution": round(value * weight, 4)}
+                       for name, value, weight, role in parts}
 
     def consult(self, request: MarketRequest) -> AIConsultation:
         if request.market not in _ALLOWED_MARKETS:
@@ -294,10 +467,15 @@ class SharedAI:
                 "timeframe": request.timeframe,
                 "candles": request.candles,
             })
-            # Preserve the binding in every specialist record so the committee
-            # can reject stale or cross-run evidence instead of fusing it.
+            # Bind locally computed chart specialists (SMC/VSA) to the exact
+            # request, but preserve IDs from independent agent artifacts. Never
+            # overwrite an artifact's provenance: required evidence without an
+            # ID, or from another snapshot, must fail closed in the committee.
             component_status = {
-                name: {**item, "snapshot_id": market_snapshot_id}
+                name: ({**item, "snapshot_id": market_snapshot_id}
+                       if name in {"smc", "vsa"} and item.get("status") in
+                       {"ok", "inference_ok", "executed", "completed"}
+                       else dict(item))
                 for name, item in component_status.items()
             }
             committee_report = crew_v16.evaluate(
@@ -311,7 +489,41 @@ class SharedAI:
             analysis["score"] = score
             analysis["normalized_score"] = score
             analysis["score_fusion"] = fused_components
+            analysis["score_breakdown"] = self._score_breakdown(analysis, fused_components, score)
+
+            # Direction is confirmed only by the existing independent-source
+            # aggregator. Never use candle-to-candle movement as a directional vote.
+            xgb_item = self._artifact_item("xgboost_inference.json", request.symbol)
+            metadata = request.metadata if isinstance(request.metadata, dict) else {}
+            direction_fields = self._direction_breakdown(
+                analysis, component_status, xgb_item, market_snapshot_id, request.symbol,
+                metadata.get("m5_engine") if isinstance(metadata.get("m5_engine"), dict) else None,
+            )
+            analysis.update(direction_fields)
+            direction = direction_fields["direction_confirmed"]
+            analysis["direction"] = direction
+            # Apply the directional-confluence bonus once, after the final
+            # weighted fusion and the independent-source direction aggregation.
+            bonus_fields = self._apply_consensus_bonus(
+                score, direction_fields.get("direction_aggregation"),
+            )
+            score = bonus_fields["score"]
+            analysis.update(bonus_fields)
+            analysis["score_fused"] = bonus_fields["score_before_bonus"]
+            analysis["score_final"] = score
+            analysis["normalized_score"] = score
+            breakdown = analysis.get("score_breakdown")
+            if isinstance(breakdown, dict):
+                breakdown.update({
+                    "score_before_bonus": bonus_fields["score_before_bonus"],
+                    "consensus_bonus": bonus_fields["consensus_bonus"],
+                    "consensus_bonus_reason": bonus_fields["consensus_bonus_reason"],
+                    "score": score,
+                })
             approved, reason = engine.is_supreme_approved(analysis)
+            committee_veto = self._committee_veto(request.market, committee_report)
+            if committee_veto:
+                approved = False
             anomaly = self._anomaly_score(analysis)
             # Final authority for the anomaly field is the dedicated Darts
             # agent artifact, not a CI-local fallback inside SupremeIntelligence.
@@ -328,8 +540,10 @@ class SharedAI:
                 vetoes.append(str(analysis.get("veto_reason") or "CORE_VETO"))
             if not approved and reason not in vetoes:
                 vetoes.append(str(reason))
+            if committee_veto and committee_veto not in vetoes:
+                vetoes.append(committee_veto)
             direction = str(analysis.get("direction", "NEUTRAL")).upper()
-            if direction not in ("CALL", "PUT"):
+            if direction not in ("CALL", "PUT") and "DIRECTION_UNCONFIRMED" not in vetoes:
                 vetoes.append("DIRECTION_UNCONFIRMED")
             return AIConsultation(
                 approved=bool(approved and score >= self.score_minimum and direction in ("CALL", "PUT") and not vetoes),

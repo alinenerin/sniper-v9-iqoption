@@ -35,6 +35,44 @@ class SupremeIntelligence:
         self.anomaly_shield = DartsAnomalyShield()
         self.anomaly_trained = {}  # controle de pares já treinados
 
+    @staticmethod
+    def _calculate_technical_core(direction, close_values):
+        """Score momentum symmetrically against CALL/PUT direction."""
+        close = pd.to_numeric(close_values, errors="coerce").dropna()
+        details = {"momentum": None, "aligned": None, "reason": "INSUFFICIENT_CLOSE_HISTORY"}
+        if len(close) < 21:
+            return 50.0, details
+
+        lookback = min(21, len(close) - 1)
+        base = float(close.iloc[-1 - lookback])
+        last = float(close.iloc[-1])
+        momentum = last - base
+        epsilon = max(abs(base) * 1e-8, 1e-12)
+        details["momentum"] = momentum
+        details["lookback_candles"] = lookback
+        if abs(momentum) <= epsilon:
+            details["reason"] = "MOMENTUM_NEUTRAL"
+            return 50.0, details
+
+        strength = min(50.0, max(0.0, abs(momentum) / max(abs(base), 1e-12) * 10000.0))
+        if strength < 5.0:
+            strength = 25.0
+        normalized_direction = str(direction or "NEUTRAL").strip().upper()
+        if normalized_direction in {"CALL", "BUY"}:
+            aligned = momentum > 0
+        elif normalized_direction in {"PUT", "SELL"}:
+            aligned = momentum < 0
+        else:
+            details["reason"] = "DIRECTION_NEUTRAL"
+            return 50.0, details
+        score = 50.0 + strength if aligned else 50.0 - strength
+        details.update({
+            "aligned": bool(aligned),
+            "strength": strength,
+            "reason": "DIRECTIONAL_MOMENTUM_ALIGNED" if aligned else "DIRECTIONAL_MOMENTUM_OPPOSED",
+        })
+        return round(max(0.0, min(100.0, float(score))), 4), details
+
     def get_full_analysis(self, ohlcv_df):
         """
         Pipeline Completo: Camada 0 → Camada 1 → Camada 2 → Score
@@ -113,13 +151,12 @@ class SupremeIntelligence:
         # =============================================
         # 💎 CENTRAL EVIDENCE SCORE (0-100)
         # =============================================
-        smc_direction = str(smc_details.get("direction", "NEUTRAL")).upper()
-        close = pd.to_numeric(ohlcv_df["close"], errors="coerce").dropna()
-        technical_core = 50.0
-        if len(close) >= 21:
-            momentum = float(close.iloc[-1] - close.iloc[-min(21, len(close))])
-            direction_sign = 1.0 if smc_direction == "CALL" else -1.0 if smc_direction == "PUT" else 0.0
-            technical_core = max(0.0, min(100.0, 50.0 + direction_sign * (50.0 if momentum != 0 else 0.0)))
+        # Structural fallback can vote on direction, but score_direction keeps
+        # the original BOS/FVG-only scoring path unchanged.
+        smc_direction = str(smc_details.get("score_direction", smc_details.get("direction", "NEUTRAL"))).upper()
+        technical_core, technical_core_details = self._calculate_technical_core(
+            smc_direction, ohlcv_df["close"],
+        )
 
         score_parts = [
             ("technical_core", technical_core, TRADING_CONFIG.technical_core_weight),
@@ -185,6 +222,9 @@ class SupremeIntelligence:
                 for name, value, weight in score_parts
             },
             "analysis_completeness": analysis_completeness,
+            "technical_core_momentum": technical_core_details.get("momentum"),
+            "technical_core_aligned": technical_core_details.get("aligned"),
+            "technical_core_reason": technical_core_details.get("reason"),
             "veto": veto,
             "veto_reason": veto_reason,
             "vetoes": vetoes,
@@ -231,10 +271,10 @@ class SupremeIntelligence:
             return False, "DIRECTION_UNCONFIRMED"
 
         score = float(analysis.get("score", 0) or 0)
+        # Approval minimum and classification are separate: 75 is the single
+        # operational floor, while SUPREME remains the distinct 88+ category.
         if score >= TRADING_CONFIG.supreme_threshold:
             return True, "SUPREME_CONFLUENCE_TOTAL"
         if score >= TRADING_CONFIG.diamond_threshold:
             return True, "DIAMOND_CONFLUENCE_MAJORITY"
-        if score >= TRADING_CONFIG.noise_threshold:
-            return True, "QUALIFIED_CANDIDATE"
-        return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: {TRADING_CONFIG.noise_threshold:.1f})"
+        return False, f"SCORE_BELOW_MINIMUM (Score: {score:.1f}; minimum: {TRADING_CONFIG.diamond_threshold:.1f})"
