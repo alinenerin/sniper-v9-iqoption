@@ -111,7 +111,7 @@ jobs:
       - name: Fetch live market data from active read-only gateway
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
-          SYMBOLS: EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY
+          SYMBOLS: ${{ github.event.inputs.symbols || 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY' }}
           FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}
           REQUEST_M1_CANDLES: ${{ github.event.inputs.fast_mode == 'true' && '120' || '1000' }}
         run: python scripts/fetch_railway_market.py
