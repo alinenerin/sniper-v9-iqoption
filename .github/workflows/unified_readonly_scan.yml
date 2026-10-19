@@ -104,10 +104,15 @@ jobs:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
         run: |
           for i in 1 2 3; do
-            if curl --connect-timeout 8 --max-time 20 --fail "$MARKET_GATEWAY_URL/health"; then exit 0; fi
-            sleep 3
+            if curl --silent --show-error --connect-timeout 8 --max-time 20 --fail "$MARKET_GATEWAY_URL/health" | python -c 'import json,sys; d=json.load(sys.stdin); c=d.get("connection") or {}; ok=d.get("status")=="connected" and c.get("status")=="connected"; print("gateway_status=%s connection_status=%s" % (d.get("status"), c.get("status"))); sys.exit(0 if ok else 1)'; then
+              echo 'Read-only gateway is connected.'
+              exit 0
+            fi
+            echo "Gateway is not connected yet (attempt $i/3)."
+            if [ "$i" -lt 3 ]; then sleep 3; fi
           done
-          echo 'Gateway did not warm within the short preflight window; fetch step will fail fast.'
+          echo 'Gateway did not reach connected state; stopping before market-data fetch.' >&2
+          exit 1
       - name: Fetch live market data from active read-only gateway
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
