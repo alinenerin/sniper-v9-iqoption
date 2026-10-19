@@ -25,7 +25,7 @@ on:
         default: false
         type: boolean
       fast_mode:
-        description: 'Usar triagem rápida somente quando solicitado; o padrão cobre os 10 pares'
+        description: 'Usar rota rápida M1/M5 para todos os pares solicitados'
         required: true
         default: false
         type: boolean
@@ -119,26 +119,15 @@ jobs:
           SYMBOLS: ${{ github.event.inputs.symbols || 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY' }}
           FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}
           REQUEST_M1_CANDLES: ${{ github.event.inputs.fast_mode == 'true' && '120' || '1000' }}
-          FETCH_TIMEOUT_SECONDS: '25'
-          FETCH_RETRIES: '3'
+          REQUEST_M5_CANDLES: ${{ github.event.inputs.fast_mode == 'true' && '31' || '100' }}
+          MAX_CANDLE_AGE_SECONDS: ${{ github.event.inputs.fast_mode == 'true' && '90' || '120' }}
+          FETCH_TIMEOUT_SECONDS: ${{ github.event.inputs.fast_mode == 'true' && '8' || '25' }}
+          FETCH_RETRIES: ${{ github.event.inputs.fast_mode == 'true' && '0' || '3' }}
         # The fetcher exits 0 with any valid pair; zero usable pairs remain fatal.
-        run: python scripts/fetch_railway_market.py
-      - name: Select top three fast candidates
-        if: github.event.inputs.fast_mode == 'true'
-        run: python scripts/select_fast_candidates.py
-      - name: Fetch deep data for selected candidates
-        if: github.event.inputs.fast_mode == 'true'
-        env:
-          MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
-          FAST_TRIAGE: 'false'
-          REQUEST_M1_CANDLES: '1000'
-          MAX_CANDLE_AGE_SECONDS: '90'
-          FETCH_TIMEOUT_SECONDS: '25'
-          FETCH_RETRIES: '3'
         run: python scripts/fetch_railway_market.py
       - name: Fetch canonical DXY/VIX macro snapshot
         run: python scripts/fetch_tradingview_macro.py
-      - name: Prepare fast lane advisory artifacts (disabled; heavy confirmation runs on top three)
+      - name: Prepare fast lane advisory artifacts (disabled)
         if: false
         run: |
           mkdir -p reports
@@ -180,6 +169,7 @@ jobs:
       - name: Compile read-only analysis modules
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py scripts/run_m5_inference.py
       - name: Refresh final M1/M5 timing without replacing agent evidence
+        if: github.event.inputs.fast_mode != 'true'
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
           FAST_TRIAGE: 'true'
@@ -250,6 +240,30 @@ jobs:
           PYFALLBACK
           fi
           exit 0
+      - name: Verify fast-mode pair coverage and timing provenance
+        if: github.event.inputs.fast_mode == 'true'
+        run: |
+          python - <<'PYFAST'
+          import json, os
+          from pathlib import Path
+          canonical = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD','EURGBP','EURJPY','GBPJPY']
+          requested = os.environ.get('SYMBOLS','').replace(',',' ').split()
+          expected = canonical if any(s.upper() in {'ALL','ALL_AVAILABLE','*'} for s in requested) else [s.upper() for s in requested]
+          market = json.loads(Path('reports/market_data.json').read_text())
+          timing = json.loads(Path('reports/final_timing.json').read_text())
+          report = json.loads(Path('reports/latest_scan.json').read_text())
+          analyses = report.get('binary',{}).get('analyses',[])
+          missing_market = sorted(set(expected) - set(market.get('symbols',{})))
+          missing_timing = sorted(set(expected) - set(timing.get('symbols',{})))
+          analyzed = {a.get('symbol') for a in analyses}
+          missing_report = sorted(set(expected) - analyzed)
+          assert market.get('fetch_mode') == 'fast_direct_m1_m5_uncached', market.get('fetch_mode')
+          assert not missing_market, f'missing_market_pairs={missing_market}'
+          assert not missing_timing, f'missing_final_timing={missing_timing}'
+          assert not missing_report, f'missing_report_pairs={missing_report}'
+          assert report.get('read_only') is True and report.get('execution_allowed') is False
+          print(f'fast_coverage requested={len(expected)} market={len(market.get("symbols",{}))} timing={len(timing.get("symbols",{}))} analyses={len(analyses)} fresh={len(market.get("fresh_symbols",[]))} blocked={len(expected)-len(set(market.get("fresh_symbols",[])))}')
+          PYFAST
       - name: Run TradingAgents shadow committee
         run: python scripts/run_tradingagents_shadow.py
       - name: Evaluate hypothetical result after expiration

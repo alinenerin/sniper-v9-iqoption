@@ -35,8 +35,9 @@ REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '120' if fast_triage else '1000
 REQUEST_M5 = max(MIN_M5 + 1, int(os.getenv('REQUEST_M5_CANDLES', '100')))
 from market_data_contract import aggregate_m1_to_m3, closed_candles, validate_snapshot_freshness
 
-# The provider websocket serializes candle calls. Keep batches at one symbol:
-# a multi-symbol request can exceed the gateway timeout and stall the scan.
+# The provider websocket serializes candle calls. Full scans keep single-symbol
+# snapshots. Fast mode requests only uncached M1/M5 candles per pair and keeps
+# the whole requested universe instead of selecting three symbols.
 SNAPSHOT_BATCH_SIZE = 1
 
 
@@ -171,13 +172,23 @@ if not health:
         'realtime': [], 'quote': None, 'quote_metadata': {},
         'fetch_status': {'status': 'blocked', 'blocked': True, 'reason': health_error},
     } for symbol in symbols}
+    fast_fetch_mode = 'fast_direct_m1_m5_uncached' if fast_triage else 'gateway_batch1_bounded_recovery'
     out = {'source': base, 'read_only': True, 'health': {'status': 'unavailable'},
            'assets': [], 'payouts': {}, 'symbols': blocked_symbols,
-           'fetch_mode': 'gateway_batch1_bounded_recovery', 'fresh_symbols': [],
+           'fetch_mode': fast_fetch_mode, 'fresh_symbols': [],
            'fetch_errors': {symbol: health_error for symbol in symbols},
            'freshness_validation': {'ok': False, 'errors': [health_error], 'symbols': {}},
            'observed_at_utc': datetime.now(timezone.utc).isoformat(),
            'latency_ms': round((time.perf_counter() - fetch_started) * 1000, 1)}
+    if fast_triage:
+        from scripts.fast_market_lane import build_fast_timing
+        timing = build_fast_timing({'symbols': {s: {'candles': {}, 'm5_candles': {}} for s in symbols}},
+                                    max_m1_age_seconds=max_age)
+        for timing_symbol in timing['symbols'].values():
+            timing_symbol['reason'] = health_error
+            timing_symbol['m1'].update({'status': 'blocked', 'reason': health_error})
+            timing_symbol['m5'].update({'status': 'blocked', 'reason': health_error})
+        Path('reports/final_timing.json').write_text(json.dumps(timing, ensure_ascii=False, indent=2) + '\n')
     Path('reports/market_data.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
     print(f'market_fetch_summary ok=0 failed={len(symbols)} total={len(symbols)} reason={health_error} '
           f'latency_seconds={(time.perf_counter() - fetch_started):.2f}')
@@ -192,56 +203,74 @@ batch_diagnostics = []
 # Payouts returned by the same persistent snapshot are preferred; this avoids
 # one expensive IQ init request per symbol.
 batch_payouts = {}
-# Avoid a separate broad prefetch pass: the bounded snapshot loop below is the
-# authoritative read, with direct M1/M5 recovery only for incomplete symbols.
-for start in range(0, len(symbols), SNAPSHOT_BATCH_SIZE):
-    chunk = symbols[start:start + SNAPSHOT_BATCH_SIZE]
-    path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
-    request_started = time.perf_counter()
-    try:
-        # Calls stay serialized; each request is bounded and retried by get().
-        payload = get(path, timeout=FETCH_TIMEOUT_SECONDS)
-        for symbol, values in (payload.get('payouts') or {}).items():
-            if isinstance(values, dict):
-                batch_payouts[symbol] = values
-        for symbol, data in (payload.get('symbols') or {}).items():
-            if symbol not in collected or not isinstance(data, dict):
-                continue
-            for key, interval in (('m1', 60), ('m3', 180), ('m5', 300)):
-                timeframe_data = data.get(key) or []
-                rows = timeframe_data.get('candles') or [] if isinstance(timeframe_data, dict) else timeframe_data
-                if not isinstance(rows, list):
-                    rows = []
-                collected[symbol][key] = {'candles': rows, 'source':
-                    (timeframe_data.get('source') if isinstance(timeframe_data, dict) else None) or payload.get('source'),
-                    'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
-            realtime = data.get('realtime') or []
-            if isinstance(realtime, dict):
-                realtime_rows = realtime.get('candles') or []
-                realtime_meta = {key: value for key, value in realtime.items() if key != 'candles'}
-            else:
-                realtime_rows = realtime if isinstance(realtime, list) else []
-                realtime_meta = {}
-            collected[symbol]['realtime'] = realtime_rows
-            collected[symbol]['quote'] = data.get('quote')
-            collected[symbol]['quote_metadata'] = {
-                'source': data.get('quote_source') or realtime_meta.get('source'),
-                'retrieved_at': data.get('realtime_retrieved_at') or realtime_meta.get('retrieved_at'),
-                'status': data.get('realtime_status') or realtime_meta.get('ok'),
-                'candle_bucket_timestamp': data.get('quote_candle_bucket_timestamp') or
-                    (realtime_rows[-1].get('timestamp') if realtime_rows and isinstance(realtime_rows[-1], dict) else None),
-                'timestamp_semantics': 'candle bucket timestamp; not an exchange tick timestamp',
-                'read_only': data.get('realtime_read_only', realtime_meta.get('read_only', True)),
-            }
-    except Exception as exc:
-        for symbol in chunk:
-            errors[symbol] = f'{failure_reason(exc)}:{type(exc).__name__}'
-    finally:
+if fast_triage:
+    from scripts.fast_market_lane import fetch_fast_pair
+    # Every authorized pair gets the same bounded, uncached M1/M5 collection.
+    # Calls remain serial because the gateway owns one IQ Option session.
+    for symbol in symbols:
+        request_started = time.perf_counter()
+        pair_data, pair_errors = fetch_fast_pair(
+            symbol, get, timeout=FETCH_TIMEOUT_SECONDS,
+            m1_count=REQUEST_M1, m5_count=REQUEST_M5,
+        )
+        collected[symbol].update(pair_data)
+        for key, reason in pair_errors.items():
+            errors[f'fast_{key}:{symbol}'] = reason
         batch_diagnostics.append({
-            'symbols': chunk,
+            'symbols': [symbol],
             'elapsed_seconds': round(time.perf_counter() - request_started, 3),
-            'returned_symbols': [s for s in chunk if (collected.get(s, {}).get('m1') or {}).get('candles')],
+            'returned_symbols': [symbol] if (pair_data.get('m1') or {}).get('candles') else [],
+            'lane': 'fast_direct_m1_m5_uncached',
         })
+else:
+    # Full mode retains the complete gateway snapshot contract per pair.
+    for start in range(0, len(symbols), SNAPSHOT_BATCH_SIZE):
+        chunk = symbols[start:start + SNAPSHOT_BATCH_SIZE]
+        path = '/api/market/snapshot_batch?' + urllib.parse.urlencode({'pairs': ','.join(chunk)})
+        request_started = time.perf_counter()
+        try:
+            payload = get(path, timeout=FETCH_TIMEOUT_SECONDS)
+            for symbol, values in (payload.get('payouts') or {}).items():
+                if isinstance(values, dict):
+                    batch_payouts[symbol] = values
+            for symbol, data in (payload.get('symbols') or {}).items():
+                if symbol not in collected or not isinstance(data, dict):
+                    continue
+                for key, interval in (('m1', 60), ('m3', 180), ('m5', 300)):
+                    timeframe_data = data.get(key) or []
+                    rows = timeframe_data.get('candles') or [] if isinstance(timeframe_data, dict) else timeframe_data
+                    if not isinstance(rows, list):
+                        rows = []
+                    collected[symbol][key] = {'candles': rows, 'source':
+                        (timeframe_data.get('source') if isinstance(timeframe_data, dict) else None) or payload.get('source'),
+                        'symbol': symbol, 'interval_seconds': interval, 'read_only': True}
+                realtime = data.get('realtime') or []
+                if isinstance(realtime, dict):
+                    realtime_rows = realtime.get('candles') or []
+                    realtime_meta = {key: value for key, value in realtime.items() if key != 'candles'}
+                else:
+                    realtime_rows = realtime if isinstance(realtime, list) else []
+                    realtime_meta = {}
+                collected[symbol]['realtime'] = realtime_rows
+                collected[symbol]['quote'] = data.get('quote')
+                collected[symbol]['quote_metadata'] = {
+                    'source': data.get('quote_source') or realtime_meta.get('source'),
+                    'retrieved_at': data.get('realtime_retrieved_at') or realtime_meta.get('retrieved_at'),
+                    'status': data.get('realtime_status') or realtime_meta.get('ok'),
+                    'candle_bucket_timestamp': data.get('quote_candle_bucket_timestamp') or
+                        (realtime_rows[-1].get('timestamp') if realtime_rows and isinstance(realtime_rows[-1], dict) else None),
+                    'timestamp_semantics': 'candle bucket timestamp; not an exchange tick timestamp',
+                    'read_only': data.get('realtime_read_only', realtime_meta.get('read_only', True)),
+                }
+        except Exception as exc:
+            for symbol in chunk:
+                errors[symbol] = f'{failure_reason(exc)}:{type(exc).__name__}'
+        finally:
+            batch_diagnostics.append({
+                'symbols': chunk,
+                'elapsed_seconds': round(time.perf_counter() - request_started, 3),
+                'returned_symbols': [s for s in chunk if (collected.get(s, {}).get('m1') or {}).get('candles')],
+            })
 
 # A successful batch response can still be an old gateway cache. Treat stale
 # candles exactly like an empty response so the per-symbol direct endpoint is
@@ -265,7 +294,7 @@ for symbol, item in collected.items():
 # whose batch/direct response is below the contract threshold, including
 # partial payloads such as 30 M1 candles for GBPUSD.
 # Bound recovery to keep a live scan within its operational latency budget.
-for recovery_attempt in range(1, 3):
+for recovery_attempt in range(1, 1 if fast_triage else 3):
     recovery_now = time.time()
     short_symbols = [
         s for s, item in collected.items()
@@ -336,6 +365,18 @@ for symbol, item in collected.items():
     item['m5']['forming_candles_excluded'] = len(raw_m5) - len(closed_m5)
     item['m5']['candles'] = closed_m5
 
+# Fast timing is taken from the same uncached per-symbol responses as analysis;
+# preserve the observation timestamp attached to each provider call.
+if fast_triage:
+    from scripts.fast_market_lane import build_fast_timing
+    timing_input = {'symbols': {
+        symbol: {'candles': item.get('m1'), 'm5_candles': item.get('m5')}
+        for symbol, item in collected.items()
+    }}
+    final_timing = build_fast_timing(timing_input, max_m1_age_seconds=max_age)
+    Path('reports').mkdir(exist_ok=True)
+    Path('reports/final_timing.json').write_text(json.dumps(final_timing, ensure_ascii=False, indent=2) + '\n')
+
 pair_status = {}
 for symbol, item in collected.items():
     m1_rows = (item.get('m1') or {}).get('candles') or []
@@ -358,9 +399,13 @@ for symbol, item in collected.items():
         related_errors = [str(value) for key, value in errors.items() if symbol in key]
         if any('TIMEOUT' in value for value in related_errors):
             reason = 'TIMEOUT'
+        elif any('CACHE_USED' in value for value in related_errors):
+            reason = 'GATEWAY_CACHE_USED'
+        elif any('GATEWAY_REPORTED_STALE' in value or 'STALE_SNAPSHOT' in value for value in related_errors):
+            reason = 'STALE_SNAPSHOT'
         elif any('GATEWAY_' in value or 'GATEWAY_FETCH_FAILED' in value for value in related_errors):
             reason = 'GATEWAY_FETCH_FAILED'
-        elif any('STALE' in value or 'FUTURE' in value for value in pair_errors) or any('STALE_SNAPSHOT' in value for value in related_errors):
+        elif any('STALE' in value or 'FUTURE' in value for value in pair_errors):
             reason = 'STALE_SNAPSHOT'
         else:
             reason = next((value.split(':', 1)[0] for value in pair_errors if value.startswith('CANDLES_INCOMPLETE')), 'SNAPSHOT_INVALID')
@@ -431,7 +476,8 @@ for symbol, status in pair_status.items():
         errors.setdefault(symbol, status.get('reason') or 'SNAPSHOT_INVALID')
 
 out = {'source': base, 'read_only': True, 'health': health,
-       'assets': [], 'payouts': payouts, 'symbols': {}, 'fetch_mode': 'gateway_batch1_bounded_recovery',
+       'assets': [], 'payouts': payouts, 'symbols': {},
+       'fetch_mode': 'fast_direct_m1_m5_uncached' if fast_triage else 'gateway_batch1_bounded_recovery',
        'batch_diagnostics': batch_diagnostics,
        'fresh_symbols': fresh, 'fetch_errors': errors,
        'freshness_validation': freshness_validation,

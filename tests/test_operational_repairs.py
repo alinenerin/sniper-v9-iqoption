@@ -16,7 +16,14 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertNotIn("RAILWAY_GATEWAY_URL", workflow)
         self.assertIn("FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}", workflow)
         self.assertIn("github.event.inputs.fast_mode == 'true' && '120' || '1000'", workflow)
-        self.assertIn("REQUEST_M1_CANDLES: '1000'", workflow)
+        self.assertIn("github.event.inputs.fast_mode == 'true' && '31' || '100'", workflow)
+        self.assertIn("github.event.inputs.fast_mode == 'true' && '8' || '25'", workflow)
+        self.assertIn("github.event.inputs.fast_mode == 'true' && '0' || '3'", workflow)
+        self.assertNotIn("select_fast_candidates.py", workflow)
+        self.assertNotIn("Fetch deep data for selected candidates", workflow)
+        self.assertEqual(workflow.count("run: python scripts/fetch_railway_market.py"), 1)
+        timing_step = workflow.split("- name: Refresh final M1/M5 timing", 1)[1].split("- name:", 1)[0]
+        self.assertIn("if: github.event.inputs.fast_mode != 'true'", timing_step)
         fast_input = workflow.split("      fast_mode:", 1)[1].split("      no_score_mode:", 1)[0]
         self.assertIn("default: false", fast_input)
         self.assertIn("-intelligence-v5", workflow)
@@ -119,6 +126,134 @@ class ShadowSnapshotProvenanceTests(unittest.TestCase):
             self.assertEqual(result["snapshot_provenance"]["status"], "blocked")
             self.assertIn("SNAPSHOT_PROVENANCE_MISSING_OR_INCONSISTENT", result["flags"])
             self.assertFalse(result["execution_allowed"])
+
+class FastMarketLaneTests(unittest.TestCase):
+    def test_direct_requests_are_serial_uncached_and_use_market_type(self):
+        from scripts.fast_market_lane import fetch_fast_pair
+        calls = []
+        def get(path, **kwargs):
+            calls.append((path, kwargs))
+            return {"source": "gateway-direct", "candles": [{"timestamp": 1, "close": 1.0}]}
+        data, errors = fetch_fast_pair("EURUSD", get, timeout=7, m1_count=120, m5_count=31)
+        self.assertFalse(errors)
+        self.assertEqual([kwargs["attempts"] for _, kwargs in calls], [1, 1])
+        self.assertEqual([kwargs["timeout"] for _, kwargs in calls], [7, 7])
+        self.assertEqual(len(calls), 2)
+        for path, _ in calls:
+            self.assertIn("cache=false", path)
+            self.assertIn("fresh=true", path)
+            self.assertIn("market_type=REAL", path)
+        self.assertEqual(data["m1"]["source"], "gateway-direct")
+        self.assertIs(data["m1"]["cache_used"], False)
+        cached, cached_errors = fetch_fast_pair("GBPUSD", lambda path, **kw: {
+            "candles": [{"timestamp": 1}], "cache_used": True,
+        })
+        self.assertEqual(cached_errors["m1"], "GATEWAY_CACHE_USED")
+        self.assertFalse(cached["m1"]["candles"])
+
+        otc_calls = []
+        fetch_fast_pair("EURUSD-OTC", lambda path, **kw: (otc_calls.append(path) or {"candles": []}))
+        self.assertEqual(len(otc_calls), 2)
+        self.assertTrue(all("market_type=OTC" in path for path in otc_calls))
+
+    def test_fast_timing_uses_per_pair_observation_and_blocks_stale_or_incomplete(self):
+        from scripts.fast_market_lane import build_fast_timing
+        now = 1_000_000.0
+        m1_last = int(now // 60) * 60 - 60
+        m5_last = int(now // 300) * 300 - 300
+        m1 = [{"timestamp": m1_last - i * 60, "close": 1.0} for i in range(119, -1, -1)]
+        m5 = [{"timestamp": m5_last - i * 300, "close": 1.0} for i in range(30, -1, -1)]
+        payload = {"symbols": {
+            "EURUSD": {"candles": {"candles": m1, "observed_timestamp": now - 10},
+                       "m5_candles": {"candles": m5, "observed_timestamp": now}},
+            "GBPUSD": {"candles": {"candles": m1[:20], "observed_timestamp": now},
+                       "m5_candles": {"candles": m5, "observed_timestamp": now}},
+            "USDJPY": {"candles": {"candles": m1, "observed_timestamp": now + 300},
+                       "m5_candles": {"candles": m5, "observed_timestamp": now}},
+            "AUDUSD": {"candles": {"candles": m1, "observed_timestamp": now},
+                       "m5_candles": {"candles": m5[:10], "observed_timestamp": now}},
+        }}
+        timing = build_fast_timing(payload, now=now + 1)
+        self.assertEqual(timing["symbols"]["EURUSD"]["status"], "ok")
+        self.assertEqual(timing["symbols"]["EURUSD"]["m1"]["observed_timestamp"], now - 10)
+        self.assertEqual(timing["symbols"]["GBPUSD"]["m1"]["reason"], "FINAL_TIMING_INCOMPLETE_M1")
+        self.assertEqual(timing["symbols"]["USDJPY"]["m1"]["reason"], "FINAL_M1_CANDLE_STALE")
+        self.assertTrue(timing["symbols"]["AUDUSD"]["m5"]["status"] == "blocked")
+        self.assertTrue(all(item["read_only"] for item in timing["symbols"].values()))
+        self.assertIs(timing["execution_allowed"], False)
+
+    def test_fast_fetcher_attempts_all_ten_pairs_and_writes_same_lane_timing(self):
+        from urllib.parse import urlparse, parse_qs
+        import os, runpy, tempfile, time
+        symbols = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY"]
+        calls = []
+        class Response:
+            def __init__(self, payload): self.payload = payload
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return json.dumps(self.payload).encode()
+        def fake_urlopen(url, timeout=None):
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            calls.append((parsed.path, query))
+            if parsed.path == "/health":
+                return Response({"status": "connected", "connection": {"status": "connected"}})
+            if parsed.path == "/api/market/candles":
+                interval, count = int(query["interval"][0]), int(query["count"][0])
+                anchor = int(time.time() // interval) * interval - interval
+                candles = [{"timestamp": anchor - (count - i - 1) * interval,
+                            "open": 1.0, "high": 1.001, "low": 0.999,
+                            "close": 1.0005, "volume": 10}
+                           for i in range(count)]
+                return Response({"candles": candles, "source": "test-gateway"})
+            if parsed.path == "/api/market/payout":
+                return Response({"ok": True, "symbol": query["symbol"][0], "payout": 90, "read_only": True})
+            raise AssertionError(f"unexpected URL path {parsed.path}")
+        with tempfile.TemporaryDirectory() as cwd:
+            env = dict(os.environ)
+            env.update({
+                "MARKET_GATEWAY_URL": "https://mock-gateway.invalid",
+                "SYMBOLS": " ".join(symbols), "FAST_TRIAGE": "true",
+                "REQUEST_M1_CANDLES": "120", "REQUEST_M5_CANDLES": "31",
+                "MIN_M1_CANDLES": "100", "MIN_M3_CANDLES": "30", "MIN_M5_CANDLES": "30",
+                "MAX_CANDLE_AGE_SECONDS": "120", "FETCH_TIMEOUT_SECONDS": "3", "FETCH_RETRIES": "0",
+                "INCLUDE_OTC": "false", "OTC_ONLY": "false", "REQUIRE_PAYOUT": "false",
+            })
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(cwd)
+                with patch.dict(os.environ, env), patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                    try:
+                        runpy.run_path(str(ROOT / "scripts/fetch_railway_market.py"), run_name="__main__")
+                    except SystemExit as exc:
+                        self.assertEqual(exc.code, 0)
+            finally:
+                os.chdir(old_cwd)
+            market = json.loads((Path(cwd) / "reports/market_data.json").read_text())
+            timing = json.loads((Path(cwd) / "reports/final_timing.json").read_text())
+            self.assertEqual(market["fetch_mode"], "fast_direct_m1_m5_uncached")
+            self.assertEqual(market["fresh_symbols"], symbols)
+            self.assertEqual(set(market["symbols"]), set(symbols))
+            self.assertEqual(set(timing["symbols"]), set(symbols))
+            self.assertEqual(len([q for p, q in calls if p == "/api/market/candles"]), 20)
+            self.assertFalse(any(p == "/api/market/snapshot_batch" for p, _ in calls))
+            for _, query in [entry for entry in calls if entry[0] == "/api/market/candles"]:
+                self.assertEqual(query["cache"], ["false"])
+                self.assertEqual(query["fresh"], ["true"])
+            self.assertTrue(all(x["status"] == "ok" for x in timing["symbols"].values()))
+            self.assertIs(market["read_only"], True)
+
+    def test_fast_fetcher_has_explicit_coverage_failure_contract(self):
+        fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
+        workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
+        self.assertIn("for symbol in symbols:", fetcher)
+        self.assertIn("fetch_fast_pair(", fetcher)
+        self.assertIn("fast_direct_m1_m5_uncached", fetcher)
+        self.assertIn("fetch_status", fetcher)
+        self.assertIn("build_fast_timing", fetcher)
+        coverage_step = workflow.split("- name: Verify fast-mode pair coverage and timing provenance", 1)[1].split("- name:", 1)[0]
+        self.assertIn("missing_report", coverage_step)
+        self.assertIn("execution_allowed", coverage_step)
 
 if __name__ == "__main__":
     unittest.main()

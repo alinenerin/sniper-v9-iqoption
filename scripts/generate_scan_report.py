@@ -437,6 +437,8 @@ def _analysis_timing(market: str, result: dict[str, Any], candles: list[dict[str
         final_ts is not None
         and final_payload.get("read_only") is True
         and final_payload.get("cache_used") is False
+        and final_payload.get("status", "ok") == "ok"
+        and final_payload.get("reason") is None
     )
     timing = _timing_fields(candles, observed_at, final_ts if final_verified else None)
     timing["source"] = "READONLY_GATEWAY_DIRECT_PER_SYMBOL_NO_CACHE" if final_verified else "analysis_snapshot"
