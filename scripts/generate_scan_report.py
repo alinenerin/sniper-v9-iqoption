@@ -39,6 +39,7 @@ except (ImportError, ModuleNotFoundError):
 
 from runtime_agent_registry import evidence_manifest
 from market_data_contract import snapshot_id as make_snapshot_id
+from scripts.signal_reporting import add_signal_fields, build_signal_collections
 
 M5_INTERVAL_SECONDS = 300
 M5_MIN_COMPLETED_CANDLES = 25
@@ -900,6 +901,9 @@ def main() -> int:
     actionability_checked_at = datetime.now(timezone.utc)
     for analysis in all_analyses:
         _finalize_signal_actionability(analysis, actionability_checked_at)
+    for analysis in binary:
+        add_signal_fields(analysis, actionability_checked_at.isoformat())
+    signal_collections = build_signal_collections(binary)
 
     # Build every agent view from the actual component records on each analysis.
     # This prevents a separately maintained dashboard from overstating execution.
@@ -964,6 +968,7 @@ def main() -> int:
         "best_candidate_note": "Ranking only; does not approve a trade. Score and all vetoes remain mandatory.",
         "best_actionable_candidate": best_actionable_candidate,
         "best_actionable_candidate_note": "Only non-null when official gates and final live timing checks pass.",
+        **signal_collections,
         "note": "Analysis only. No executor, broker order method, buy/sell primitive, or authorization path is called.",
     }
     Path("reports").mkdir(exist_ok=True)

@@ -350,7 +350,10 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
+          from scripts.signal_reporting import format_signal_summary
           report=json.load(open('reports/latest_scan.json'))
+          signal_lines=format_signal_summary(report.get('binary',{}).get('analyses',[]))
+          print('\n'.join(signal_lines))
           rows=[]
           for item in report.get('binary',{}).get('analyses',[]):
               confirmed = item.get('direction_confirmed')
@@ -371,7 +374,7 @@ jobs:
                   'actionability_reasons': item.get('actionability_reasons',[]),
                   'fusion': item.get('score_fusion',{}),
               })
-          out=['## Binary Quant X — scan read-only', '', f"Schema: {report.get('schema_version')}", f"Execution allowed: {report.get('execution_allowed')}", '', '| Par | Score | Aprovado | Acionável agora | Direção | Entrada | Vetos |', '|---|---:|:---:|:---:|---|---|---|']
+          out=signal_lines + ['', '## Binary Quant X — scan read-only', '', f"Schema: {report.get('schema_version')}", f"Execution allowed: {report.get('execution_allowed')}", '', '| Par | Score | Aprovado | Acionável agora | Direção | Entrada | Vetos |', '|---|---:|:---:|:---:|---|---|---|']
           for row in rows:
               veto='; '.join(map(str,row['vetoes'] + row['actionability_reasons'])) or '—'
               out.append(f"| {row['symbol']} | {row['score']} | {row['approved']} | {row['actionable']} | {row['direction']} ({row['direction_state']}) | {row['entry']} | {veto} |")
