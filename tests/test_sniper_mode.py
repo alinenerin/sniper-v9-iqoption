@@ -277,6 +277,11 @@ class SniperWorkflowContractTests(unittest.TestCase):
         self.assertLess(gateway, fetch)
         self.assertIn("SNIPER_MODE: ${{ github.event.inputs.sniper_mode }}", workflow)
 
+    def test_offline_tests_force_standard_mode_during_sniper_dispatch(self):
+        workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
+        test_step = workflow.split("- name: Run offline read-only contract tests", 1)[1].split("- name:", 1)[0]
+        self.assertIn("SNIPER_MODE: 'false'", test_step)
+
     def test_workflow_keeps_m1_history_and_approval_specialists(self):
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()

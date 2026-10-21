@@ -109,6 +109,9 @@ jobs:
           python audit_architecture.py
           python audit_readonly_validation.py
       - name: Run offline read-only contract tests
+        env:
+          # Unit tests must exercise the ordinary path even during a sniper dispatch.
+          SNIPER_MODE: 'false'
         run: python -m unittest discover -s tests -t . -v
       - name: Warm active read-only Render/IQ Option gateway
         env:
