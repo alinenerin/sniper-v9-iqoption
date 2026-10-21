@@ -25,11 +25,11 @@ OTC_SYMBOLS = [symbol + '-OTC' for symbol in REAL_SYMBOLS]
 # partial data remains available for diagnostics but is never passed as usable.
 # The full scan contract and Darts evidence both require the long M1 history.
 # Keep 120 only as an explicit emergency override, never as the default.
-MIN_M1 = int(os.getenv('MIN_M1_CANDLES', '100' if fast_triage else '1000'))
+MIN_M1 = max(1000, int(os.getenv('MIN_M1_CANDLES', '1000'))) if fast_triage else int(os.getenv('MIN_M1_CANDLES', '1000'))
 MIN_M3 = int(os.getenv('MIN_M3_CANDLES', '30'))
 MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
 # Darts requires >=1000 M1 candles for its training window.
-REQUEST_M1 = int(os.getenv('REQUEST_M1_CANDLES', '120' if fast_triage else '1000'))
+REQUEST_M1 = max(1000, int(os.getenv('REQUEST_M1_CANDLES', '1000'))) if fast_triage else int(os.getenv('REQUEST_M1_CANDLES', '1000'))
 # Always ask for an extra provider bar so 30 closed M5 candles remain even
 # when the newest returned candle is still forming.
 REQUEST_M5 = max(MIN_M5 + 1, int(os.getenv('REQUEST_M5_CANDLES', '100')))

@@ -5,10 +5,12 @@ This module must remain valid UTF-8 Python: it is compiled before any market
 """
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -480,7 +482,8 @@ def _timestamp_epoch(value: Any) -> float | None:
         return None
 
 
-def _finalize_signal_actionability(analysis: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
+def _finalize_signal_actionability(analysis: dict[str, Any], checked_at: datetime,
+                                   sniper_mode: bool = False) -> dict[str, Any]:
     """Separate engine approval from a currently timed, usable signal candidate."""
     market = str(analysis.get("market") or "").lower()
     direction = str(analysis.get("direction_confirmed") or "").upper()
@@ -493,7 +496,9 @@ def _finalize_signal_actionability(analysis: dict[str, Any], checked_at: datetim
             # timing infrastructure fails closed for actionability, never open.
             from engines.binary.sniper_timing import plan_sniper_window
             timing = plan_sniper_window(
-                epoch=checked_at.timestamp(), timeframe="M1", minimum_lead=120,
+                epoch=checked_at.timestamp(), timeframe="M1",
+                minimum_lead=5 if sniper_mode else 120,
+                expiration_timeframe="M3" if sniper_mode else None,
             )
         except (ImportError, ModuleNotFoundError):
             timing = {"valid": False, "reason": "SNIPER_TIMING_PLANNER_UNAVAILABLE",
@@ -511,6 +516,18 @@ def _finalize_signal_actionability(analysis: dict[str, Any], checked_at: datetim
         "read_only": True,
         "execution_allowed": False,
     }
+    if sniper_mode and market == "binary":
+        analysis["expiration"] = {
+            "duration_seconds": 180,
+            "entry_timeframe": "M1",
+            "timeframe": "M3",
+            "entry_timestamp_utc": _iso(timing.get("entry_timestamp")),
+            "expected_timestamp_utc": _iso(timing.get("expiry_timestamp")),
+            "status": "pending_expiration" if timing.get("valid") is True else "pending_entry_timing",
+            "hypothetical_result": None,
+            "read_only": True,
+            "execution_allowed": False,
+        }
 
     if analysis.get("approved") is not True:
         reasons.append("OFFICIAL_ANALYSIS_NOT_APPROVED")
@@ -826,7 +843,27 @@ def _analyse_with_fetch_status(market: str, symbol: str, symbol_data: dict[str, 
 
 
 def main() -> int:
-    requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
+    report_started_epoch = time.time()
+    run_started_at = datetime.now(timezone.utc).isoformat()
+    job_started_epoch = None
+    try:
+        job_started_epoch = float(os.getenv("SCAN_JOB_STARTED_EPOCH", ""))
+    except (TypeError, ValueError):
+        pass
+    sniper_mode = os.getenv("SNIPER_MODE", "false").lower() == "true"
+    if sniper_mode:
+        from scripts.sniper_mode import normalize_inputs, prepare_run
+        requested = normalize_inputs(
+            sniper_mode=True, symbols=os.getenv("SYMBOLS", "ALL_AVAILABLE"),
+            market=os.getenv("MARKET", "binary"), fast_mode=os.getenv("FAST_MODE", "false"),
+            include_otc=os.getenv("INCLUDE_OTC", "false"), otc_only=os.getenv("OTC_ONLY", "false"),
+            no_score_mode=os.getenv("NO_SCORE_MODE", "false"),
+        )
+        os.environ["SYMBOLS"] = " ".join(requested)
+        if os.getenv("SNIPER_RUN_PREPARED", "false").lower() != "true":
+            prepare_run("reports")
+    else:
+        requested = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
     include_otc = os.getenv("INCLUDE_OTC", "false").lower() == "true"
     otc_only = os.getenv("OTC_ONLY", "false").lower() == "true"
     path = Path("reports/market_data.json")
@@ -864,6 +901,7 @@ def main() -> int:
     run_otc = otc_only or market_name == "otc" or (include_otc and market_name in ("binary", "unified"))
     run_binary = run_real_binary or run_otc
     seen_otc: set[str] = set()
+    pair_timings: list[dict[str, Any]] = []
 
     def append_otc(otc_symbol: str) -> None:
         if otc_symbol in seen_otc:
@@ -891,8 +929,20 @@ def main() -> int:
             forex.append(_analyse_with_fetch_status("forex", symbol, symbol_data, observed_at,
                                    final_by_symbol.get(symbol) or {}, market_snapshot_id))
         if run_real_binary:
-            binary.append(_analyse_with_fetch_status("binary", symbol, symbol_data, observed_at,
-                                   final_by_symbol.get(symbol) or {}, market_snapshot_id))
+            pair_started = time.perf_counter()
+            analysis = _analyse_with_fetch_status("binary", symbol, symbol_data, observed_at,
+                                   final_by_symbol.get(symbol) or {}, market_snapshot_id)
+            pair_timings.append({"symbol": symbol, "duration_seconds": round(time.perf_counter() - pair_started, 3)})
+            binary.append(analysis)
+            if sniper_mode:
+                # Early persistence consumes a deep copy of canonical output;
+                # the approval itself and the report's analysis remain untouched.
+                from scripts.sniper_mode import emit_approved_signal
+                early_analysis = copy.deepcopy(analysis)
+                _finalize_signal_actionability(early_analysis, datetime.now(timezone.utc), sniper_mode=True)
+                emit_approved_signal(
+                    early_analysis, reports_dir="reports", run_id=os.getenv("GITHUB_RUN_ID"),
+                )
         if run_otc:
             append_otc(symbol + "-OTC")
 
@@ -902,7 +952,7 @@ def main() -> int:
     all_analyses = forex + binary
     actionability_checked_at = datetime.now(timezone.utc)
     for analysis in all_analyses:
-        _finalize_signal_actionability(analysis, actionability_checked_at)
+        _finalize_signal_actionability(analysis, actionability_checked_at, sniper_mode=sniper_mode)
     for analysis in binary:
         add_signal_fields(analysis, actionability_checked_at.isoformat())
     signal_collections = build_signal_collections(binary)
@@ -975,6 +1025,14 @@ def main() -> int:
     }
     Path("reports").mkdir(exist_ok=True)
     Path("reports/latest_scan.json").write_text(json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n")
+    if sniper_mode:
+        from scripts.sniper_mode import write_timing_report
+        write_timing_report(
+            reports_dir="reports", started_epoch=report_started_epoch,
+            started_at_utc=run_started_at, pair_timings=pair_timings,
+            market_data=market_data, run_id=os.getenv("GITHUB_RUN_ID"),
+            job_started_epoch=job_started_epoch,
+        )
     print("unified_readonly_scan=OK", len(forex), len(binary))
     return 0
 

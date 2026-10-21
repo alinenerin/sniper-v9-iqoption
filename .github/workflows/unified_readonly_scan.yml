@@ -29,6 +29,11 @@ on:
         required: true
         default: false
         type: boolean
+      sniper_mode:
+        description: 'Modo isolado: análise binária real de até 3 pares, com registro antecipado somente após aprovação canônica'
+        required: true
+        default: false
+        type: boolean
       no_score_mode:
         description: 'Ativar modo comparativo sem score (opcional)'
         required: true
@@ -57,11 +62,17 @@ jobs:
       SYMBOLS: ${{ github.event.inputs.symbols }}
       MARKET: ${{ github.event.inputs.market }}
       FAST_MODE: ${{ github.event.inputs.fast_mode }}
+      SNIPER_MODE: ${{ github.event.inputs.sniper_mode }}
       NO_SCORE_MODE: ${{ github.event.inputs.no_score_mode }}
       LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
       MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
     steps:
       - uses: actions/checkout@v4
+      - name: Record workflow start epoch
+        run: echo "SCAN_JOB_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Validate and prepare isolated sniper inputs before gateway calls
+        if: github.event.inputs.sniper_mode == 'true'
+        run: python scripts/sniper_mode.py
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -103,9 +114,11 @@ jobs:
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
         run: |
+          health_started=$(date +%s.%N)
           for i in 1 2 3; do
             if curl --silent --show-error --connect-timeout 8 --max-time 20 --fail "$MARKET_GATEWAY_URL/health" | python -c 'import json,sys; d=json.load(sys.stdin); c=d.get("connection") or {}; ok=d.get("status")=="connected" and c.get("status")=="connected"; print("gateway_status=%s connection_status=%s" % (d.get("status"), c.get("status"))); sys.exit(0 if ok else 1)'; then
               echo 'Read-only gateway is connected.'
+              python scripts/record_sniper_timing.py gateway_health "$health_started"
               exit 0
             fi
             echo "Gateway is not connected yet (attempt $i/3)."
@@ -116,17 +129,26 @@ jobs:
       - name: Fetch live market data from active read-only gateway
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
-          SYMBOLS: ${{ github.event.inputs.symbols || 'EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD EURGBP EURJPY GBPJPY' }}
           FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}
-          REQUEST_M1_CANDLES: ${{ github.event.inputs.fast_mode == 'true' && '120' || '1000' }}
+          REQUEST_M1_CANDLES: '1000'
           REQUEST_M5_CANDLES: ${{ github.event.inputs.fast_mode == 'true' && '31' || '100' }}
           MAX_CANDLE_AGE_SECONDS: ${{ github.event.inputs.fast_mode == 'true' && '90' || '120' }}
           FETCH_TIMEOUT_SECONDS: ${{ github.event.inputs.fast_mode == 'true' && '8' || '25' }}
           FETCH_RETRIES: ${{ github.event.inputs.fast_mode == 'true' && '0' || '3' }}
         # The fetcher exits 0 with any valid pair; zero usable pairs remain fatal.
-        run: python scripts/fetch_railway_market.py
+        run: |
+          fetch_started=$(date +%s.%N)
+          python scripts/fetch_railway_market.py
+          rc=$?
+          python scripts/record_sniper_timing.py market_data_fetch "$fetch_started"
+          exit "$rc"
       - name: Fetch canonical DXY/VIX macro snapshot
-        run: python scripts/fetch_tradingview_macro.py
+        run: |
+          macro_started=$(date +%s.%N)
+          python scripts/fetch_tradingview_macro.py
+          rc=$?
+          python scripts/record_sniper_timing.py macro_snapshot "$macro_started"
+          exit "$rc"
       - name: Prepare fast lane advisory artifacts (disabled)
         if: false
         run: |
@@ -152,6 +174,7 @@ jobs:
           TRANSFORMERS_CACHE: ~/.cache/huggingface
         shell: bash
         run: |
+          modules_started=$(date +%s.%N)
           set +e
           mkdir -p reports/module-logs
           python scripts/run_darts_inference.py > reports/module-logs/darts.log 2>&1 & p1=$!
@@ -160,6 +183,7 @@ jobs:
           python scripts/train_xgboost_inference.py > reports/module-logs/xgboost.log 2>&1 & p4=$!
           python scripts/run_m5_inference.py > reports/module-logs/m5_shadow.log 2>&1 & p5=$!
           wait $p1; r1=$?; wait $p2; r2=$?; wait $p3; r3=$?; wait $p4; r4=$?; wait $p5; r5=$?
+          python scripts/record_sniper_timing.py mandatory_and_advisory_modules "$modules_started"
           echo "module_exit_codes darts=$r1 timesfm=$r2 finbert=$r3 xgboost=$r4 m5_shadow=$r5"
           echo "--- xgboost.log ---"; cat reports/module-logs/xgboost.log || true
           echo "--- timesfm.log ---"; tail -80 reports/module-logs/timesfm.log || true
@@ -167,18 +191,22 @@ jobs:
           # Modules are advisory/read-only; their evidence is inspected by the report.
           exit 0
       - name: Compile read-only analysis modules
-        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py scripts/run_m5_inference.py
+        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/sniper_mode.py scripts/record_sniper_timing.py engines/binary/sniper_timing.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py scripts/run_m5_inference.py
       - name: Refresh final M1/M5 timing without replacing agent evidence
-        if: github.event.inputs.fast_mode != 'true'
+        if: github.event.inputs.sniper_mode == 'true' || github.event.inputs.fast_mode != 'true'
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
           FAST_TRIAGE: 'true'
-          REQUEST_M1_CANDLES: '120'
+          REQUEST_M1_CANDLES: '1000'
           MAX_CANDLE_AGE_SECONDS: '90'
         run: |
+          timing_started=$(date +%s.%N)
           cp reports/market_data.json reports/agent_market_data.json
           python scripts/refresh_final_timing.py
+          rc=$?
           mv reports/agent_market_data.json reports/market_data.json
+          python scripts/record_sniper_timing.py final_timing_refresh "$timing_started"
+          exit "$rc"
       - name: Verify current analysis commit and official thresholds
         run: |
           python - <<'PYCONFIG'
@@ -202,6 +230,7 @@ jobs:
 
       - name: Generate unified read-only report
         run: |
+          report_started=$(date +%s.%N)
           set +e
           python scripts/generate_scan_report.py
           rc=$?
@@ -239,7 +268,19 @@ jobs:
           Path('reports/latest_scan.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
           PYFALLBACK
           fi
+          python scripts/record_sniper_timing.py report_generation "$report_started"
           exit 0
+      - name: Preserve early sniper signals even if later steps fail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: early-sniper-signals-${{ github.run_id }}
+          path: |
+            reports/live_signals.jsonl
+            reports/latest_signal.json
+            reports/sniper_timing.json
+            reports/sniper_step_timings.jsonl
+          if-no-files-found: ignore
       - name: Verify fast-mode pair coverage and timing provenance
         if: github.event.inputs.fast_mode == 'true'
         run: |
@@ -408,4 +449,8 @@ jobs:
             reports/finbert_inference.json
             reports/m5_shadow_inference.json
             reports/module-logs/m5_shadow.log
+            reports/live_signals.jsonl
+            reports/latest_signal.json
+            reports/sniper_timing.json
+            reports/sniper_step_timings.jsonl
 
