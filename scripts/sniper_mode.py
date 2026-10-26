@@ -156,6 +156,18 @@ def emit_approved_signal(analysis: dict[str, Any], *, reports_dir: str | Path = 
     """Persist one already-approved canonical binary analysis, idempotently."""
     if analysis.get("market") != "binary" or analysis.get("approved") is not True:
         return None
+    # Emission is a projection of the frozen canonical decision, never a new
+    # approval path. Still fail closed on malformed direction/explicit vetoes.
+    direction = str(analysis.get("direction_confirmed") or "").upper()
+    if direction not in {"CALL", "PUT"}:
+        return None
+    if analysis.get("veto") is True or analysis.get("hard_veto") is True:
+        return None
+    if analysis.get("required_hard_veto") is True:
+        return None
+    explicit_vetoes = analysis.get("vetoes")
+    if isinstance(explicit_vetoes, (list, tuple, set)) and explicit_vetoes:
+        return None
     emitted_at = emitted_at or datetime.now(timezone.utc)
     if emitted_at.tzinfo is None:
         emitted_at = emitted_at.replace(tzinfo=timezone.utc)

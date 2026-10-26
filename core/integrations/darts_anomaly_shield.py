@@ -205,8 +205,9 @@ class DartsAnomalyShield:
     ESTÁ SE COMPORTANDO DE FORMA ANORMAL — algo que nenhum outro módulo faz.
     """
     
-    def __init__(self, config: Optional[DartsShieldConfig] = None):
+    def __init__(self, config: Optional[DartsShieldConfig] = None, *, lightweight_mode: bool = False):
         self.config = config or DartsShieldConfig()
+        self.lightweight_mode = bool(lightweight_mode)
         
         # Armazena séries temporais de features para cada par
         self.feature_buffers: Dict[str, pd.DataFrame] = {}
@@ -305,12 +306,14 @@ class DartsAnomalyShield:
         
         # Treina Darts nativo se disponível
         darts_status = "blocked"
-        if self.darts_available:
+        if self.darts_available and not self.lightweight_mode:
             try:
                 self._train_darts_model(symbol, features)
                 darts_status = "trained"
             except Exception as e:
                 darts_status = f"error: {str(e)}"
+        elif self.lightweight_mode:
+            darts_status = "skipped_fast_path_statistical_baseline_only"
         
         report = {
             "status": "TRAINED",

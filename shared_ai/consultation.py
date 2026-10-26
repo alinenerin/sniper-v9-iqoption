@@ -503,83 +503,102 @@ class SharedAI:
                 pass
             approved, reason = engine.is_supreme_approved(analysis)
             advisory: Dict[str, Any] = {}
-            # Memória fornece apenas contexto; nunca altera score, veto ou aprovação.
-            try:
-                from shared_ai.memory_service import ZapiaMemoryService
-                # One bounded semantic lookup per market lane avoids hammering Mem0
-                # once for every symbol; the local SQLite context remains per-symbol.
-                advisory["memory_context"] = ZapiaMemoryService().context_for(request.market, limit=5)
-            except Exception as exc:
-                advisory["memory_context"] = {"active": False, "error": type(exc).__name__}
-            # Regime é determinístico e consultivo; não altera aprovação sozinho.
-            try:
-                from core.market_regime_detection import MarketRegimeDetection
-                close = frame["close"].astype(float)
-                volatility = float(close.pct_change().std() or 0)
-                delta = float(close.iloc[-1] - close.iloc[max(0, len(close)-20)])
-                advisory["regime"] = MarketRegimeDetection().build_report({
-                    "trend_strength": min(abs(delta) / max(abs(float(close.iloc[-1])), 1e-12) * 10, 1),
-                    "volatility": volatility,
-                    "direction": "UP" if delta > 0 else "DOWN" if delta < 0 else "SIDE",
-                })
-            except Exception as exc:
-                advisory["regime"] = {"active": False, "error": type(exc).__name__}
-            # Fase 5: catálogo de ciclos por sessão, apenas contexto descritivo.
-            try:
-                from shared_ai.cycle_catalog import CycleCatalog
-                advisory["cycle_catalog"] = CycleCatalog().analyze(request.symbol, request.candles)
-            except Exception as exc:
-                advisory["cycle_catalog"] = {"status": "blocked", "reason": type(exc).__name__, "read_only": True}
-            # Fase 4: LSE fornece contexto institucional complementar, read-only.
-            try:
-                from shared_ai.lse_advisor import LSEAdvisor
-                advisory["lse"] = LSEAdvisor().analyze(request.symbol)
-            except Exception as exc:
-                advisory["lse"] = {"status": "blocked", "reason": type(exc).__name__, "read_only": True}
-            # Fase 3: estatística e trade memory somente em paper trading.
-            try:
-                from shared_ai.performance_service import PaperPerformanceService
-                perf = PaperPerformanceService()
-                advisory["paper_performance"] = perf.summary(request.symbol)
-                perf.close()
-            except Exception as exc:
-                advisory["paper_performance"] = {"status": "blocked", "reason": type(exc).__name__, "mode": "paper_only", "read_only": True}
-            # Fase 1: Liquidity Scanner é consultivo e fail-closed.
-            try:
-                from core.liquidity_scanner import LiquidityScanner
-                advisory["liquidity"] = LiquidityScanner().analyze_smc(frame)
-            except Exception as exc:
-                advisory["liquidity"] = {"status": "blocked", "veto": True, "reason": type(exc).__name__}
-            # Fase 1: Probability Engine combina contexto, mas nunca libera execução.
-            try:
-                from core.probability_engine import ProbabilityEngine
-                regime_score = 50.0
-                if advisory.get("regime", {}).get("regime") in ("TRENDING_UP", "TRENDING_DOWN"): regime_score = 75.0
-                liq = advisory.get("liquidity", {})
-                adaptive = 70.0 if liq.get("liquidity_state") == "HEALTHY" else 40.0
-                advisory["probability_engine"] = ProbabilityEngine().calculate(
-                    technical_score=float(analysis.get("score", 0) or 0),
-                    asset_winrate=50.0, hour_winrate=50.0,
-                    regime_score=regime_score, adaptive_score=adaptive)
-                advisory["probability_engine"]["status"] = "inference_ok"
-            except Exception as exc:
-                advisory["probability_engine"] = {"status": "blocked", "reason": type(exc).__name__}
-            # Reuse the per-symbol inference artifact produced earlier in the
-            # workflow.  Do not reload the 1.5GB TimesFM model once per symbol.
-            # A missing artifact is a real blocked dependency, not permission
-            # to silently run a second heavyweight inference in report assembly.
-            try:
-                artifact_path = Path("reports/timesfm_inference.json")
-                artifact = json.loads(artifact_path.read_text()) if artifact_path.exists() else {}
-                forecast = (artifact.get("components") or {}).get(request.symbol)
-                if isinstance(forecast, dict) and forecast.get("status") == "inference_ok":
-                    advisory["timesfm"] = forecast
-                elif isinstance(forecast, dict):
-                    advisory["timesfm"] = forecast
-                else:
-                    advisory["timesfm"] = {"status": "blocked", "reason": "TIMESFM_ARTIFACT_MISSING_SYMBOL"}
-            except Exception as exc:
-                advisory["timesfm"] = {"status": "error", "reason": "TIMESFM_ARTIFACT_READ_ERROR:" + type(exc).__name__}
+            metadata = request.metadata if isinstance(request.metadata, dict) else {}
+            sniper_fast_lane = (
+                request.market == "binary"
+                and str(metadata.get("sniper_mode", "false")).strip().lower() == "true"
+            )
+            if sniper_fast_lane:
+                # Layer A contains the canonical chart, safety and direction
+                # evidence above/below. Pure context services are intentionally
+                # deferred from this latency-critical path: none may contribute
+                # to score, vote, veto, or canonical approval.
+                advisory["fast_lane"] = {
+                    "status": "deferred_to_layer_b",
+                    "role": "advisory_only",
+                    "decision_impact": "none",
+                    "read_only": True,
+                    "execution_allowed": False,
+                }
+            else:
+                advisory: Dict[str, Any] = {}
+                # Memória fornece apenas contexto; nunca altera score, veto ou aprovação.
+                try:
+                    from shared_ai.memory_service import ZapiaMemoryService
+                    # One bounded semantic lookup per market lane avoids hammering Mem0
+                    # once for every symbol; the local SQLite context remains per-symbol.
+                    advisory["memory_context"] = ZapiaMemoryService().context_for(request.market, limit=5)
+                except Exception as exc:
+                    advisory["memory_context"] = {"active": False, "error": type(exc).__name__}
+                # Regime é determinístico e consultivo; não altera aprovação sozinho.
+                try:
+                    from core.market_regime_detection import MarketRegimeDetection
+                    close = frame["close"].astype(float)
+                    volatility = float(close.pct_change().std() or 0)
+                    delta = float(close.iloc[-1] - close.iloc[max(0, len(close)-20)])
+                    advisory["regime"] = MarketRegimeDetection().build_report({
+                        "trend_strength": min(abs(delta) / max(abs(float(close.iloc[-1])), 1e-12) * 10, 1),
+                        "volatility": volatility,
+                        "direction": "UP" if delta > 0 else "DOWN" if delta < 0 else "SIDE",
+                    })
+                except Exception as exc:
+                    advisory["regime"] = {"active": False, "error": type(exc).__name__}
+                # Fase 5: catálogo de ciclos por sessão, apenas contexto descritivo.
+                try:
+                    from shared_ai.cycle_catalog import CycleCatalog
+                    advisory["cycle_catalog"] = CycleCatalog().analyze(request.symbol, request.candles)
+                except Exception as exc:
+                    advisory["cycle_catalog"] = {"status": "blocked", "reason": type(exc).__name__, "read_only": True}
+                # Fase 4: LSE fornece contexto institucional complementar, read-only.
+                try:
+                    from shared_ai.lse_advisor import LSEAdvisor
+                    advisory["lse"] = LSEAdvisor().analyze(request.symbol)
+                except Exception as exc:
+                    advisory["lse"] = {"status": "blocked", "reason": type(exc).__name__, "read_only": True}
+                # Fase 3: estatística e trade memory somente em paper trading.
+                try:
+                    from shared_ai.performance_service import PaperPerformanceService
+                    perf = PaperPerformanceService()
+                    advisory["paper_performance"] = perf.summary(request.symbol)
+                    perf.close()
+                except Exception as exc:
+                    advisory["paper_performance"] = {"status": "blocked", "reason": type(exc).__name__, "mode": "paper_only", "read_only": True}
+                # Fase 1: Liquidity Scanner é consultivo e fail-closed.
+                try:
+                    from core.liquidity_scanner import LiquidityScanner
+                    advisory["liquidity"] = LiquidityScanner().analyze_smc(frame)
+                except Exception as exc:
+                    advisory["liquidity"] = {"status": "blocked", "veto": True, "reason": type(exc).__name__}
+                # Fase 1: Probability Engine combina contexto, mas nunca libera execução.
+                try:
+                    from core.probability_engine import ProbabilityEngine
+                    regime_score = 50.0
+                    if advisory.get("regime", {}).get("regime") in ("TRENDING_UP", "TRENDING_DOWN"): regime_score = 75.0
+                    liq = advisory.get("liquidity", {})
+                    adaptive = 70.0 if liq.get("liquidity_state") == "HEALTHY" else 40.0
+                    advisory["probability_engine"] = ProbabilityEngine().calculate(
+                        technical_score=float(analysis.get("score", 0) or 0),
+                        asset_winrate=50.0, hour_winrate=50.0,
+                        regime_score=regime_score, adaptive_score=adaptive)
+                    advisory["probability_engine"]["status"] = "inference_ok"
+                except Exception as exc:
+                    advisory["probability_engine"] = {"status": "blocked", "reason": type(exc).__name__}
+                # Reuse the per-symbol inference artifact produced earlier in the
+                # workflow.  Do not reload the 1.5GB TimesFM model once per symbol.
+                # A missing artifact is a real blocked dependency, not permission
+                # to silently run a second heavyweight inference in report assembly.
+                try:
+                    artifact_path = Path("reports/timesfm_inference.json")
+                    artifact = json.loads(artifact_path.read_text()) if artifact_path.exists() else {}
+                    forecast = (artifact.get("components") or {}).get(request.symbol)
+                    if isinstance(forecast, dict) and forecast.get("status") == "inference_ok":
+                        advisory["timesfm"] = forecast
+                    elif isinstance(forecast, dict):
+                        advisory["timesfm"] = forecast
+                    else:
+                        advisory["timesfm"] = {"status": "blocked", "reason": "TIMESFM_ARTIFACT_MISSING_SYMBOL"}
+                except Exception as exc:
+                    advisory["timesfm"] = {"status": "error", "reason": "TIMESFM_ARTIFACT_READ_ERROR:" + type(exc).__name__}
             analysis["shared_advisory"] = advisory
             analysis["symbol"] = request.symbol
             component_status = self._component_status(analysis, advisory)

@@ -671,6 +671,7 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
                 "source": "read-only gateway market_data.json",
                 "snapshot_id": bundle_snapshot_id,
                 "observed_at_epoch": observed_at.timestamp(),
+                "sniper_mode": os.getenv("SNIPER_MODE", "false").lower() == "true",
                 "m5_engine": m5_vote_evidence,
             },
         ))
