@@ -165,7 +165,7 @@ class FastMarketLaneTests(unittest.TestCase):
         m1 = [{"timestamp": m1_last - i * 60, "close": 1.0} for i in range(119, -1, -1)]
         m5 = [{"timestamp": m5_last - i * 300, "close": 1.0} for i in range(30, -1, -1)]
         payload = {"symbols": {
-            "EURUSD": {"candles": {"candles": m1, "observed_timestamp": now - 10},
+            "EURUSD": {"candles": {"candles": m1, "observed_timestamp": now},
                        "m5_candles": {"candles": m5, "observed_timestamp": now}},
             "GBPUSD": {"candles": {"candles": m1[:20], "observed_timestamp": now},
                        "m5_candles": {"candles": m5, "observed_timestamp": now}},
@@ -174,9 +174,11 @@ class FastMarketLaneTests(unittest.TestCase):
             "AUDUSD": {"candles": {"candles": m1, "observed_timestamp": now},
                        "m5_candles": {"candles": m5[:10], "observed_timestamp": now}},
         }}
-        timing = build_fast_timing(payload, now=now + 1)
+        # Timestamp is the candle open; the closed-candle age is fresh even
+        # when the raw timestamp is older than the configured freshness window.
+        timing = build_fast_timing(payload, now=now + 1, max_m1_age_seconds=90)
         self.assertEqual(timing["symbols"]["EURUSD"]["status"], "ok")
-        self.assertEqual(timing["symbols"]["EURUSD"]["m1"]["observed_timestamp"], now - 10)
+        self.assertEqual(timing["symbols"]["EURUSD"]["m1"]["observed_timestamp"], now)
         self.assertEqual(timing["symbols"]["GBPUSD"]["m1"]["reason"], "FINAL_TIMING_INCOMPLETE_M1")
         self.assertEqual(timing["symbols"]["USDJPY"]["m1"]["reason"], "FINAL_M1_CANDLE_STALE")
         self.assertTrue(timing["symbols"]["AUDUSD"]["m5"]["status"] == "blocked")
@@ -252,9 +254,37 @@ class FastMarketLaneTests(unittest.TestCase):
         self.assertIn("fast_direct_m1_m5_uncached", fetcher)
         self.assertIn("fetch_status", fetcher)
         self.assertIn("build_fast_timing", fetcher)
+        refresh_step = workflow.split("- name: Refresh final M1/M5 timing without replacing agent evidence", 1)[1].split("- name:", 1)[0]
+        self.assertIn("if: success()", refresh_step)
+        self.assertNotIn("fast_mode != 'true'", refresh_step)
         coverage_step = workflow.split("- name: Verify fast-mode pair coverage and timing provenance", 1)[1].split("- name:", 1)[0]
         self.assertIn("missing_report", coverage_step)
         self.assertIn("execution_allowed", coverage_step)
+
+class SymbolSelectionTests(unittest.TestCase):
+    def test_all_available_expands_to_snapshot_keys_not_literal_sentinel(self):
+        from scripts.symbol_selection import resolve_requested_symbols
+        symbols = resolve_requested_symbols(
+            "ALL_AVAILABLE",
+            ["EURUSD", "GBPUSD", "EURUSD-OTC"],
+        )
+        self.assertEqual(symbols, ["EURUSD", "GBPUSD", "EURUSD-OTC"])
+        self.assertNotIn("ALL_AVAILABLE", symbols)
+
+    def test_explicit_symbols_deduplicate_otc_and_finbert_uses_base_pairs(self):
+        from scripts.symbol_selection import resolve_requested_symbols
+        darts = resolve_requested_symbols(
+            "EURUSD GBPUSD",
+            ["EURUSD", "GBPUSD"],
+            include_otc=True,
+        )
+        self.assertEqual(darts, ["EURUSD", "GBPUSD", "EURUSD-OTC", "GBPUSD-OTC"])
+        news = resolve_requested_symbols(
+            "ALL_AVAILABLE",
+            ["EURUSD", "EURUSD-OTC", "GBPUSD"],
+            base_pairs_only=True,
+        )
+        self.assertEqual(news, ["EURUSD", "GBPUSD"])
 
 if __name__ == "__main__":
     unittest.main()

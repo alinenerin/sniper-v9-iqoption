@@ -59,6 +59,8 @@ def latest_timestamp(rows):
             continue
         try:
             stamp = float(row.get('timestamp'))
+            if stamp > 10_000_000_000:
+                stamp /= 1000.0
             if stamp == stamp and abs(stamp) != float('inf'):
                 stamps.append(stamp)
         except (TypeError, ValueError, OverflowError):
@@ -276,9 +278,13 @@ else:
 # candles exactly like an empty response so the per-symbol direct endpoint is
 # attempted before the scan is rejected. Never pass stale evidence downstream.
 def fresh_enough(rows):
-    timestamps = [float(row.get('timestamp')) for row in rows
-                  if isinstance(row, dict) and row.get('timestamp') is not None]
-    return bool(timestamps) and (time.time() - max(timestamps)) <= max_age
+    # Candle timestamps are interval starts. Evaluate the latest M1 bar from
+    # its close time so a valid recently closed candle is not rejected early.
+    latest = latest_timestamp(rows)
+    if latest is None:
+        return False
+    age_since_close = time.time() - (latest + 60.0)
+    return -2.0 <= age_since_close <= max_age
 
 for symbol, item in collected.items():
     rows = (item.get('m1') or {}).get('candles') or []
