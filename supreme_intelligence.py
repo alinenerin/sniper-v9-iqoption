@@ -42,7 +42,7 @@ class SupremeIntelligence:
             if not isinstance(reason, str):
                 return 0, "OmniRoute Invalid Response: filter_reason must be text"
             return float(score), reason
-        except (requests.RequestException, ValueError, TypeError) as e:
+        except (requests.RequestException, ValueError, TypeError, OverflowError) as e:
             return 0, f"OmniRoute Error: {type(e).__name__}"
 
     def check_news_shield(self):
