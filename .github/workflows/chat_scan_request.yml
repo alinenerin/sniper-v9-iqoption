@@ -1,0 +1,40 @@
+name: ChatGPT Scan Request Router
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  dispatch-read-only-scan:
+    if: >-
+      github.event.issue.pull_request == null &&
+      github.event.issue.number == 5 &&
+      github.actor == github.repository_owner &&
+      github.event.comment.body == '/scan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Dispatch unified scan in read-only mode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run unified_readonly_scan.yml --repo "$REPOSITORY" --ref main \
+            -f include_otc=false \
+            -f symbols=ALL_AVAILABLE \
+            -f otc_only=false \
+            -f fast_mode=true \
+            -f sniper_mode=false \
+            -f no_score_mode=false \
+            -f market=binary \
+            -f request_issue="$ISSUE_NUMBER"
+          gh api "repos/$REPOSITORY/issues/$ISSUE_NUMBER/comments" \
+            -f body="Pedido de Scan recebido. O workflow foi acionado em modo somente leitura; o resumo será publicado aqui quando a execução terminar."

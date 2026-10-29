@@ -115,11 +115,19 @@ def normalize_and_validate(rows: Any, symbol: str, interval_seconds: int) -> lis
             raise CandleContractError(f"NOT_CHRONOLOGICAL:{symbol}:{index}")
         seen.add(key)
         previous = timestamp
-        volume = raw.get("volume", 0)
+        volume_raw = raw.get("volume", 0)
+        if volume_raw is None:
+            volume_raw = 0
+        if isinstance(volume_raw, bool):
+            raise CandleContractError(f"INVALID_volume:{symbol}:{index}")
         try:
-            volume = float(volume or 0)
-        except (TypeError, ValueError, OverflowError):
-            volume = 0.0
+            volume = float(volume_raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise CandleContractError(f"INVALID_volume:{symbol}:{index}") from exc
+        if not math.isfinite(volume):
+            raise CandleContractError(f"NONFINITE_volume:{symbol}:{index}")
+        if volume < 0:
+            raise CandleContractError(f"NEGATIVE_volume:{symbol}:{index}")
         out.append({"symbol": symbol,
                     "timeframe": TIMEFRAME_NAMES.get(interval_seconds, f"M{interval_seconds // 60}"),
                     "timestamp": timestamp, "open": opened, "high": high,
