@@ -263,3 +263,29 @@ class FastMarketLaneTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SymbolSelectionTests(unittest.TestCase):
+    def test_all_available_expands_to_snapshot_keys_not_literal_sentinel(self):
+        from scripts.symbol_selection import resolve_requested_symbols
+        symbols = resolve_requested_symbols(
+            "ALL_AVAILABLE",
+            ["EURUSD", "GBPUSD", "EURUSD-OTC"],
+        )
+        self.assertEqual(symbols, ["EURUSD", "GBPUSD", "EURUSD-OTC"])
+        self.assertNotIn("ALL_AVAILABLE", symbols)
+
+    def test_explicit_symbols_deduplicate_otc_and_finbert_uses_base_pairs(self):
+        from scripts.symbol_selection import resolve_requested_symbols
+        darts = resolve_requested_symbols(
+            "EURUSD GBPUSD",
+            ["EURUSD", "GBPUSD"],
+            include_otc=True,
+        )
+        self.assertEqual(darts, ["EURUSD", "GBPUSD", "EURUSD-OTC", "GBPUSD-OTC"])
+        news = resolve_requested_symbols(
+            "ALL_AVAILABLE",
+            ["EURUSD", "EURUSD-OTC", "GBPUSD"],
+            base_pairs_only=True,
+        )
+        self.assertEqual(news, ["EURUSD", "GBPUSD"])
+
