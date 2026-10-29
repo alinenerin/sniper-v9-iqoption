@@ -48,6 +48,11 @@ on:
           - binary
           - forex
           - unified
+      request_issue:
+        description: 'Issue que solicitou o scan (uso interno do acionador por comentário)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   unified-scan:
@@ -64,6 +69,7 @@ jobs:
       FAST_MODE: ${{ github.event.inputs.fast_mode }}
       SNIPER_MODE: ${{ github.event.inputs.sniper_mode }}
       NO_SCORE_MODE: ${{ github.event.inputs.no_score_mode }}
+      REQUEST_ISSUE: ${{ github.event.inputs.request_issue }}
       LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
       MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
     steps:
@@ -487,3 +493,53 @@ jobs:
             reports/sniper_step_timings.jsonl
             reports/sniper_layer_b.json
 
+
+      - name: Return scan status to requesting issue
+        if: always() && github.event.inputs.request_issue != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUEST_ISSUE: ${{ github.event.inputs.request_issue }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path('reports/latest_scan.json')
+          lines = ['## Resultado do Scan (somente leitura)', '']
+          if not p.exists():
+              lines += ['**Status:** falhou antes de gerar o relatório.', '', 'Consulte os logs desta execução para identificar a etapa que falhou.']
+          else:
+              try:
+                  r = json.loads(p.read_text())
+                  lines += [
+                      f"**Modo:** {r.get('mode', 'desconhecido')}",
+                      f"**Execução de operações:** permitida = {r.get('execution_allowed', 'desconhecido')}",
+                      f"**Data UTC:** {r.get('timestamp_utc', 'não informada')}",
+                      ''
+                  ]
+                  for book_name in ('binary', 'forex'):
+                      book = r.get(book_name) or {}
+                      analyses = book.get('analyses') or []
+                      lines += [f"### {book_name.upper()} — {book.get('status', 'sem status')}", f"Pares no relatório: {len(analyses)}", '']
+                      if analyses:
+                          lines += ['| Par | Estado da análise | Motivos de bloqueio/erro |', '|---|---|---|']
+                          for item in analyses:
+                              reasons = item.get('actionability_reasons') or item.get('vetoes') or []
+                              components = item.get('components') or {}
+                              failed = [f"{k}: {v.get('reason', v.get('status', 'erro'))}" for k,v in components.items() if isinstance(v,dict) and v.get('status') in ('blocked','error','insufficient-data','unavailable')]
+                              reasons = list(dict.fromkeys([str(x) for x in reasons] + failed))
+                              state = item.get('status', 'sem status')
+                              lines.append(f"| {item.get('symbol','?')} | {state} | {'; '.join(reasons) or '—'} |")
+                          lines.append('')
+                  modules = Path('reports/module-logs/module_status.json')
+                  if modules.exists():
+                      m = json.loads(modules.read_text())
+                      failed = m.get('failed_modules') or []
+                      lines += ['### Módulos de análise', f"Falhas: {', '.join(failed) if failed else 'nenhuma registrada'}", '']
+                  lines += ['**Segurança:** relatório somente leitura; nenhum comando de operação foi habilitado.']
+              except Exception as e:
+                  lines += [f"Não foi possível interpretar o relatório: {type(e).__name__}: {e}"]
+          lines += ['', f"Execução: https://github.com/{os.environ.get('GITHUB_REPOSITORY','')}/actions/runs/{os.environ.get('GITHUB_RUN_ID','')}"]
+          Path(os.environ['RUNNER_TEMP'], 'scan-comment.md').write_text('\n'.join(lines))
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/issues/$REQUEST_ISSUE/comments" -f body="$(cat "$RUNNER_TEMP/scan-comment.md")"
