@@ -165,7 +165,7 @@ class FastMarketLaneTests(unittest.TestCase):
         m1 = [{"timestamp": m1_last - i * 60, "close": 1.0} for i in range(119, -1, -1)]
         m5 = [{"timestamp": m5_last - i * 300, "close": 1.0} for i in range(30, -1, -1)]
         payload = {"symbols": {
-            "EURUSD": {"candles": {"candles": m1, "observed_timestamp": now - 10},
+            "EURUSD": {"candles": {"candles": m1, "observed_timestamp": now},
                        "m5_candles": {"candles": m5, "observed_timestamp": now}},
             "GBPUSD": {"candles": {"candles": m1[:20], "observed_timestamp": now},
                        "m5_candles": {"candles": m5, "observed_timestamp": now}},
@@ -174,9 +174,11 @@ class FastMarketLaneTests(unittest.TestCase):
             "AUDUSD": {"candles": {"candles": m1, "observed_timestamp": now},
                        "m5_candles": {"candles": m5[:10], "observed_timestamp": now}},
         }}
-        timing = build_fast_timing(payload, now=now + 1)
+        # Timestamp is the candle open; the closed-candle age is fresh even
+        # when the raw timestamp is older than the configured freshness window.
+        timing = build_fast_timing(payload, now=now + 1, max_m1_age_seconds=90)
         self.assertEqual(timing["symbols"]["EURUSD"]["status"], "ok")
-        self.assertEqual(timing["symbols"]["EURUSD"]["m1"]["observed_timestamp"], now - 10)
+        self.assertEqual(timing["symbols"]["EURUSD"]["m1"]["observed_timestamp"], now)
         self.assertEqual(timing["symbols"]["GBPUSD"]["m1"]["reason"], "FINAL_TIMING_INCOMPLETE_M1")
         self.assertEqual(timing["symbols"]["USDJPY"]["m1"]["reason"], "FINAL_M1_CANDLE_STALE")
         self.assertTrue(timing["symbols"]["AUDUSD"]["m5"]["status"] == "blocked")
