@@ -252,6 +252,9 @@ class FastMarketLaneTests(unittest.TestCase):
         self.assertIn("fast_direct_m1_m5_uncached", fetcher)
         self.assertIn("fetch_status", fetcher)
         self.assertIn("build_fast_timing", fetcher)
+        refresh_step = workflow.split("- name: Refresh final M1/M5 timing without replacing agent evidence", 1)[1].split("- name:", 1)[0]
+        self.assertIn("if: success()", refresh_step)
+        self.assertNotIn("fast_mode != 'true'", refresh_step)
         coverage_step = workflow.split("- name: Verify fast-mode pair coverage and timing provenance", 1)[1].split("- name:", 1)[0]
         self.assertIn("missing_report", coverage_step)
         self.assertIn("execution_allowed", coverage_step)
