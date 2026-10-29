@@ -37,3 +37,5 @@ jobs:
           assert 'buy(' not in Path('engines/binary/operational.py').read_text()
           print('engine boundaries: OK')
           PY
+      - name: Test market-data contract regression cases
+        run: python -m unittest -v test_market_data_contract.py
