@@ -1,5 +1,9 @@
 name: Unified V16 Scan - Read Only
 
+permissions:
+  contents: read
+  issues: write
+
 # The gateway uses one serialized IQ Option session. Overlapping scans queue
 # provider calls and make live candles stale, so only the newest scan may run.
 concurrency:
