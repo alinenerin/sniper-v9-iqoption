@@ -261,9 +261,6 @@ class FastMarketLaneTests(unittest.TestCase):
         self.assertIn("missing_report", coverage_step)
         self.assertIn("execution_allowed", coverage_step)
 
-if __name__ == "__main__":
-    unittest.main()
-
 class SymbolSelectionTests(unittest.TestCase):
     def test_all_available_expands_to_snapshot_keys_not_literal_sentinel(self):
         from scripts.symbol_selection import resolve_requested_symbols
@@ -289,3 +286,5 @@ class SymbolSelectionTests(unittest.TestCase):
         )
         self.assertEqual(news, ["EURUSD", "GBPUSD"])
 
+if __name__ == "__main__":
+    unittest.main()
