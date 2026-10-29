@@ -171,6 +171,7 @@ jobs:
           path: ~/.cache/huggingface
           key: finbert-timesfm-prosusai-${{ runner.os }}-v2
       - name: Run intelligence modules in parallel (read-only)
+        continue-on-error: true
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           HF_HOME: ~/.cache/huggingface
@@ -188,11 +189,29 @@ jobs:
           wait $p1; r1=$?; wait $p2; r2=$?; wait $p3; r3=$?; wait $p4; r4=$?; wait $p5; r5=$?
           python scripts/record_sniper_timing.py mandatory_and_advisory_modules "$modules_started"
           echo "module_exit_codes darts=$r1 timesfm=$r2 finbert=$r3 xgboost=$r4 m5_shadow=$r5"
+          export DARTS_RC="$r1" TIMESFM_RC="$r2" FINBERT_RC="$r3" XGBOOST_RC="$r4" M5_SHADOW_RC="$r5"
+          python - <<'PYMODULES'
+          import json, os
+          from pathlib import Path
+          codes = {name: int(os.environ[f"{name}_RC"]) for name in ("DARTS", "TIMESFM", "FINBERT", "XGBOOST", "M5_SHADOW")}
+          status = {"read_only": True, "execution_allowed": False,
+                    "modules": {name.lower(): {"status": "completed" if rc == 0 else "error", "exit_code": rc}
+                                for name, rc in codes.items()},
+                    "failed_modules": [name.lower() for name, rc in codes.items() if rc != 0]}
+          Path("reports/module-logs/module_status.json").write_text(json.dumps(status, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("### Read-only intelligence module status\n\n")
+              summary.write("| Module | Status | Exit code |\n|---|---|---:|\n")
+              for name, item in status["modules"].items():
+                  summary.write(f"| {name} | {item['status']} | {item['exit_code']} |\n")
+          print("module_status=" + json.dumps(status, sort_keys=True))
+          PYMODULES
           echo "--- xgboost.log ---"; cat reports/module-logs/xgboost.log || true
           echo "--- timesfm.log ---"; tail -80 reports/module-logs/timesfm.log || true
           echo "--- m5_shadow.log ---"; cat reports/module-logs/m5_shadow.log || true
-          # Modules are advisory/read-only; their evidence is inspected by the report.
-          exit 0
+          if [ "$r1" -ne 0 ] || [ "$r2" -ne 0 ] || [ "$r3" -ne 0 ] || [ "$r4" -ne 0 ] || [ "$r5" -ne 0 ]; then
+            exit 1
+          fi
       - name: Compile read-only analysis modules
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/sniper_mode.py scripts/record_sniper_timing.py engines/binary/sniper_timing.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py scripts/run_m5_inference.py scripts/run_sniper_layer_b.py
       - name: Refresh final M1/M5 timing without replacing agent evidence
@@ -459,6 +478,7 @@ jobs:
             reports/finbert_inference.json
             reports/m5_shadow_inference.json
             reports/module-logs/m5_shadow.log
+            reports/module-logs/module_status.json
             reports/live_signals.jsonl
             reports/latest_signal.json
             reports/sniper_timing.json
