@@ -126,9 +126,9 @@ def build_fast_timing(market_data: dict[str, Any], *, now: float | None = None,
         m1_status, m1_reason = "ok", None
         if len(m1_valid) < 100 or m1_latest is None:
             m1_status, m1_reason = "blocked", "FINAL_TIMING_INCOMPLETE_M1"
-        elif m1_raw_age is None or m1_raw_age > float(max_m1_age_seconds):
-            m1_status, m1_reason = "blocked", "FINAL_M1_CANDLE_STALE"
-        elif m1_age is None or m1_age > 120:
+        # Provider timestamps mark the candle start, so freshness must be
+        # measured from the completed candle close, not its opening timestamp.
+        elif m1_age is None or m1_age > float(max_m1_age_seconds):
             m1_status, m1_reason = "blocked", "FINAL_M1_CANDLE_STALE"
         m5_status, m5_reason = "ok", None
         if len(m5_closed) < 25:

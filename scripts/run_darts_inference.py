@@ -11,9 +11,13 @@ from market_data_contract import snapshot_id
 market_path = Path('reports/market_data.json')
 market = json.loads(market_path.read_text()) if market_path.exists() else {}
 MARKET_SNAPSHOT_ID = snapshot_id(market)
-requested = __import__('os').getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD').replace(',', ' ').split()
-if __import__('os').getenv('INCLUDE_OTC', 'false').lower() == 'true':
-    requested += [s if s.endswith('-OTC') else s + '-OTC' for s in requested if not s.endswith('-OTC')]
+from scripts.symbol_selection import resolve_requested_symbols
+
+requested = resolve_requested_symbols(
+    __import__('os').getenv('SYMBOLS', 'EURUSD GBPUSD USDJPY AUDUSD'),
+    (market.get('symbols') or {}).keys(),
+    include_otc=__import__('os').getenv('INCLUDE_OTC', 'false').lower() == 'true',
+)
 results = {}
 for symbol in requested:
     payload = market.get('symbols', {}).get(symbol, {})

@@ -12,10 +12,25 @@ import requests
 from transformers import pipeline
 
 
-SYMBOLS = [
-    s.upper().replace("-OTC", "")
-    for s in os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD").replace(",", " ").split()
-]
+# Resolve ALL_AVAILABLE against the exact market snapshot keys. The CI
+# workflow passes this sentinel; treating it as a literal symbol silently
+# produced reports with no per-pair FinBERT evidence.
+import sys
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.symbol_selection import resolve_requested_symbols
+
+MARKET_PATH = Path("reports/market_data.json")
+try:
+    MARKET_DATA = json.loads(MARKET_PATH.read_text())
+except (OSError, json.JSONDecodeError):
+    MARKET_DATA = {}
+SYMBOLS = resolve_requested_symbols(
+    os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD"),
+    (MARKET_DATA.get("symbols") or {}).keys(),
+    base_pairs_only=True,
+)
 INCLUDE_OTC = os.getenv("INCLUDE_OTC", "false").lower() == "true"
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
 NEWS_LIMIT = max(1, min(int(os.getenv("FINNHUB_NEWS_LIMIT", "30")), 100))
