@@ -54,7 +54,8 @@ class TestMarketDataContract(unittest.TestCase):
         m5 = [candle(300 * i) for i in range(1, 32)]
         data = {'EURUSD': {'m1': [candle(9820)], 'm5': m5}}
         result = validate_snapshot_freshness(
-            data, now=now, max_m1_age_seconds=120
+            data, now=now, max_m1_age_seconds=120,
+            max_m5_close_age_seconds=500
         )
         self.assertTrue(result['ok'], result['errors'])
         self.assertEqual(result['symbols']['EURUSD']['m1_age_seconds'], 120)
