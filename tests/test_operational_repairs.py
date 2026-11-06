@@ -24,7 +24,9 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertNotIn("Fetch deep data for selected candidates", workflow)
         self.assertEqual(workflow.count("python scripts/fetch_railway_market.py"), 1)
         timing_step = workflow.split("- name: Refresh final M1/M5 timing", 1)[1].split("- name:", 1)[0]
-        self.assertIn("if: github.event.inputs.sniper_mode == 'true' || github.event.inputs.fast_mode != 'true'", timing_step)
+        self.assertIn("if: success()", timing_step)
+        self.assertNotIn("github.event.inputs.sniper_mode == 'true' || github.event.inputs.fast_mode != 'true'", timing_step)
+        self.assertIn("FAST_TRIAGE: 'true'", timing_step)
         fast_input = workflow.split("      fast_mode:", 1)[1].split("      no_score_mode:", 1)[0]
         self.assertIn("default: false", fast_input)
         self.assertIn("-intelligence-v5", workflow)
