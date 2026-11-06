@@ -387,7 +387,8 @@ class IQOptionReadonly:
                             # Copy it on the SDK worker so websocket updates cannot
                             # mutate the mapping while this collector iterates it.
                             value = api.get_realtime_candles(symbol, interval)
-                            return dict(value) if isinstance(value, dict) else value
+                            return {stamp: dict(candle) if isinstance(candle, dict) else candle
+                                    for stamp, candle in value.items()} if isinstance(value, dict) else value
                         with _provider_lock:
                             raw = _bounded_call(read_stream_snapshot, timeout=8)
                         if not isinstance(raw, dict) or not raw:
