@@ -25,7 +25,7 @@ def fetch_macro(timeout=15):
   'request_url':TRADINGVIEW_URL,'request_timestamp_utc':None,'response_timestamp_utc':None,
   'http_status':None,'response_headers':{},'raw_response':None,'raw_response_sha256':None,
   'quote_timestamps_available':False,
-  'quote_timestamp_limitation':'TradingView scanner has no per-instrument timestamp; Yahoo chart observation timestamp is attached as supplemental quote timestamp.'}
+  'quote_timestamp_limitation':'TradingView scanner has no per-instrument quote timestamp; Yahoo chart timestamp observations are separate supplemental provenance, not TradingView quote timestamps.'}
  body={'symbols':{'tickers':list(TICKERS.values()),'query':{'types':[]}},'columns':['close','change']}
  try:
   req=Request(TRADINGVIEW_URL,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','User-Agent':'BinaryQuantX/1.0'})
