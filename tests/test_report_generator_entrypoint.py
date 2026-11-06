@@ -45,7 +45,7 @@ assert module.TRADING_CONFIG is not None
             # Captured shape from the real Run 35382406493 artifact: connected
             # read-only gateway, no discovered assets, and no fabricated candles.
             payload = {
-                "source": "https://iqoption-readonly-gateway-production.up.railway.app",
+                "source": "https://iqoption-readonly-gateway.onrender.com",
                 "read_only": True,
                 "health": {"status": "connected", "mode": "analysis-only", "executor_enabled": False},
                 "assets": [], "fresh_symbols": [], "symbols": {},

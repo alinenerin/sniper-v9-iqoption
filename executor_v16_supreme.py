@@ -26,8 +26,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [BINARY] %(message)s
 logger = logging.getLogger("BINARY_V16_SUPREME")
 
 
-class RailwayGatewayClient:
-    """Read-only adapter: GitHub Actions consumes the Railway IQ gateway."""
+class MarketGatewayClient:
+    """Read-only adapter: GitHub Actions consumes the configured market gateway."""
     def __init__(self, base_url: str, symbols):
         import json, urllib.parse, urllib.request
         self.base_url = base_url.rstrip("/")
@@ -35,7 +35,7 @@ class RailwayGatewayClient:
         with urllib.request.urlopen(self.base_url + "/api/market/snapshot_batch?" + query, timeout=300) as r:
             self.batch = json.load(r)
         if not self.batch.get("ok", False):
-            raise RuntimeError("Railway gateway returned no market snapshot")
+            raise RuntimeError("Market gateway returned no market snapshot")
         self.symbols = self.batch["symbols"]
         self.payouts = self.batch["payouts"]
 
@@ -196,11 +196,11 @@ def main(once: bool = False, symbols: Optional[Iterable[str]] = None, otc: bool 
     selected = list(symbols) if symbols else list(DEFAULT_SYMBOLS)
     if otc:
         selected.extend(DEFAULT_OTC_SYMBOLS)
-    if os.getenv("RAILWAY_GATEWAY_URL"):
-        api = RailwayGatewayClient(os.getenv("RAILWAY_GATEWAY_URL"), selected)
-        logger.info("Railway gateway conectado para análise somente leitura")
-    else:
-        api = inicializar_api_blindada()
+    gateway_url = os.getenv("MARKET_GATEWAY_URL", "").strip()
+    if not gateway_url:
+        raise RuntimeError("MARKET_GATEWAY_URL_REQUIRED_READONLY; direct broker login is disabled in this workflow")
+    api = MarketGatewayClient(gateway_url, selected)
+    logger.info("Market gateway conectado para análise somente leitura")
     started = time.time()
     while True:
         scan_once(api, selected)

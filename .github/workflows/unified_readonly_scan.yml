@@ -182,7 +182,7 @@ jobs:
         # The fetcher exits 0 with any valid pair; zero usable pairs remain fatal.
         run: |
           fetch_started=$(date +%s.%N)
-          python scripts/fetch_railway_market.py
+          python scripts/fetch_market_gateway.py
           rc=$?
           python scripts/record_sniper_timing.py market_data_fetch "$fetch_started"
           exit "$rc"
