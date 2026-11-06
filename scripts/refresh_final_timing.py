@@ -1,14 +1,20 @@
 """Fetch uncached final M1/M5 timing data from the active read-only gateway."""
 import json
 import os
+import sys
 import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 base = os.getenv("MARKET_GATEWAY_URL", "https://iqoption-readonly-gateway.onrender.com").rstrip("/")
-symbols = os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY").replace(",", " ").split()
+from scripts.symbol_selection import resolve_symbols
+symbols = resolve_symbols(os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY"),
+                          otc_only=os.getenv("OTC_ONLY", "false").lower() == "true",
+                          include_otc=os.getenv("INCLUDE_OTC", "false").lower() == "true")
 M5_INTERVAL_SECONDS = 300
 M5_MIN_CLOSED = 25
 M5_ENTRY_MAX_AGE_SECONDS = 300

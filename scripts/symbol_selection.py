@@ -1,32 +1,33 @@
-"""Resolve analysis symbol lists against the fetched market snapshot."""
+"""Resolve scan symbol selectors to strict, isolated FX/OTC allowlists."""
 from __future__ import annotations
 
-from typing import Iterable
+from market_universes import OTC_SYMBOLS, REAL_SYMBOLS
+
+SELECTORS = {"ALL", "ALL_AVAILABLE", "*"}
 
 
-_ALL_SENTINELS = {"ALL", "ALL_AVAILABLE", "*"}
-
-
-def resolve_requested_symbols(
-    raw_symbols: str | None,
-    available_symbols: Iterable[str],
-    *,
-    include_otc: bool = False,
-    base_pairs_only: bool = False,
-) -> list[str]:
-    """Expand ALL_AVAILABLE to real snapshot keys; never emit the sentinel as a symbol."""
-    available = [str(item).strip().upper() for item in available_symbols if str(item).strip()]
-    tokens = [part.strip().upper() for part in str(raw_symbols or "").replace(",", " ").split() if part.strip()]
-    if not tokens or any(token in _ALL_SENTINELS for token in tokens):
-        requested = available
-    else:
-        requested = tokens
+def resolve_symbols(raw: str, *, otc_only: bool = False, include_otc: bool = False) -> list[str]:
+    """Expand wildcard selectors or validate explicit symbols without widening scope."""
+    tokens = [item.strip().upper().replace("/", "").replace("_OTC", "-OTC")
+              for item in str(raw or "").replace(",", " ").split() if item.strip()]
+    if not tokens:
+        raise ValueError("NO_SYMBOLS_REQUESTED")
+    if any(item in SELECTORS for item in tokens):
+        if len(tokens) != 1:
+            raise ValueError("WILDCARD_CANNOT_BE_MIXED_WITH_SYMBOLS")
+        if otc_only:
+            return list(OTC_SYMBOLS)
         if include_otc:
-            requested.extend(item + "-OTC" for item in tokens if not item.endswith("-OTC"))
-
-    if base_pairs_only:
-        requested = [item.replace("-OTC", "") for item in requested]
-
-    # De-duplicate while preserving provider order. For snapshot-derived requests,
-    # only real keys are included; no phantom ALL_AVAILABLE or absent OTC keys.
-    return list(dict.fromkeys(item for item in requested if item and item not in _ALL_SENTINELS))
+            return [*REAL_SYMBOLS, *OTC_SYMBOLS]
+        return list(REAL_SYMBOLS)
+    allowed = set(OTC_SYMBOLS if otc_only else (REAL_SYMBOLS + OTC_SYMBOLS if include_otc else REAL_SYMBOLS))
+    result: list[str] = []
+    rejected: list[str] = []
+    for symbol in tokens:
+        if symbol not in allowed:
+            rejected.append(symbol)
+        elif symbol not in result:
+            result.append(symbol)
+    if rejected:
+        raise ValueError("UNAUTHORIZED_SYMBOLS:" + ",".join(rejected))
+    return result
