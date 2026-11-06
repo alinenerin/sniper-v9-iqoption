@@ -25,11 +25,13 @@ _patched = False
 _reconnect_lock = threading.Lock()
 _provider_lock = threading.Lock()
 _session_id = None
+# Official provider active-ID mapping is stable for one authenticated session.
+_active_map_session_id = None
 _reconnect_attempts = 0
 _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
-_stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'collector_error': None, 'polls': 0}
+_stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'collector_error': None, 'polls': 0, 'last_poll_cycle_ms': None, 'max_poll_cycle_ms': 0.0, 'last_poll_completed_at': None}
 _REAL_FX_SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY']
 _warm_thread = None
 _warm_updates = {}
@@ -349,15 +351,15 @@ class IQOptionReadonly:
                 _warm_payouts = payouts
                 _warm_state['status'] = 'warming'
 
-            # One warm-up window, followed by a single serialized poll loop.
-            # HTTP scans read only this buffer and therefore never race the SDK.
-            time.sleep(5)
+            # The stream subscriptions are already active. Read their local
+            # buffers immediately instead of making every scan wait five seconds.
             while True:
                 if not self.connected or not self.api:
                     with _lock:
                         _warm_state['status'] = 'disconnected'
                         _warm_state['reason'] = 'IQ_OPTION_DISCONNECTED'
                     break
+                cycle_started = time.monotonic()
                 for symbol in symbols:
                     for interval, _ in intervals:
                         key = f'{symbol}:{interval}'
@@ -380,9 +382,15 @@ class IQOptionReadonly:
                                     _warm_state['errors'][f'{key}:subscribe'] = 'STREAM_SUBSCRIBE_FAILED'
                         if not subscribed:
                             continue
+                        def read_stream_snapshot(api=api, symbol=symbol, interval=interval):
+                            # get_realtime_candles returns the SDK's mutable dict.
+                            # Copy it on the SDK worker so websocket updates cannot
+                            # mutate the mapping while this collector iterates it.
+                            value = api.get_realtime_candles(symbol, interval)
+                            return {stamp: dict(candle) if isinstance(candle, dict) else candle
+                                    for stamp, candle in value.items()} if isinstance(value, dict) else value
                         with _provider_lock:
-                            raw = _bounded_call(api.get_realtime_candles, symbol,
-                                                interval, timeout=8)
+                            raw = _bounded_call(read_stream_snapshot, timeout=8)
                         if not isinstance(raw, dict) or not raw:
                             with _lock:
                                 _warm_state['errors'][f'{symbol}:{interval}:stream'] = 'REALTIME_STREAM_EMPTY'
@@ -428,7 +436,12 @@ class IQOptionReadonly:
                     _warm_state['pair_status'] = pair_status
                     _warm_state['status'] = 'ready' if len(ready_symbols) == len(symbols) else 'warming'
                     _warm_state['updated_at'] = now
-                time.sleep(2)
+                    cycle_ms = (time.monotonic() - cycle_started) * 1000.0
+                    _stream_diag['last_poll_cycle_ms'] = round(cycle_ms, 3)
+                    _stream_diag['max_poll_cycle_ms'] = max(
+                        float(_stream_diag.get('max_poll_cycle_ms') or 0.0), cycle_ms)
+                    _stream_diag['last_poll_completed_at'] = now
+                time.sleep(1)
         except Exception as exc:
             with _lock:
                 _warm_state['status'] = 'failed'
@@ -591,6 +604,7 @@ class IQOptionReadonly:
 
     def candles(self, symbol, interval=60, count=1000, market_type=None, allow_cache=True):
         """Return only a validated, fresh, sufficiently deep historical dataset."""
+        global _active_map_session_id
         requested_at = time.time()
         requested_symbol = str(symbol).upper()
         interval = int(interval)
@@ -622,6 +636,9 @@ class IQOptionReadonly:
             "mapping_source": "NOT_ATTEMPTED",
             "mapping_updated": False,
             "active_id_resolution_status": "NOT_ATTEMPTED",
+            "mapping_cache_hit": False,
+            "mapping_refresh_ms": 0.0,
+            "provider_call_ms": 0.0,
         })
         if market_type not in ("REAL", "OTC") or expected_otc != (market_type == "OTC"):
             base.update(status="ERROR", provider_status="SYMBOL_MARKET_TYPE_MISMATCH", validation_status="ERROR", freshness_status="ERROR",
@@ -648,17 +665,33 @@ class IQOptionReadonly:
                             api = self.api if self.connected else None
                             base["connection_state"] = _state.get('status')
                             base["session_id"] = _session_id
+                            mapping_session_id = _session_id
 
-                        # Symbols are resolved only through the SDK's official
-                        # binary/turbo initializer. This method mutates
-                        # OP_code.ACTIVES from the provider init payload; no
-                        # local alias or guessed active ID is introduced.
+                        # The official active-ID map is session-scoped. Refresh it
+                        # once per authenticated session, not once per symbol and
+                        # timeframe request. If this symbol is absent, refresh once
+                        # for the request before failing closed.
                         if api:
                             before = OP_code.ACTIVES.get(provider_symbol)
                             base["active_id_before"] = before
-                            base["mapping_source"] = "IQ_Option.get_ALL_Binary_ACTIVES_OPCODE"
-                            refresh_result = _bounded_call(api.get_ALL_Binary_ACTIVES_OPCODE, timeout=35)
-                            after = OP_code.ACTIVES.get(provider_symbol)
+                            mapping_cached = (
+                                bool(mapping_session_id)
+                                and _active_map_session_id == mapping_session_id
+                                and before is not None
+                            )
+                            base["mapping_cache_hit"] = mapping_cached
+                            if mapping_cached:
+                                refresh_result = None
+                                after = before
+                                base["mapping_source"] = "IQ_OPTION_SESSION_MAPPING_CACHE"
+                            else:
+                                base["mapping_source"] = "IQ_Option.get_ALL_Binary_ACTIVES_OPCODE"
+                                mapping_started = time.monotonic()
+                                refresh_result = _bounded_call(api.get_ALL_Binary_ACTIVES_OPCODE, timeout=35)
+                                base["mapping_refresh_ms"] = round((time.monotonic() - mapping_started) * 1000.0, 3)
+                                after = OP_code.ACTIVES.get(provider_symbol)
+                                if after is not None and mapping_session_id:
+                                    _active_map_session_id = mapping_session_id
                             base["active_id_after"] = after
                             base["mapping_updated"] = before != after and after is not None
                             base["active_id_resolution_status"] = "RESOLVED" if after is not None else "ACTIVE_ID_UNAVAILABLE"
@@ -677,7 +710,9 @@ class IQOptionReadonly:
                                 base["response_timestamp"] = datetime.now(timezone.utc).isoformat()
                                 _trace(base.copy())
                                 return base
+                        provider_started = time.monotonic()
                         raw = _bounded_call(api.get_candles, provider_symbol, interval, target, cursor, timeout=25) if api else None
+                        base["provider_call_ms"] = round((time.monotonic() - provider_started) * 1000.0, 3)
                         provider_state = _state.get('status')
                         if raw is None and provider_state != 'connected':
                             self._schedule_reconnect('IQ_OPTION_PROVIDER_CALL_FAILED')
@@ -714,6 +749,7 @@ class IQOptionReadonly:
             validation = validate_candles(best, interval, required, symbol=requested_symbol, market_type=market_type)
             base.update({"candles_received": validation.valid, "validation": validation.to_dict(), "validation_status": validation.status,
                          "freshness_status": validation.freshness_status, "provider_status": "OK" if best else "EMPTY_RESPONSE",
+                         "elapsed_ms": round((time.time() - requested_at) * 1000.0, 3),
                          "response_timestamp": datetime.now(timezone.utc).isoformat()})
             if validation.status == "PASS":
                 base.update(status="OK", source="IQ_OPTION_HISTORICAL" if not base["cache_hit"] else "IQ_OPTION_HISTORICAL_PLUS_CACHE", candles=sorted(best, key=lambda x: x["timestamp"])[-target:])
