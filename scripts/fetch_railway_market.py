@@ -18,6 +18,10 @@ otc_only = os.getenv('OTC_ONLY', 'false').lower() == 'true'
 # tighten but cannot weaken the 120-second M1 freshness gate.
 max_age = min(int(os.getenv('MAX_CANDLE_AGE_SECONDS', '120')), 120)
 fast_triage = os.getenv('FAST_TRIAGE', 'false').lower() == 'true'
+use_warm_stream = os.getenv('USE_WARM_STREAM', 'false').lower() == 'true'
+warmup_timeout = max(60, min(int(os.getenv('WARMUP_TIMEOUT_SECONDS', '360')), 900))
+if use_warm_stream and (otc_only or include_otc):
+    raise RuntimeError('WARM_STREAM_REAL_FX_ONLY')
 REAL_SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY']
 OTC_SYMBOLS = [symbol + '-OTC' for symbol in REAL_SYMBOLS]
 
@@ -205,7 +209,83 @@ batch_diagnostics = []
 # Payouts returned by the same persistent snapshot are preferred; this avoids
 # one expensive IQ init request per symbol.
 batch_payouts = {}
-if fast_triage:
+batch_assets = []
+if use_warm_stream:
+    # Keep the complete authorized real-FX universe warm even when this scan
+    # consumes only a subset. Readiness is never inferred from a partial pool.
+    warm_pairs_query = urllib.parse.urlencode({'pairs': ','.join(REAL_SYMBOLS)})
+    try:
+        started = time.perf_counter()
+        start_payload = get('/api/market/prewarm?' + warm_pairs_query,
+                            timeout=FETCH_TIMEOUT_SECONDS, attempts=1)
+        print(f"warmup_start status={start_payload.get('status')} symbols={len(start_payload.get('symbols') or [])}")
+        deadline = time.monotonic() + warmup_timeout
+        warm_payload = None
+        next_log = time.monotonic()
+        while time.monotonic() < deadline:
+            candidate = get('/api/market/warm_snapshot?' + warm_pairs_query,
+                            timeout=FETCH_TIMEOUT_SECONDS, attempts=1)
+            if candidate.get('ready') is True and candidate.get('ok') is True:
+                from scripts.warm_readonly_gateway import validate_ready
+                valid_warm_snapshot, readiness_errors = validate_ready(candidate)
+                if not valid_warm_snapshot:
+                    raise RuntimeError('WARM_SNAPSHOT_VALIDATION_FAILED:' + ';'.join(readiness_errors[:12]))
+                warm_payload = candidate
+                break
+            status = candidate.get('status')
+            if status in ('blocked', 'busy', 'failed', 'disconnected'):
+                raise RuntimeError(candidate.get('reason') or f'WARM_CACHE_{str(status).upper()}')
+            if time.monotonic() >= next_log:
+                print(f"warmup_wait status={status} ready={len(candidate.get('ready_symbols') or [])}/{len(symbols)}")
+                next_log = time.monotonic() + 30
+            time.sleep(3)
+        if warm_payload is None:
+            raise TimeoutError('WARM_CACHE_READINESS_TIMEOUT')
+        for symbol in symbols:
+            pair_data = (warm_payload.get('symbols') or {}).get(symbol)
+            if not isinstance(pair_data, dict):
+                errors[f'warm:{symbol}'] = 'WARM_SNAPSHOT_PAIR_MISSING'
+                continue
+            for key, interval in (('m1', 60), ('m3', 180), ('m5', 300)):
+                payload = pair_data.get(key) or {}
+                rows = payload.get('candles') or [] if isinstance(payload, dict) else []
+                collected[symbol][key] = {**(payload if isinstance(payload, dict) else {}),
+                                          'candles': rows if isinstance(rows, list) else [],
+                                          'symbol': symbol, 'interval_seconds': interval,
+                                          'read_only': True}
+            collected[symbol]['realtime'] = pair_data.get('realtime') or []
+            collected[symbol]['quote'] = pair_data.get('quote')
+            collected[symbol]['quote_metadata'] = {
+                'source': pair_data.get('quote_source'),
+                'retrieved_at': pair_data.get('realtime_retrieved_at'),
+                'status': pair_data.get('realtime_status'),
+                'read_only': pair_data.get('realtime_read_only', True),
+                'timestamp_semantics': 'candle bucket timestamp; not an exchange tick timestamp',
+            }
+        batch_assets = warm_payload.get('assets') or []
+        for symbol, values in (warm_payload.get('payouts') or {}).items():
+            if isinstance(values, dict):
+                batch_payouts[symbol] = values
+        batch_diagnostics.append({
+            'symbols': list(symbols),
+            'elapsed_seconds': round(time.perf_counter() - started, 3),
+            'returned_symbols': list(warm_payload.get('collected_symbols') or []),
+            'lane': 'fast_direct_live_stream_warm_cache',
+            'cache_used': True,
+            'read_only': True,
+        })
+    except Exception as exc:
+        warm_reason = f'WARM_CACHE_NOT_READY:{type(exc).__name__}:{str(exc)[:120]}'
+        for symbol in symbols:
+            errors[f'warm:{symbol}'] = warm_reason
+            collected[symbol]['m1'] = {'candles': [], 'source': 'WARM_CACHE_BLOCKED',
+                                       'cache_used': True, 'read_only': True}
+            collected[symbol]['m5'] = {'candles': [], 'source': 'WARM_CACHE_BLOCKED',
+                                       'cache_used': True, 'read_only': True}
+        batch_diagnostics.append({'symbols': list(symbols), 'elapsed_seconds': None,
+                                  'returned_symbols': [], 'lane': 'fast_direct_live_stream_warm_cache',
+                                  'status': 'blocked', 'reason': warm_reason})
+elif fast_triage:
     from scripts.fast_market_lane import fetch_fast_pair
     # Every authorized pair gets the same bounded, uncached M1/M5 collection.
     # Calls remain serial because the gateway owns one IQ Option session.
@@ -373,7 +453,7 @@ for symbol, item in collected.items():
 
 # Fast timing is taken from the same uncached per-symbol responses as analysis;
 # preserve the observation timestamp attached to each provider call.
-if fast_triage:
+if fast_triage and not use_warm_stream:
     from scripts.fast_market_lane import build_fast_timing
     timing_input = {'symbols': {
         symbol: {'candles': item.get('m1'), 'm5_candles': item.get('m5')}
@@ -482,8 +562,8 @@ for symbol, status in pair_status.items():
         errors.setdefault(symbol, status.get('reason') or 'SNAPSHOT_INVALID')
 
 out = {'source': base, 'read_only': True, 'health': health,
-       'assets': [], 'payouts': payouts, 'symbols': {},
-       'fetch_mode': 'fast_direct_m1_m5_uncached' if fast_triage else 'gateway_batch1_bounded_recovery',
+       'assets': batch_assets, 'payouts': payouts, 'symbols': {},
+       'fetch_mode': 'fast_direct_live_stream_warm_cache' if use_warm_stream else ('fast_direct_m1_m5_uncached' if fast_triage else 'gateway_batch1_bounded_recovery'),
        'batch_diagnostics': batch_diagnostics,
        'fresh_symbols': fresh, 'fetch_errors': errors,
        'freshness_validation': freshness_validation,

@@ -2,11 +2,19 @@ name: Docker Smoke Test
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     paths:
       - 'Dockerfile'
       - 'requirements-gateway.txt'
       - 'current_iq.py'
+      - 'live_stream_cache.py'
+      - 'scripts/fetch_railway_market.py'
+      - 'scripts/fast_market_lane.py'
+      - 'scripts/refresh_final_timing.py'
+      - 'scripts/warm_readonly_gateway.py'
+      - 'tests/test_live_stream*.py'
+      - 'tests/test_warm_readiness.py'
       - 'market_gateway.py'
       - 'market_data_contract.py'
       - 'railway_start.py'
@@ -24,6 +32,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Python for read-only gateway contracts
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test live-stream readiness and read-only routes
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-gateway.txt
+          python -m unittest -v tests.test_live_stream_cache tests.test_live_stream_integration tests.test_warm_readiness tests.test_iq_sdk_singleflight
 
       - name: Build image without cache
         run: docker build --pull --no-cache -t sniper-gateway-smoke:${{ github.sha }} .

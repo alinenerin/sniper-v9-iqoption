@@ -12,6 +12,13 @@ def _balance_authorized(expected, supplied):
     return bool(expected) and hmac.compare_digest(str(supplied or ''), 'Bearer ' + expected)
 
 
+def _allow_candle_cache(query):
+    """Honor explicit cache bypasses without changing existing default callers."""
+    cache = str((query.get('cache') or ['true'])[0]).strip().lower()
+    fresh = str((query.get('fresh') or ['false'])[0]).strip().lower()
+    return cache not in {'false', '0', 'no'} and fresh not in {'true', '1', 'yes'}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, payload, code=200):
         body=json.dumps(payload, ensure_ascii=False).encode()
@@ -39,6 +46,15 @@ class Handler(BaseHTTPRequestHandler):
             s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-direct-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_DIRECT','gateway_version':'market-data-trace-v1','connection':s}); return
         if self.path.startswith('/api/market/collector'):
             self._send(SESSION.collector_status()); return
+        if parsed.path == '/api/market/prewarm':
+            raw = q.get('pairs', ['EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,USDCHF,NZDUSD,EURGBP,EURJPY,GBPJPY'])[0]
+            result = SESSION.start_warm_collector([s.strip() for s in raw.replace(' ', ',').split(',') if s.strip()])
+            code = 200 if result.get('status') not in ('blocked', 'busy') else 409
+            self._send(result, code); return
+        if parsed.path == '/api/market/warm_snapshot':
+            raw = q.get('pairs', ['EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,USDCHF,NZDUSD,EURGBP,EURJPY,GBPJPY'])[0]
+            result = SESSION.warm_snapshot_batch([s.strip() for s in raw.replace(' ', ',').split(',') if s.strip()])
+            self._send(result, 200); return
         if self.path.startswith('/api/market/macro'):
             # Keep macro isolated from candle boot; use the fixed TradingView
             # source directly so this route works even on a minimal gateway image.
@@ -63,7 +79,10 @@ class Handler(BaseHTTPRequestHandler):
             market_type=q.get('market_type',[None])[0]
             if market_type is None:
                 market_type='OTC' if str(symbol).upper().endswith('-OTC') else 'REAL'
-            payload=SESSION.candles(symbol,interval,count,market_type)
+            payload=SESSION.candles(symbol,interval,count,market_type,allow_cache=_allow_candle_cache(q))
+            payload['cache_used'] = bool(payload.get('cache_hit'))
+            payload['fresh'] = payload.get('status') == 'OK' and payload.get('freshness_status') == 'PASS'
+            payload['stale'] = not payload['fresh']
             self._send(payload); return
         if self.path.startswith('/api/market/trace'):
             request_id = q.get('request_id', [None])[0]
