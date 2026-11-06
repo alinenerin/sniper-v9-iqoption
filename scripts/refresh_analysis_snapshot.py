@@ -7,6 +7,9 @@ from __future__ import annotations
 import json, math, os, time, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in __import__("sys").path:
+    __import__("sys").path.insert(0, str(ROOT))
 from market_data_contract import snapshot_id
 try:
     from market_data_contract import validate_snapshot_freshness
