@@ -43,7 +43,7 @@ jobs:
           PY
       - name: Binary analysis (no orders)
         env:
-          RAILWAY_GATEWAY_URL: https://trader-analysis-api-production-82ba.up.railway.app
+          RAILWAY_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
         run: |
           FLAGS="--max-runtime ${{ inputs.max_runtime }}"
           if [ "${{ inputs.include_otc }}" = "true" ]; then FLAGS="$FLAGS --otc"; fi
