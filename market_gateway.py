@@ -4,6 +4,7 @@ import hmac, json, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from current_iq import IQOptionReadonly, connection_status
+from gateway_health import liveness_payload, readiness_payload
 
 SESSION = IQOptionReadonly()
 
@@ -43,7 +44,15 @@ class Handler(BaseHTTPRequestHandler):
                             'read_only': True, 'execution_allowed': False}, 400); return
             self._send(result, 200 if result.get('ok') else 503); return
         if parsed.path == '/health':
-            s=connection_status(); self._send({'status':s.get('status'),'service':'iq-readonly-direct-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_DIRECT','gateway_version':'market-data-trace-v1','connection':s}); return
+            s = connection_status()
+            payload = liveness_payload(s)
+            payload.update({'service':'iq-readonly-direct-gateway','mode':'analysis-only','executor_enabled':False,'source':'IQ_OPTION_DIRECT','gateway_version':'market-data-trace-v1'})
+            self._send(payload, 200)
+            return
+        if parsed.path == '/ready':
+            payload = readiness_payload(connection_status())
+            self._send(payload, 200 if payload['ready'] else 503)
+            return
         if self.path.startswith('/api/market/collector'):
             self._send(SESSION.collector_status()); return
         if parsed.path == '/api/market/prewarm':
