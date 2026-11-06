@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 WORKDIR /app
 COPY requirements-gateway.txt .
 RUN pip install --no-cache-dir -r requirements-gateway.txt
-COPY current_iq.py market_gateway.py market_data_contract.py live_stream_cache.py network_diagnostics.py .
+COPY current_iq.py market_gateway.py market_data_contract.py live_stream_cache.py network_diagnostics.py gateway_health.py .
 COPY iqoptionapi ./iqoptionapi
 EXPOSE 8080
 CMD ["python", "market_gateway.py"]
