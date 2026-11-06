@@ -118,6 +118,36 @@ jobs:
         run: |
           python audit_architecture.py
           python audit_readonly_validation.py
+      - name: Prewarm active Render/IQ Option live stream before heavy tests
+        if: github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC')
+        env:
+          MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+          WARMUP_TIMEOUT_SECONDS: '900'
+        run: |
+          set -euo pipefail
+          pairs='EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,USDCHF,NZDUSD,EURGBP,EURJPY,GBPJPY'
+          echo "Prewarming authorized 10-pair real-FX stream before heavy test and inference work."
+          curl --silent --show-error --connect-timeout 10 --max-time 30 --fail "$MARKET_GATEWAY_URL/api/market/prewarm?pairs=$pairs" > /tmp/prewarm.json
+          python - <<'PYWARM'
+          import json, time, urllib.parse, urllib.request, os
+          base=os.environ['MARKET_GATEWAY_URL'].rstrip('/')
+          pairs='EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,USDCHF,NZDUSD,EURGBP,EURJPY,GBPJPY'
+          deadline=time.monotonic()+int(os.environ['WARMUP_TIMEOUT_SECONDS'])
+          while time.monotonic()<deadline:
+              with urllib.request.urlopen(base+'/api/market/warm_snapshot?pairs='+urllib.parse.quote(pairs,safe=','),timeout=30) as r:
+                  data=json.load(r)
+              if data.get('status') in {'blocked','busy','failed','disconnected'}:
+                  raise SystemExit('warmup_blocked:'+str(data.get('reason') or data.get('status')))
+              if data.get('ok') is True and data.get('ready') is True and len(data.get('ready_symbols') or [])==10:
+                  print('prewarm_ready=10/10 read_only=%s execution_allowed=%s' % (data.get('read_only'),data.get('execution_allowed')))
+                  if data.get('read_only') is not True or data.get('execution_allowed') is not False:
+                      raise SystemExit('warmup_read_only_guard_missing')
+                  break
+              print('prewarm_wait status=%s ready=%s/10' % (data.get('status'),len(data.get('ready_symbols') or [])),flush=True)
+              time.sleep(5)
+          else:
+              raise SystemExit('warmup_timeout_before_tests')
+          PYWARM
       - name: Run offline read-only contract tests
         env:
           # Unit tests must exercise the ordinary path even during a sniper dispatch.
@@ -304,7 +334,16 @@ jobs:
           report = {'schema_version': '2.3', 'mode': 'read_only', 'execution_allowed': False, 'timestamp_utc': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(), 'forex': {'status': 'completed' if market_name in ('forex', 'unified') and not otc_only else 'not_requested', 'analyses': forex}, 'binary': {'status': 'completed' if binary_out or market_name in ('binary', 'unified', 'otc') or otc_only else 'not_requested', 'analyses': binary_out}, 'market_data': market, 'macro_data': {}, 'inputs': {'symbols': symbols, 'include_otc': not otc_only and include_otc, 'otc_only': otc_only}, 'read_only': True, 'executor_enabled': False, 'filters': {'score_minimum': TRADING_CONFIG.diamond_threshold, 'diamond_threshold': TRADING_CONFIG.diamond_threshold, 'supreme_threshold': TRADING_CONFIG.supreme_threshold, 'noise_threshold': TRADING_CONFIG.noise_threshold, 'zero_gale': True, 'payout_minimum': TRADING_CONFIG.payout_minimum}, 'gates': {'score_mode': {'score_gate': 'enforced', 'threshold': TRADING_CONFIG.diamond_threshold, 'other_gates': 'enforced'}, 'no_score_mode': {'score_gate': 'bypassed_only', 'threshold': TRADING_CONFIG.diamond_threshold, 'other_gates': 'enforced', 'ignored_vetoes': ['SCORE_BELOW_MINIMUM']}}, 'error': 'REPORT_GENERATOR_FAILED'}
           Path('reports/latest_scan.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
           PYFALLBACK
+            echo 'report_generation_status=blocked_fallback' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
+          python - <<'PYREPORT'
+          import json
+          report=json.load(open('reports/latest_scan.json'))
+          if report.get('error') or any(a.get('reason')=='REPORT_GENERATOR_FAILED' for book in ('forex','binary') for a in report.get(book,{}).get('analyses',[])):
+              raise SystemExit('blocked_report_cannot_be_marked_success')
+          print('report_generation_status=canonical')
+          PYREPORT
           python scripts/record_sniper_timing.py report_generation "$report_started"
           exit 0
       - name: Preserve early sniper signals even if later steps fail
