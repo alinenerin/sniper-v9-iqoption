@@ -108,7 +108,7 @@ class LiveStreamIntegrationTests(unittest.TestCase):
                 os.chdir(cwd)
                 with patch.dict(os.environ, env), patch("urllib.request.urlopen", side_effect=fake_urlopen):
                     with self.assertRaises(SystemExit) as exit_result:
-                        runpy.run_path(str(root / "scripts/fetch_railway_market.py"), run_name="__main__")
+                        runpy.run_path(str(root / "scripts/fetch_market_gateway.py"), run_name="__main__")
                 self.assertEqual(exit_result.exception.code, 0)
             finally:
                 os.chdir(old_cwd)

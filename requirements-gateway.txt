@@ -1,4 +1,4 @@
-# Minimal dependencies for the read-only IQ Option gateway on Railway read-only gateway
+# Minimal dependencies for the read-only IQ Option market-data gateway
 requests>=2.31
 websocket-client>=1.6
 pytz>=2023.3
