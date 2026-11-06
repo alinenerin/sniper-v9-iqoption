@@ -633,12 +633,28 @@ def _analyse(market: str, symbol: str, candles: list[dict[str, Any]], observed_a
     from shared_ai.consultation import SharedAI
     try:
         if market == "forex":
+            bundle_snapshot_id = market_snapshot_id or make_snapshot_id({"market": market, "symbol": symbol, "m1_candles": candles, "m5_candles": m5_candles or []})
+            aggregation_at = max(observed_at, datetime.now(timezone.utc))
+            forex_m5 = _m5_confirmation_evidence(m5_candles or [], "NEUTRAL", aggregation_at,
+                                                 bundle_snapshot_id, source="market_data.json:m5_candles")
+            forex_m5.update({"snapshot_id": bundle_snapshot_id,
+                             "aggregation_at_utc": aggregation_at.isoformat(),
+                             "age_at_aggregation_seconds": forex_m5.get("closed_candle_age_seconds"),
+                             "vote_source": "immutable_market_data_snapshot"})
             result = ForexV16ReadOnly(score_minimum=0).analyze(
                 symbol, candles, {"source": "read-only gateway market_data.json",
-                                 "snapshot_id": market_snapshot_id},
+                                 "snapshot_id": bundle_snapshot_id,
+                                 "observed_at_epoch": observed_at.timestamp(),
+                                 "m5_engine": forex_m5},
             )
             result["market"] = market
+            result["m5_vote_evidence"] = forex_m5
             result.update(_analysis_timing(market, result, candles, observed_at, final_m1_timing))
+            result["m5_confirmation"] = {"timeframe":"M5", "status":"not_required_for_forex",
+                "confirmed":False, "m5_bias":forex_m5.get("m5_bias"),
+                "m5_vote":forex_m5.get("m5_vote"), "reason":"FOREX_M5_DIRECTION_VOTE_ONLY",
+                "closed_candle_age_seconds":forex_m5.get("closed_candle_age_seconds"),
+                "snapshot_id":bundle_snapshot_id,"read_only":True,"execution_allowed":False}
             result = _apply_direction_veto(result)
             result.update(_mode_contract(result))
             return result
