@@ -626,6 +626,20 @@ class SharedAI:
                        else dict(item))
                 for name, item in component_status.items()
             }
+            # A prevalidated native M5 bias is consensus evidence for both
+            # binary and Forex paths; it is not an entry confirmation.
+            m5_evidence = metadata.get("m5_engine")
+            if isinstance(m5_evidence, dict) and m5_evidence.get("snapshot_id") == market_snapshot_id:
+                component_status["m5"] = {
+                    "status": m5_evidence.get("status", "blocked"),
+                    "reason": m5_evidence.get("reason"),
+                    "role": "confirmation",
+                    "m5_bias": m5_evidence.get("m5_bias"),
+                    "m5_vote": m5_evidence.get("m5_vote"),
+                    "snapshot_id": market_snapshot_id,
+                    "read_only": True,
+                    "execution_allowed": False,
+                }
             committee_report = crew_v16.evaluate(
                 request.symbol, component_status, market_snapshot_id, request.timeframe
             )
