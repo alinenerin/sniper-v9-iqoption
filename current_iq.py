@@ -5,7 +5,9 @@ import time
 import threading
 import uuid
 from datetime import datetime, timezone
-from market_data_contract import aggregate_m1_to_m3, validate_candles, MINIMUMS, TIMEFRAME_NAMES
+from market_data_contract import aggregate_m1_to_m3, validate_candles, closed_candles, MINIMUMS, TIMEFRAME_NAMES
+from live_stream_cache import (LIVE_STREAM_SOURCE, assess_pair, merge_rows,
+                               pair_payload, require_active_subscriptions)
 
 _LOG = logging.getLogger("iqoption_connection")
 
@@ -28,6 +30,14 @@ _watchdog_started = False
 _candle_cache = {}
 _collector_started = False
 _stream_diag = {'started_at': None, 'discovery': {}, 'subscribed': {}, 'updated': {}, 'errors': {}, 'collector_error': None, 'polls': 0}
+_REAL_FX_SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY']
+_warm_thread = None
+_warm_updates = {}
+_warm_assets = []
+_warm_payouts = {}
+_warm_state = {'status': 'idle', 'symbols': [], 'market_type': None, 'started_at': None,
+               'seeded_symbols': [], 'ready_symbols': [], 'errors': {}, 'updated': {},
+               'read_only': True, 'execution_allowed': False}
 _request_trace = []
 _TRACE_LIMIT = 500
 # The legacy IQ Option SDK owns one websocket-backed client. Never create a new
@@ -226,7 +236,250 @@ class IQOptionReadonly:
             out['cache_keys'] = [f'{s}:{i}' for (s, i) in _candle_cache.keys()]
             out['fresh_60s'] = sum(1 for (s, i), rows in _candle_cache.items() if i == 60 and rows and now - float(rows[-1].get('timestamp', 0)) <= 900)
             out['fresh_300s'] = sum(1 for (s, i), rows in _candle_cache.items() if i == 300 and rows and now - float(rows[-1].get('timestamp', 0)) <= 900)
+            out['warm_cache'] = dict(_warm_state)
             return out
+
+    def _normalize_warm_symbols(self, symbols=None):
+        raw = symbols or _REAL_FX_SYMBOLS
+        if isinstance(raw, str):
+            raw = raw.replace(',', ' ').split()
+        normalized = list(dict.fromkeys(self._norm_symbol(x) for x in raw if str(x).strip()))
+        if not normalized or len(normalized) > 10:
+            return [], 'WARM_SYMBOL_COUNT_OUT_OF_RANGE'
+        is_otc = {symbol.endswith('-OTC') for symbol in normalized}
+        if len(is_otc) != 1:
+            return [], 'WARM_MIXED_MARKETS_NOT_SUPPORTED'
+        for symbol in normalized:
+            base = symbol[:-4] if symbol.endswith('-OTC') else symbol
+            if base not in _REAL_FX_SYMBOLS:
+                return [], f'UNAUTHORIZED_WARM_SYMBOL:{symbol}'
+        return normalized, None
+
+    def start_warm_collector(self, symbols=None):
+        global _warm_thread, _warm_state
+        normalized, error = self._normalize_warm_symbols(symbols)
+        if error:
+            return {'ok': False, 'ready': False, 'status': 'blocked', 'reason': error,
+                    'read_only': True, 'execution_allowed': False}
+        if not self.connected or not self.api:
+            return {'ok': False, 'ready': False, 'status': 'connecting',
+                    'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING',
+                    'read_only': True, 'execution_allowed': False}
+        if _collector_started:
+            return {'ok': False, 'ready': False, 'status': 'busy',
+                    'reason': 'LEGACY_OTC_COLLECTOR_ACTIVE',
+                    'read_only': True, 'execution_allowed': False}
+        market_type = 'OTC' if normalized[0].endswith('-OTC') else 'REAL'
+        with _lock:
+            if _warm_thread is not None and _warm_thread.is_alive():
+                serving = set(_warm_state.get('symbols') or [])
+                if set(normalized).issubset(serving):
+                    ready = set(normalized).issubset(set(_warm_state.get('ready_symbols') or []))
+                    return {**dict(_warm_state), 'symbols': normalized, 'ok': ready,
+                            'ready': ready}
+                return {'ok': False, 'ready': False, 'status': 'busy',
+                        'reason': 'WARM_COLLECTOR_ALREADY_SERVING_ANOTHER_UNIVERSE',
+                        'warm_cache': dict(_warm_state), 'read_only': True,
+                        'execution_allowed': False}
+            _warm_state = {'status': 'seeding', 'symbols': normalized,
+                           'market_type': market_type, 'started_at': time.time(),
+                           'seeded_symbols': [], 'ready_symbols': [], 'errors': {},
+                           'updated': {}, 'subscriptions': {}, 'read_only': True,
+                           'execution_allowed': False}
+            _warm_thread = threading.Thread(target=self._warm_collector,
+                                            args=(normalized, market_type),
+                                            daemon=True, name='iq-live-warm-cache')
+            _warm_thread.start()
+            return {**dict(_warm_state), 'ok': False, 'ready': False}
+
+    def _warm_collector(self, symbols, market_type):
+        global _warm_assets, _warm_payouts, _warm_state
+        intervals = ((60, 1001), (300, 31))
+        try:
+            for symbol in symbols:
+                if not self.connected or not self.api:
+                    raise RuntimeError('IQ_OPTION_DISCONNECTED_DURING_WARMUP')
+                for interval, count in intervals:
+                    payload = self.candles(symbol, interval, count, market_type,
+                                           allow_cache=False)
+                    rows = payload.get('candles') or []
+                    required = 1000 if interval == 60 else 31
+                    if payload.get('status') != 'OK' or len(rows) < required:
+                        with _lock:
+                            _warm_state['errors'][f'{symbol}:{interval}'] = (
+                                payload.get('error_type') or payload.get('error_message')
+                                or f'INSUFFICIENT_HISTORY:{len(rows)}<{required}')
+                        continue
+                    with _lock:
+                        _candle_cache[(symbol, interval)] = merge_rows(
+                            _candle_cache.get((symbol, interval), []), rows,
+                            1001 if interval == 60 else 120)
+                # Subscribe only after the official symbol mapping and historical
+                # seed have succeeded for this pair. The SDK worker remains single-flight.
+                for interval, _ in intervals:
+                    with _lock:
+                        api = self.api if self.connected else None
+                    if api is None:
+                        raise RuntimeError('IQ_OPTION_DISCONNECTED_DURING_SUBSCRIBE')
+                    def subscribe(api=api, symbol=symbol, interval=interval):
+                        api.start_candles_stream(symbol, interval, 120)
+                        return True
+                    with _provider_lock:
+                        ok = _bounded_call(subscribe, timeout=8)
+                    key = f'{symbol}:{interval}'
+                    with _lock:
+                        _warm_state.setdefault('subscriptions', {})[key] = bool(ok)
+                    if not ok:
+                        with _lock:
+                            _warm_state['errors'][f'{key}:subscribe'] = 'STREAM_SUBSCRIBE_FAILED'
+                with _lock:
+                    if symbol not in _warm_state['seeded_symbols']:
+                        _warm_state['seeded_symbols'].append(symbol)
+            catalog = self.assets('all')
+            assets = catalog.get('assets', []) if catalog.get('ok') else []
+            payouts = {}
+            for item in assets:
+                raw_name = self._norm_symbol(item.get('symbol', ''))
+                name = raw_name.removesuffix('-OP').removesuffix('_OP')
+                instrument = str(item.get('instrument') or '').lower()
+                if name and item.get('payout') is not None and instrument in ('binary', 'turbo'):
+                    payouts.setdefault(name, {})[instrument] = item.get('payout')
+            with _lock:
+                _warm_assets = assets
+                _warm_payouts = payouts
+                _warm_state['status'] = 'warming'
+
+            # One warm-up window, followed by a single serialized poll loop.
+            # HTTP scans read only this buffer and therefore never race the SDK.
+            time.sleep(5)
+            while True:
+                if not self.connected or not self.api:
+                    with _lock:
+                        _warm_state['status'] = 'disconnected'
+                        _warm_state['reason'] = 'IQ_OPTION_DISCONNECTED'
+                    break
+                for symbol in symbols:
+                    for interval, _ in intervals:
+                        key = f'{symbol}:{interval}'
+                        with _lock:
+                            api = self.api if self.connected else None
+                            subscribed = _warm_state.get('subscriptions', {}).get(key) is True
+                        if api is None:
+                            continue
+                        if not subscribed:
+                            def retry_subscribe(api=api, symbol=symbol, interval=interval):
+                                api.start_candles_stream(symbol, interval, 120)
+                                return True
+                            with _provider_lock:
+                                subscribed = bool(_bounded_call(retry_subscribe, timeout=8))
+                            with _lock:
+                                _warm_state.setdefault('subscriptions', {})[key] = subscribed
+                                if subscribed:
+                                    _warm_state['errors'].pop(f'{key}:subscribe', None)
+                                else:
+                                    _warm_state['errors'][f'{key}:subscribe'] = 'STREAM_SUBSCRIBE_FAILED'
+                        if not subscribed:
+                            continue
+                        with _provider_lock:
+                            raw = _bounded_call(api.get_realtime_candles, symbol,
+                                                interval, timeout=8)
+                        if not isinstance(raw, dict) or not raw:
+                            with _lock:
+                                _warm_state['errors'][f'{symbol}:{interval}:stream'] = 'REALTIME_STREAM_EMPTY'
+                            continue
+                        rows = [{'timestamp': ts, 'open': candle.get('open'),
+                                 'high': candle.get('max', candle.get('high')),
+                                 'low': candle.get('min', candle.get('low')),
+                                 'close': candle.get('close'),
+                                 'volume': candle.get('volume', 0)}
+                                for ts, candle in raw.items() if isinstance(candle, dict)]
+                        if not rows:
+                            continue
+                        updated_at = time.time()
+                        with _lock:
+                            _candle_cache[(symbol, interval)] = merge_rows(
+                                _candle_cache.get((symbol, interval), []), rows,
+                                1001 if interval == 60 else 120)
+                            _warm_updates[(symbol, interval)] = updated_at
+                            key = f'{symbol}:{interval}'
+                            _warm_state['updated'][key] = updated_at
+                            _warm_state['errors'].pop(f'{key}:stream', None)
+                    with _lock:
+                        _stream_diag['polls'] += 1
+                now = time.time()
+                ready_symbols = []
+                pair_status = {}
+                with _lock:
+                    cache_copy = {symbol: (_candle_cache.get((symbol, 60), []),
+                                           _candle_cache.get((symbol, 300), []),
+                                           _warm_updates.get((symbol, 60)),
+                                           _warm_updates.get((symbol, 300)))
+                                  for symbol in symbols}
+                    subscriptions = dict(_warm_state.get('subscriptions', {}))
+                for symbol, (m1_rows, m5_rows, m1_update, m5_update) in cache_copy.items():
+                    assessment = assess_pair(m1_rows, m5_rows, m1_update, m5_update,
+                                             now=now)
+                    assessment = require_active_subscriptions(assessment, symbol, subscriptions)
+                    pair_status[symbol] = assessment['errors']
+                    if assessment['ready']:
+                        ready_symbols.append(symbol)
+                with _lock:
+                    _warm_state['ready_symbols'] = ready_symbols
+                    _warm_state['pair_status'] = pair_status
+                    _warm_state['status'] = 'ready' if len(ready_symbols) == len(symbols) else 'warming'
+                    _warm_state['updated_at'] = now
+                time.sleep(2)
+        except Exception as exc:
+            with _lock:
+                _warm_state['status'] = 'failed'
+                _warm_state['reason'] = f'{type(exc).__name__}:{str(exc)[:160]}'
+
+    def warm_snapshot_batch(self, symbols=None):
+        global _warm_assets, _warm_payouts
+        status = self.start_warm_collector(symbols)
+        if status.get('status') in ('blocked', 'connecting', 'busy'):
+            return {**status, 'source': LIVE_STREAM_SOURCE}
+        normalized = status.get('symbols') or []
+        if not normalized:
+            return {'ok': False, 'ready': False, 'status': 'warming',
+                    'reason': 'WARM_SYMBOLS_NOT_SET', 'read_only': True,
+                    'execution_allowed': False}
+        now = time.time()
+        with _lock:
+            cache_copy = {symbol: (_candle_cache.get((symbol, 60), []),
+                                   _candle_cache.get((symbol, 300), []),
+                                   _warm_updates.get((symbol, 60)),
+                                   _warm_updates.get((symbol, 300)))
+                          for symbol in normalized}
+            subscriptions = dict(_warm_state.get('subscriptions', {}))
+            assets = list(_warm_assets)
+            payouts = {key: dict(value) for key, value in _warm_payouts.items()}
+            state_copy = dict(_warm_state)
+        pair_status = {}
+        ready_symbols = []
+        assessments = {}
+        for symbol, values in cache_copy.items():
+            assessment = assess_pair(*values, now=now)
+            assessment = require_active_subscriptions(assessment, symbol, subscriptions)
+            assessments[symbol] = assessment
+            pair_status[symbol] = assessment['errors']
+            if assessment['ready']:
+                ready_symbols.append(symbol)
+        all_ready = len(ready_symbols) == len(normalized)
+        if not all_ready:
+            return {'ok': False, 'ready': False, 'status': state_copy.get('status', 'warming'),
+                    'requested_symbols': normalized, 'ready_symbols': ready_symbols,
+                    'pair_status': pair_status, 'reason': state_copy.get('reason'),
+                    'source': LIVE_STREAM_SOURCE, 'cache_policy': 'direct_live_stream_buffer',
+                    'read_only': True, 'execution_allowed': False}
+        data = {symbol: pair_payload(symbol, assessments[symbol]) for symbol in normalized}
+        return {'ok': True, 'ready': True, 'status': 'ready',
+                'requested_symbols': normalized, 'collected_symbols': normalized,
+                'ready_symbols': ready_symbols, 'pair_status': pair_status,
+                'symbols': data, 'assets': assets, 'payouts': payouts,
+                'source': LIVE_STREAM_SOURCE, 'cache_policy': 'direct_live_stream_buffer',
+                'observed_timestamp': now, 'read_only': True,
+                'execution_allowed': False, 'executor_enabled': False}
 
     def _otc_collector(self):
         # IQ websocket is not safe to flood with dozens of subscriptions.
@@ -479,11 +732,12 @@ class IQOptionReadonly:
         with _lock: return list(_request_trace)
 
     def _init_snapshot(self):
-        data = _bounded_call(self.api.get_all_init_v2, timeout=35)
-        if isinstance(data, dict): return data.get('result', data)
-        data = _bounded_call(self.api.get_all_init, timeout=35)
-        if isinstance(data, dict): return data.get('result', data)
-        return None
+        with _provider_lock:
+            data = _bounded_call(self.api.get_all_init_v2, timeout=35)
+            if isinstance(data, dict): return data.get('result', data)
+            data = _bounded_call(self.api.get_all_init, timeout=35)
+            if isinstance(data, dict): return data.get('result', data)
+            return None
 
     def payout(self, symbol, instrument='binary'):
         if not self.connected or not self.api: return {'ok': False, 'reason': _state.get('reason') or 'IQ_OPTION_CONNECTING', 'read_only': True}
@@ -509,7 +763,11 @@ class IQOptionReadonly:
                 # Some IQ sessions expose real binary/turbo profit through
                 # get_all_profit instead of the init snapshot.
                 try:
-                    profits = _bounded_call(self.api.get_all_profit, timeout=15) if callable(getattr(self.api, 'get_all_profit', None)) else {}
+                    if callable(getattr(self.api, 'get_all_profit', None)):
+                        with _provider_lock:
+                            profits = _bounded_call(self.api.get_all_profit, timeout=15)
+                    else:
+                        profits = {}
                     if isinstance(profits, dict):
                         # iqoptionapi normally returns {SYMBOL: {turbo: ..., binary: ...}},
                         # while some gateway builds return the inverse orientation.
@@ -562,7 +820,8 @@ class IQOptionReadonly:
                     try: stop(symbol, interval)
                     except Exception: pass
 
-        result = _bounded_call(read_stream, timeout=10)
+        with _provider_lock:
+            result = _bounded_call(read_stream, timeout=10)
         if result is None:
             return {'ok': False, 'symbol': symbol, 'interval_seconds': interval,
                     'reason': 'IQ_OPTION_SDK_BUSY_OR_TIMEOUT', 'read_only': True}
@@ -574,7 +833,8 @@ class IQOptionReadonly:
             symbol = str(symbol).upper().replace('/', '')
             fn = getattr(self.api, 'get_realtime_strike_list', None)
             if not callable(fn): return {'ok': False, 'reason': 'DIGITAL_STRIKE_NOT_EXPOSED_BY_SDK', 'read_only': True}
-            strike = _bounded_call(fn, symbol, int(duration), timeout=10)
+            with _provider_lock:
+                strike = _bounded_call(fn, symbol, int(duration), timeout=10)
             if strike is None: return {'ok': False, 'reason': 'IQ_OPTION_SDK_BUSY_OR_TIMEOUT', 'read_only': True}
             return {'ok': True, 'symbol': symbol, 'duration': int(duration), 'strike': strike, 'source': 'IQ_OPTION_DIRECT', 'read_only': True}
         except Exception: return {'ok': False, 'reason': 'DIGITAL_STRIKE_UNAVAILABLE', 'read_only': True}
@@ -587,7 +847,8 @@ class IQOptionReadonly:
             def read_commission():
                 if callable(sub): sub(instrument)
                 return get(instrument)
-            value = _bounded_call(read_commission, timeout=10)
+            with _provider_lock:
+                value = _bounded_call(read_commission, timeout=10)
             return {'ok': value is not None, 'instrument': instrument, 'commission': value,
                     'reason': None if value is not None else 'IQ_OPTION_SDK_BUSY_OR_TIMEOUT',
                     'source': 'IQ_OPTION_DIRECT', 'read_only': True}

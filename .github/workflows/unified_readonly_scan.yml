@@ -143,6 +143,7 @@ jobs:
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
           FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}
+          USE_WARM_STREAM: ${{ github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC') && 'true' || 'false' }}
           REQUEST_M1_CANDLES: '1000'
           REQUEST_M5_CANDLES: ${{ github.event.inputs.fast_mode == 'true' && '31' || '100' }}
           MAX_CANDLE_AGE_SECONDS: ${{ github.event.inputs.fast_mode == 'true' && '90' || '120' }}
@@ -231,6 +232,7 @@ jobs:
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
           FAST_TRIAGE: 'true'
+          USE_WARM_STREAM: ${{ github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC') && 'true' || 'false' }}
           REQUEST_M1_CANDLES: '1000'
           MAX_CANDLE_AGE_SECONDS: '90'
         run: |
