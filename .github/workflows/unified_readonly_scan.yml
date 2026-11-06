@@ -193,16 +193,6 @@ jobs:
           rc=$?
           python scripts/record_sniper_timing.py macro_snapshot "$macro_started"
           exit "$rc"
-      - name: Refresh analysis M5 before snapshot-bound agents
-        if: github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC')
-        env:
-          MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
-        run: python scripts/refresh_analysis_m5.py
-      - name: Refresh analysis M1/M5 snapshot before snapshot-bound agents
-        if: github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC')
-        env:
-          MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
-        run: python scripts/refresh_analysis_snapshot.py
       - name: Refresh analysis M1/M5 snapshot before snapshot-bound agents
         if: github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC')
         env:
