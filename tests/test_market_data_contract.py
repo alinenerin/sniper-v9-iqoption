@@ -35,6 +35,31 @@ class TestMarketDataContract(unittest.TestCase):
         self.assertEqual(out.freshness_status, 'PASS')
         self.assertEqual(out.status, 'PASS')
 
+    def test_normalizes_millisecond_timestamps(self):
+        out = validate_candles([candle(1700000000000)], 60, required=1,
+                               now=1700000060, max_age=300)
+        self.assertEqual(out.status, 'PASS')
+        self.assertEqual(out.latest_timestamp, 1700000000)
+
+    def test_rejects_impossible_ohlc_relationships(self):
+        invalid = candle()
+        invalid['high'] = 1.05  # below open
+        out = validate_candles([invalid], 60, required=1,
+                               now=1700000060, max_age=300)
+        self.assertEqual(out.status, 'INVALID')
+        self.assertEqual(out.invalid_count, 1)
+
+    def test_snapshot_m1_freshness_uses_candle_close_time(self):
+        now = 10000
+        m5 = [candle(300 * i) for i in range(1, 32)]
+        data = {'EURUSD': {'m1': [candle(9820)], 'm5': m5}}
+        result = validate_snapshot_freshness(
+            data, now=now, max_m1_age_seconds=120
+        )
+        self.assertTrue(result['ok'], result['errors'])
+        self.assertEqual(result['symbols']['EURUSD']['m1_age_seconds'], 120)
+        self.assertEqual(result['symbols']['EURUSD']['m1_latest_closed_timestamp'], 9880)
+
     def test_aggregates_only_complete_aligned_closed_m3_bars(self):
         rows = [
             {'symbol': 'EURUSD', 'timestamp': t, 'open': o, 'high': h,
