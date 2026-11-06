@@ -41,7 +41,7 @@ jobs:
       - name: Test live-stream readiness and read-only routes
         run: |
           python -m pip install --disable-pip-version-check -r requirements-gateway.txt
-          python -m unittest -v tests.test_live_stream_cache tests.test_live_stream_integration tests.test_warm_readiness tests.test_iq_sdk_singleflight
+          python -m unittest -v tests.test_live_stream_cache tests.test_live_stream_integration tests.test_warm_readiness tests.test_iq_sdk_singleflight tests.test_active_mapping_cache
 
       - name: Build image without cache
         run: docker build --pull --no-cache -t sniper-gateway-smoke:${{ github.sha }} .
