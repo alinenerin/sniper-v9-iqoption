@@ -48,7 +48,7 @@ jobs:
       - name: Fetch fresh Forex market data only
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
-        run: python scripts/fetch_railway_market.py
+        run: python scripts/fetch_market_gateway.py
       - name: Run Forex-only read-only inference
         run: |
           python - <<'PY'

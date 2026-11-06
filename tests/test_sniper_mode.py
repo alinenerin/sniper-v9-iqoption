@@ -284,7 +284,7 @@ class SniperWorkflowContractTests(unittest.TestCase):
 
     def test_workflow_keeps_m1_history_and_approval_specialists(self):
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
-        fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
+        fetcher = (ROOT / "scripts/fetch_market_gateway.py").read_text()
         committee = (ROOT / "core/trading_crew.py").read_text()
         self.assertIn("REQUEST_M1_CANDLES: '1000'", workflow)
         self.assertIn("max(1000, int(os.getenv('MIN_M1_CANDLES', '1000'))) if fast_triage", fetcher)

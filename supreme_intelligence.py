@@ -5,13 +5,15 @@ import math
 
 class SupremeIntelligence:
     def __init__(self):
-        self.omniroute_url = "https://omniroute-gateway-production.up.railway.app/v1/analyze"
-        self.marketaux_key = os.environ.get("MARKETAUX_KEY", "FkrvyUcxIUSUcmvH71QZOxBlLZuYeoueVTA54z1x")
+        self.omniroute_url = os.environ.get("OMNIROUTE_URL", "").strip()
+        self.marketaux_key = os.environ.get("MARKETAUX_KEY", "").strip()
         
     def get_supreme_score(self, par, sentido, engine_type="FOREX"):
         """
         Consulta o OmniRoute para obter o Score V16 Supreme (XGBoost + Mem0 + Sentiment).
         """
+        if not self.omniroute_url:
+            return 0, "OmniRoute not configured; advisory score unavailable"
         try:
             payload = {
                 "ticker": par,
@@ -25,7 +27,7 @@ class SupremeIntelligence:
                 }
             }
             
-            # Nota: No ambiente real, aqui chamamos o OmniRoute no Railway
+            # OmniRoute é opcional e só é consultado quando OMNIROUTE_URL foi configurada explicitamente.
             # Para o MVP, se o OmniRoute não responder, usamos um fallback seguro
             response = requests.post(self.omniroute_url, json=payload, timeout=10)
             if response.status_code != 200:
@@ -49,6 +51,8 @@ class SupremeIntelligence:
         """
         Verifica se há notícias de alto impacto via MarketAux.
         """
+        if not self.marketaux_key:
+            return False, "NewsShield indisponível: MARKET_AUX_KEY não configurada"
         url = f"https://api.marketaux.com/v1/news/all?language=en&filter_entities=true&limit=3&api_token={self.marketaux_key}"
         try:
             res = requests.get(url, timeout=5)

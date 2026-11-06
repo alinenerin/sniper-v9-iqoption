@@ -14,6 +14,14 @@ class WorkflowRepairContractTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         self.assertIn("MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com", workflow)
         self.assertNotIn("RAILWAY_GATEWAY_URL", workflow)
+        self.assertIn("MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com", (ROOT / ".github/workflows/binary_v16_readonly.yml").read_text())
+        self.assertNotIn("RAILWAY_GATEWAY_URL", (ROOT / ".github/workflows/binary_v16_readonly.yml").read_text())
+        executor = (ROOT / "executor_v16_supreme.py").read_text()
+        self.assertIn("class MarketGatewayClient", executor)
+        self.assertIn("MARKET_GATEWAY_URL_REQUIRED_READONLY", executor)
+        self.assertNotIn("RAILWAY_GATEWAY_URL", executor)
+        for obsolete in ("railway_start.py", "scripts/fetch_railway_market.py", "railway.json", "Procfile"):
+            self.assertFalse((ROOT / obsolete).exists(), obsolete)
         self.assertIn("FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}", workflow)
         self.assertIn("REQUEST_M1_CANDLES: '1000'", workflow)
         self.assertNotIn("github.event.inputs.fast_mode == 'true' && '120' || '1000'", workflow)
@@ -22,7 +30,7 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("github.event.inputs.fast_mode == 'true' && '0' || '3'", workflow)
         self.assertNotIn("select_fast_candidates.py", workflow)
         self.assertNotIn("Fetch deep data for selected candidates", workflow)
-        self.assertEqual(workflow.count("python scripts/fetch_railway_market.py"), 1)
+        self.assertEqual(workflow.count("python scripts/fetch_market_gateway.py"), 1)
         timing_step = workflow.split("- name: Refresh final M1/M5 timing", 1)[1].split("- name:", 1)[0]
         self.assertIn("if: success()", timing_step)
         fast_input = workflow.split("      fast_mode:", 1)[1].split("      no_score_mode:", 1)[0]
@@ -41,7 +49,7 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("actionable_without_valid_timing", workflow)
 
     def test_live_scan_uses_bounded_single_pair_batches_and_records_latency(self):
-        fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
+        fetcher = (ROOT / "scripts/fetch_market_gateway.py").read_text()
         self.assertIn("SNAPSHOT_BATCH_SIZE = 1", fetcher)
         self.assertIn("range(0, len(symbols), SNAPSHOT_BATCH_SIZE)", fetcher)
         self.assertIn("batch_diagnostics", fetcher)
@@ -51,7 +59,7 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertNotIn("range(0, len(symbols), 2)", fetcher)
 
     def test_helper_scripts_use_active_gateway(self):
-        names = ("scripts/fetch_railway_market.py", "scripts/refresh_final_timing.py",
+        names = ("scripts/fetch_market_gateway.py", "scripts/refresh_final_timing.py",
                  "scripts/evaluate_hypothetical_expiration.py", "scripts/test_market_data_only.py")
         for name in names:
             source = (ROOT / name).read_text()
@@ -227,7 +235,7 @@ class FastMarketLaneTests(unittest.TestCase):
                 os.chdir(cwd)
                 with patch.dict(os.environ, env), patch("urllib.request.urlopen", side_effect=fake_urlopen):
                     try:
-                        runpy.run_path(str(ROOT / "scripts/fetch_railway_market.py"), run_name="__main__")
+                        runpy.run_path(str(ROOT / "scripts/fetch_market_gateway.py"), run_name="__main__")
                     except SystemExit as exc:
                         self.assertEqual(exc.code, 0)
             finally:
@@ -247,7 +255,7 @@ class FastMarketLaneTests(unittest.TestCase):
             self.assertIs(market["read_only"], True)
 
     def test_fast_fetcher_has_explicit_coverage_failure_contract(self):
-        fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
+        fetcher = (ROOT / "scripts/fetch_market_gateway.py").read_text()
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         self.assertIn("for symbol in symbols:", fetcher)
         self.assertIn("fetch_fast_pair(", fetcher)

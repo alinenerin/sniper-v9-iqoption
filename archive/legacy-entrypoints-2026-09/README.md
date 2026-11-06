@@ -2,9 +2,6 @@
 
 Estes arquivos não fazem parte do caminho oficial de produção.
 
-O caminho oficial é `railway_start.py` -> `market_gateway.py` para o gateway
-read-only. As análises são executadas pelos workflows atuais e pelos motores
-V16 separados. Os arquivos aqui ficam preservados para consulta histórica,
-mas não devem ser usados em deploy, workflow ou execução automática.
+O gateway de dados read-only roda como serviço Python no Render, iniciado por `market_gateway.py`. As análises pesadas rodam sob demanda nos workflows do GitHub Actions. Os entrypoints históricos permanecem apenas para referência e não devem ser restaurados em deploy, workflow ou execução automática.
 
 Qualquer restauração exige revisão de segurança e validação read-only.

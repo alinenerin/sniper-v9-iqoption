@@ -1,4 +1,4 @@
-"""Persistent read-only IQ Option session using Railway's direct network route."""
+"""Persistent read-only IQ Option session used by the Render-hosted market gateway."""
 import logging
 import os
 import time
@@ -143,7 +143,7 @@ class IQOptionReadonly:
         try:
             from iqoptionapi.stable_api import IQ_Option
             import websocket
-            # Direct Railway -> IQ Option is the only supported production route.
+            # Direct IQ Option connection from the active read-only gateway is the supported production route.
             # Webshare is opt-in for controlled diagnostics and can never be selected silently.
             direct = os.getenv('ENABLE_WEBSHARE', 'false').lower() not in ('1', 'true', 'yes')
             host = os.getenv('WEBSHARE_HOST') or os.getenv('WEBSHARE_SOCKS_HOST', '')
@@ -166,7 +166,7 @@ class IQOptionReadonly:
             if not direct and hasattr(api, 'session'):
                 api.session.proxies.update({'http': proxy_url, 'https': proxy_url})
             # IQ SDK login can hang behind a degraded route; never let it
-            # leave the Railway process permanently stuck in "connecting".
+            # leave the gateway process permanently stuck in "connecting".
             connect_started = time.monotonic()
             _LOG.warning("IQ_SDK_CONNECT_START route=%s", "webshare" if not direct else "direct")
             result = _bounded_call(api.connect, timeout=30)
