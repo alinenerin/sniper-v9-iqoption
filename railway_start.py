@@ -18,7 +18,7 @@ def start_gateway():
 
 def health_connected():
     try:
-        with urlopen("http://127.0.0.1:" + os.getenv("PORT", "8080") + "/health", timeout=8) as r:
+        with urlopen("http://127.0.0.1:" + os.getenv("PORT", "8080") + "/ready", timeout=8) as r:
             data = json.loads(r.read().decode())
             return data.get("status") == "connected"
     except Exception:
