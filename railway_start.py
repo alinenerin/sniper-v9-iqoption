@@ -40,8 +40,7 @@ def main():
                 unhealthy_since = None
             else:
                 unhealthy_since = unhealthy_since or time.time()
-                # A hung login/reconnect is replaced; Railway then keeps the
-                # parent alive and starts a clean IQ session automatically.
+                # A prolonged upstream-readiness failure triggers a child restart.
                 if time.time() - unhealthy_since > 180:
                     print("[SUPERVISOR] gateway unhealthy for 180s; restarting", flush=True)
                     child.terminate()
