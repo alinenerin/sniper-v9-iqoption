@@ -1,5 +1,5 @@
 """Read-only TradingView DXY/VIX values with Yahoo per-instrument quote timestamps."""
-import hashlib, json
+import hashlib, json, time
 from datetime import datetime, timezone
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -8,6 +8,14 @@ TRADINGVIEW_URL='https://scanner.tradingview.com/america/scan'
 TICKERS={'dxy':'TVC:DXY','vix':'CBOE:VIX'}
 YAHOO_TICKERS={'dxy':'DX-Y.NYB','vix':'^VIX'}
 SAFE_RESPONSE_HEADERS=('Date','ETag','Content-Type')
+MAX_TIMESTAMP_AGE_SECONDS=300
+MAX_FUTURE_SKEW_SECONDS=30
+
+def _timestamp_freshness(epoch,now=None):
+ age=(time.time() if now is None else float(now))-float(epoch)
+ if age < -MAX_FUTURE_SKEW_SECONDS: return False,round(age,3),'future_timestamp'
+ if age > MAX_TIMESTAMP_AGE_SECONDS: return False,round(age,3),'stale_timestamp'
+ return True,round(max(0.0,age),3),'fresh'
 
 def _utc_now(): return datetime.now(timezone.utc).isoformat()
 def _yahoo_timestamp(name,timeout):
@@ -40,10 +48,14 @@ def fetch_macro(timeout=15):
    item={'ticker':ticker,'value':close,'change_pct':change,'quote_timestamp_utc':None,'quote_timestamp_available':False,'status':'ok' if close is not None else 'blocked'}
    if close is not None:
     try:
-     ts,meta=_yahoo_timestamp(name,timeout);item.update({'quote_timestamp_utc':datetime.fromtimestamp(ts,timezone.utc).isoformat(),'quote_timestamp_epoch':ts,'quote_timestamp_available':True,'timestamp_source':'Yahoo Finance chart API','timestamp_source_ticker':YAHOO_TICKERS[name]})
+     ts,meta=_yahoo_timestamp(name,timeout);fresh,age,state=_timestamp_freshness(ts);item.update({'quote_timestamp_utc':datetime.fromtimestamp(ts,timezone.utc).isoformat(),'quote_timestamp_epoch':ts,'quote_timestamp_available':fresh,'quote_timestamp_age_seconds':age,'quote_timestamp_freshness':state,'timestamp_source':'Yahoo Finance chart API','timestamp_source_ticker':YAHOO_TICKERS[name]})
     except Exception as exc:item['timestamp_reason']='TIMESTAMP_SOURCE_UNAVAILABLE:'+type(exc).__name__
    out['symbols'][name]=item
   out['quote_timestamps_available']=all(x.get('quote_timestamp_available') is True for x in out['symbols'].values())
+  out['quote_timestamp_freshness_max_age_seconds']=MAX_TIMESTAMP_AGE_SECONDS
+  if not out['quote_timestamps_available']:
+   out['quote_timestamp_freshness_status']='stale_or_unavailable'
+  else:out['quote_timestamp_freshness_status']='fresh'
   out['ok']=all(x['status']=='ok' for x in out['symbols'].values())
   if not out['ok']:out['reason']='TRADINGVIEW_MACRO_VALUE_MISSING'
  except Exception as exc:
