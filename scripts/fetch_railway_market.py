@@ -20,8 +20,6 @@ max_age = min(int(os.getenv('MAX_CANDLE_AGE_SECONDS', '120')), 120)
 fast_triage = os.getenv('FAST_TRIAGE', 'false').lower() == 'true'
 use_warm_stream = os.getenv('USE_WARM_STREAM', 'false').lower() == 'true'
 warmup_timeout = max(60, min(int(os.getenv('WARMUP_TIMEOUT_SECONDS', '360')), 900))
-if fast_triage and (otc_only or include_otc):
-    raise RuntimeError('FAST_LANE_REAL_FX_ONLY')
 if use_warm_stream and (otc_only or include_otc):
     raise RuntimeError('WARM_STREAM_REAL_FX_ONLY')
 REAL_SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY']
@@ -35,15 +33,15 @@ MIN_M1 = max(1000, int(os.getenv('MIN_M1_CANDLES', '1000'))) if fast_triage else
 MIN_M3 = int(os.getenv('MIN_M3_CANDLES', '30'))
 MIN_M5 = int(os.getenv('MIN_M5_CANDLES', '30'))
 # Darts requires >=1000 M1 candles for its training window.
-REQUEST_M1 = max(MIN_M1, int(os.getenv('REQUEST_M1_CANDLES', '1000'))) if fast_triage else int(os.getenv('REQUEST_M1_CANDLES', '1000'))
+REQUEST_M1 = max(1000, int(os.getenv('REQUEST_M1_CANDLES', '1000'))) if fast_triage else int(os.getenv('REQUEST_M1_CANDLES', '1000'))
 # Always ask for an extra provider bar so 30 closed M5 candles remain even
 # when the newest returned candle is still forming.
 REQUEST_M5 = max(MIN_M5 + 1, int(os.getenv('REQUEST_M5_CANDLES', '100')))
 from market_data_contract import aggregate_m1_to_m3, closed_candles, validate_snapshot_freshness
 
-# The provider websocket serializes candle calls. Full and fast scans keep
-# single-symbol snapshots; fast mode still requires full 1,000-candle M1 history
-# and rejects any response without explicit provider-side cache provenance.
+# The provider websocket serializes candle calls. Full scans keep single-symbol
+# snapshots. Fast mode requests only uncached M1/M5 candles per pair and keeps
+# the whole requested universe instead of selecting three symbols.
 SNAPSHOT_BATCH_SIZE = 1
 
 
@@ -180,7 +178,7 @@ if not health:
         'realtime': [], 'quote': None, 'quote_metadata': {},
         'fetch_status': {'status': 'blocked', 'blocked': True, 'reason': health_error},
     } for symbol in symbols}
-    fast_fetch_mode = 'fast_direct_live_stream_warm_cache' if use_warm_stream else ('fast_direct_m1_m5_uncached' if fast_triage else 'gateway_batch1_bounded_recovery')
+    fast_fetch_mode = 'fast_direct_m1_m5_uncached' if fast_triage else 'gateway_batch1_bounded_recovery'
     out = {'source': base, 'read_only': True, 'health': {'status': 'unavailable'},
            'assets': [], 'payouts': {}, 'symbols': blocked_symbols,
            'fetch_mode': fast_fetch_mode, 'fresh_symbols': [],
@@ -289,7 +287,8 @@ if use_warm_stream:
                                   'status': 'blocked', 'reason': warm_reason})
 elif fast_triage:
     from scripts.fast_market_lane import fetch_fast_pair
-    # Legacy direct lane remains opt-in; it is not a warm-cache readiness path.
+    # Every authorized pair gets the same bounded, uncached M1/M5 collection.
+    # Calls remain serial because the gateway owns one IQ Option session.
     for symbol in symbols:
         request_started = time.perf_counter()
         pair_data, pair_errors = fetch_fast_pair(
@@ -359,12 +358,12 @@ else:
 # candles exactly like an empty response so the per-symbol direct endpoint is
 # attempted before the scan is rejected. Never pass stale evidence downstream.
 def fresh_enough(rows):
-    # Provider M1 timestamps are candle-open times; evaluate freshness at close.
-    timestamps = [float(row.get('timestamp')) for row in rows
-                  if isinstance(row, dict) and row.get('timestamp') is not None]
-    if not timestamps:
+    # Candle timestamps are interval starts. Evaluate the latest M1 bar from
+    # its close time so a valid recently closed candle is not rejected early.
+    latest = latest_timestamp(rows)
+    if latest is None:
         return False
-    age_since_close = time.time() - (max(timestamps) + 60.0)
+    age_since_close = time.time() - (latest + 60.0)
     return -2.0 <= age_since_close <= max_age
 
 for symbol, item in collected.items():
@@ -454,7 +453,7 @@ for symbol, item in collected.items():
 
 # Fast timing is taken from the same uncached per-symbol responses as analysis;
 # preserve the observation timestamp attached to each provider call.
-if fast_triage:
+if fast_triage and not use_warm_stream:
     from scripts.fast_market_lane import build_fast_timing
     timing_input = {'symbols': {
         symbol: {'candles': item.get('m1'), 'm5_candles': item.get('m5')}

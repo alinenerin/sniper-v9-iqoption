@@ -70,6 +70,13 @@ class LiveStreamCacheTests(unittest.TestCase):
         state = require_active_subscriptions(state, "EURUSD", {"EURUSD:60": True, "EURUSD:300": True})
         self.assertTrue(state["ready"], state["errors"])
 
+    def test_impossible_ohlc_or_negative_volume_never_enters_the_stream_buffer(self):
+        from live_stream_cache import normalize_rows
+        invalid_high = {**self.m1[-1], "high": 0.1}
+        invalid_volume = {**self.m1[-1], "volume": -1}
+        self.assertEqual(normalize_rows([invalid_high]), [])
+        self.assertEqual(normalize_rows([invalid_volume]), [])
+
     def test_merge_replaces_in_progress_bucket_without_duplicate_timestamps(self):
         old = [{"timestamp": 1000, "open": 1, "high": 2, "low": 0.5, "close": 1, "volume": 1}]
         new = [{"timestamp": 1000, "open": 1, "high": 3, "low": 0.5, "close": 2, "volume": 2},

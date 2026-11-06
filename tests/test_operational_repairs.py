@@ -25,7 +25,6 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("python scripts/fetch_railway_market.py"), 1)
         timing_step = workflow.split("- name: Refresh final M1/M5 timing", 1)[1].split("- name:", 1)[0]
         self.assertIn("if: success()", timing_step)
-        self.assertIn("USE_WARM_STREAM:", timing_step)
         fast_input = workflow.split("      fast_mode:", 1)[1].split("      no_score_mode:", 1)[0]
         self.assertIn("default: false", fast_input)
         self.assertIn("-intelligence-v5", workflow)

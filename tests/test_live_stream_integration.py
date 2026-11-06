@@ -62,19 +62,6 @@ class LiveStreamIntegrationTests(unittest.TestCase):
         enabled["executor_enabled"] = True
         self.assertIn("EXECUTOR_GUARD_MISSING", validate_ready(enabled)[1])
 
-    def test_warm_snapshot_shape_is_accepted_by_fast_lane_for_a_subset(self):
-        snapshot = ready_snapshot()
-        symbol = "EURUSD"
-        pair = snapshot["symbols"][symbol]
-        market_data = {"symbols": {
-            symbol: {"candles": pair["m1"], "m5_candles": pair["m5"]}
-        }}
-        timing = build_fast_timing(market_data, now=NOW)
-        self.assertEqual(timing["symbols"][symbol]["status"], "ok")
-        self.assertEqual(timing["symbols"][symbol]["m1"]["source"], LIVE_STREAM_SOURCE)
-        self.assertGreaterEqual(timing["symbols"][symbol]["m5"]["closed_candle_count"], 30)
-        self.assertFalse(timing["execution_allowed"])
-
     def test_subset_scan_starts_and_checks_full_real_fx_warm_universe(self):
         from unittest.mock import patch
 
@@ -132,17 +119,19 @@ class LiveStreamIntegrationTests(unittest.TestCase):
                 if path in ("/api/market/prewarm", "/api/market/warm_snapshot"):
                     self.assertEqual(query["pairs"], [",".join(SYMBOLS)])
 
-    def test_otc_inputs_are_excluded_from_real_fx_warm_and_timing_paths(self):
+    def test_otc_inputs_are_excluded_from_real_fx_warm_path(self):
         root = Path(__file__).resolve().parents[1]
         workflow = (root / ".github/workflows/unified_readonly_scan.yml").read_text()
-        self.assertGreaterEqual(workflow.count("!contains(github.event.inputs.symbols, '-OTC')"), 2)
         fetch_step = workflow.split("- name: Fetch live market data", 1)[1].split("- name:", 1)[0]
         self.assertIn("USE_WARM_STREAM:", fetch_step)
+        self.assertIn("github.event.inputs.otc_only != 'true'", fetch_step)
+        self.assertIn("github.event.inputs.include_otc != 'true'", fetch_step)
+        self.assertIn("!contains(github.event.inputs.symbols, '-OTC')", fetch_step)
         timing_step = workflow.split("- name: Refresh final M1/M5 timing", 1)[1].split("- name:", 1)[0]
-        self.assertIn("USE_WARM_STREAM:", timing_step)
-        self.assertIn("github.event.inputs.otc_only != 'true'", timing_step)
-        self.assertIn("github.event.inputs.include_otc != 'true'", timing_step)
-        self.assertIn("!contains(github.event.inputs.symbols, '-OTC')", timing_step)
+        self.assertNotIn("USE_WARM_STREAM:", timing_step)
+        coverage = workflow.split("- name: Verify fast-mode pair coverage and timing provenance", 1)[1].split("- name:", 1)[0]
+        self.assertIn("fast_direct_live_stream_warm_cache", coverage)
+        self.assertIn("fast_direct_m1_m5_uncached", coverage)
 
     def test_gateway_prewarm_and_snapshot_routes_forward_pair_subset_read_only(self):
         import market_gateway

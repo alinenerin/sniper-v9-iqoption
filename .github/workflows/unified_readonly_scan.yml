@@ -232,7 +232,6 @@ jobs:
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
           FAST_TRIAGE: 'true'
-          USE_WARM_STREAM: ${{ github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC') && 'true' || 'false' }}
           REQUEST_M1_CANDLES: '1000'
           MAX_CANDLE_AGE_SECONDS: '90'
         run: |
@@ -341,7 +340,7 @@ jobs:
           missing_timing = sorted(set(expected) - set(timing.get('symbols',{})))
           analyzed = {a.get('symbol') for a in analyses}
           missing_report = sorted(set(expected) - analyzed)
-          assert market.get('fetch_mode') == 'fast_direct_m1_m5_uncached', market.get('fetch_mode')
+          assert market.get('fetch_mode') in {'fast_direct_m1_m5_uncached', 'fast_direct_live_stream_warm_cache'}, market.get('fetch_mode')
           assert not missing_market, f'missing_market_pairs={missing_market}'
           assert not missing_timing, f'missing_final_timing={missing_timing}'
           assert not missing_report, f'missing_report_pairs={missing_report}'
