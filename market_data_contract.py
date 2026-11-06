@@ -262,38 +262,100 @@ def _num(value: Any) -> bool:
 
 def validate_candles(rows: Any, interval: int, required: int, now: float | None = None, max_age: int = 900,
                      symbol: str | None = None, market_type: str | None = None) -> CandleValidation:
+    """Validate provider candles consistently, normalizing epoch units and OHLCV.
+
+    Invalid rows are counted and excluded. The function never repairs prices,
+    sorts away duplicate timestamps, or treats malformed data as valid.
+    """
     now = time.time() if now is None else float(now)
     rows = rows if isinstance(rows, list) else []
-    seen = set(); duplicate_count = 0; invalid_count = 0; valid_rows = []
+    seen: set[float] = set()
+    duplicate_count = 0
+    invalid_count = 0
+    valid_rows: list[dict[str, Any]] = []
+
+    def finite_number(value: Any) -> float | None:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
     for row in rows:
-        if not isinstance(row, dict): invalid_count += 1; continue
-        ts = row.get("timestamp")
-        if not _num(ts) or float(ts) > now + 60: invalid_count += 1; continue
-        if any(not _num(row.get(k)) for k in ("open", "high", "low", "close")):
-            invalid_count += 1; continue
-        key = float(ts)
-        if key in seen: duplicate_count += 1; continue
-        seen.add(key); valid_rows.append(row)
-    ordered = sorted(valid_rows, key=lambda x: float(x["timestamp"]))
+        if not isinstance(row, dict):
+            invalid_count += 1
+            continue
+
+        timestamp = finite_number(row.get("timestamp"))
+        if timestamp is None:
+            invalid_count += 1
+            continue
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000.0
+        if timestamp <= 0 or timestamp > now + 60:
+            invalid_count += 1
+            continue
+
+        values = {name: finite_number(row.get(name)) for name in ("open", "high", "low", "close")}
+        if any(value is None or value <= 0 for value in values.values()):
+            invalid_count += 1
+            continue
+        opened = values["open"]
+        high = values["high"]
+        low = values["low"]
+        close = values["close"]
+        if high < max(opened, close, low) or low > min(opened, close, high):
+            invalid_count += 1
+            continue
+
+        volume_raw = row.get("volume", 0)
+        volume = finite_number(0 if volume_raw is None else volume_raw)
+        if volume is None or volume < 0:
+            invalid_count += 1
+            continue
+
+        key = round(timestamp, 6)
+        if key in seen:
+            duplicate_count += 1
+            continue
+        seen.add(key)
+        normalized = dict(row)
+        normalized.update({
+            "timestamp": timestamp,
+            "open": opened,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+        })
+        valid_rows.append(normalized)
+
+    ordered = sorted(valid_rows, key=lambda item: item["timestamp"])
     gaps = 0
+    interval = int(interval)
     tolerance = max(2.0, interval * 0.25)
-    for a, b in zip(ordered, ordered[1:]):
-        delta = float(b["timestamp"]) - float(a["timestamp"])
-        if delta < interval - tolerance: gaps += 1
-        # Large gaps can be real provider gaps; count them but do not silently repair.
-        if delta > interval + tolerance: gaps += 1
-    latest = float(ordered[-1]["timestamp"]) if ordered else None
+    for previous, current in zip(ordered, ordered[1:]):
+        delta = current["timestamp"] - previous["timestamp"]
+        if delta < interval - tolerance or delta > interval + tolerance:
+            gaps += 1
+
+    latest = ordered[-1]["timestamp"] if ordered else None
     age = max(0.0, now - latest) if latest is not None else None
     freshness = "PASS" if age is not None and age <= max_age else "STALE" if age is not None else "ERROR"
-    minimum = int(required or MINIMUMS.get(int(interval), 0))
+    minimum = int(required or MINIMUMS.get(interval, 0))
     reason = None
     status = "PASS"
-    if len(ordered) < minimum: status, reason = "INSUFFICIENT_DATA", f"{len(ordered)}<{minimum}"
-    elif invalid_count or duplicate_count: status, reason = "INVALID", "invalid_or_duplicate_candles"
-    elif freshness != "PASS": status, reason = "STALE", "freshness_failed"
+    if len(ordered) < minimum:
+        status, reason = "INSUFFICIENT_DATA", f"{len(ordered)}<{minimum}"
+    elif invalid_count or duplicate_count:
+        status, reason = "INVALID", "invalid_or_duplicate_candles"
+    elif freshness != "PASS":
+        status, reason = "STALE", "freshness_failed"
     return CandleValidation(status, reason, len(rows), len(ordered), duplicate_count,
                             invalid_count, gaps, latest, age, freshness,
-                            interval=int(interval), timeframe=TIMEFRAME_NAMES.get(int(interval)))
+                            interval=interval, timeframe=TIMEFRAME_NAMES.get(interval))
 
 
 def snapshot_id(payload: Any) -> str:

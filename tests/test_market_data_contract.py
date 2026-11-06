@@ -22,6 +22,37 @@ class TestMarketDataContract(unittest.TestCase):
         self.assertEqual(out.status, 'INSUFFICIENT_DATA')
         self.assertEqual(out.invalid_count, 1)
 
+    def test_rejects_impossible_ohlc_relationships(self):
+        invalid = candle()
+        invalid["high"] = 1.05  # Below open and close.
+        out = validate_candles([invalid], 60, required=1, now=1700000060)
+        self.assertEqual(out.status, "INSUFFICIENT_DATA")
+        self.assertEqual(out.invalid_count, 1)
+
+    def test_rejects_negative_or_nonfinite_volume(self):
+        negative = candle()
+        negative["volume"] = -1
+        nonfinite = candle(1700000060)
+        nonfinite["volume"] = float("inf")
+        out = validate_candles([negative, nonfinite], 60, required=1,
+                               now=1700000120)
+        self.assertEqual(out.status, "INSUFFICIENT_DATA")
+        self.assertEqual(out.invalid_count, 2)
+
+    def test_normalizes_millisecond_timestamps_before_duplicate_check(self):
+        rows = [candle(1700000000), candle(1700000000000)]
+        out = validate_candles(rows, 60, required=1, now=1700000060)
+        self.assertEqual(out.status, "INVALID")
+        self.assertEqual(out.duplicate_count, 1)
+
+    def test_accepts_numeric_string_ohlcv_from_provider(self):
+        row = candle()
+        row.update({"timestamp": "1700000000", "open": "1.1", "high": "1.2",
+                    "low": "1.0", "close": "1.15", "volume": "0"})
+        out = validate_candles([row], 60, required=1, now=1700000060)
+        self.assertEqual(out.status, "PASS")
+        self.assertEqual(out.valid, 1)
+
     def test_rejects_duplicate_timestamps(self):
         out = validate_candles([candle(), candle()], 60, required=1,
                                now=1700000060, max_age=300)
