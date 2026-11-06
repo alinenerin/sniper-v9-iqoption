@@ -234,6 +234,8 @@ jobs:
           FAST_TRIAGE: 'true'
           REQUEST_M1_CANDLES: '1000'
           MAX_CANDLE_AGE_SECONDS: '90'
+          OTC_ONLY: ${{ github.event.inputs.otc_only }}
+          INCLUDE_OTC: ${{ github.event.inputs.include_otc }}
         run: |
           timing_started=$(date +%s.%N)
           cp reports/market_data.json reports/agent_market_data.json
