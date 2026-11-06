@@ -25,7 +25,7 @@ def fetch_macro(timeout=15):
   'request_url':TRADINGVIEW_URL,'request_timestamp_utc':None,'response_timestamp_utc':None,
   'http_status':None,'response_headers':{},'raw_response':None,'raw_response_sha256':None,
   'quote_timestamps_available':False,
-  'quote_timestamp_limitation':'TradingView scanner has no per-instrument timestamp; Yahoo chart observation timestamp is attached as supplemental quote timestamp.'}
+  'quote_timestamp_limitation':'TradingView scanner has no per-instrument quote timestamp; timestamp observations from Yahoo are separate supplemental provenance, not TradingView timestamps.'}
  body={'symbols':{'tickers':list(TICKERS.values()),'query':{'types':[]}},'columns':['close','change']}
  try:
   req=Request(TRADINGVIEW_URL,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','User-Agent':'BinaryQuantX/1.0'})
@@ -40,10 +40,10 @@ def fetch_macro(timeout=15):
    item={'ticker':ticker,'value':close,'change_pct':change,'quote_timestamp_utc':None,'quote_timestamp_available':False,'status':'ok' if close is not None else 'blocked'}
    if close is not None:
     try:
-     ts,meta=_yahoo_timestamp(name,timeout);item.update({'quote_timestamp_utc':datetime.fromtimestamp(ts,timezone.utc).isoformat(),'quote_timestamp_epoch':ts,'quote_timestamp_available':True,'timestamp_source':'Yahoo Finance chart API','timestamp_source_ticker':YAHOO_TICKERS[name]})
-    except Exception as exc:item['timestamp_reason']='TIMESTAMP_SOURCE_UNAVAILABLE:'+type(exc).__name__
+     ts,meta=_yahoo_timestamp(name,timeout);out.setdefault('timestamp_observations',{})[name]={'timestamp_utc':datetime.fromtimestamp(ts,timezone.utc).isoformat(),'timestamp_epoch':ts,'source':'Yahoo Finance chart API','source_ticker':YAHOO_TICKERS[name]}
+    except Exception as exc:out.setdefault('timestamp_observations',{})[name]={'status':'unavailable','reason':'TIMESTAMP_SOURCE_UNAVAILABLE:'+type(exc).__name__}
    out['symbols'][name]=item
-  out['quote_timestamps_available']=all(x.get('quote_timestamp_available') is True for x in out['symbols'].values())
+  out['quote_timestamps_available']=False
   out['ok']=all(x['status']=='ok' for x in out['symbols'].values())
   if not out['ok']:out['reason']='TRADINGVIEW_MACRO_VALUE_MISSING'
  except Exception as exc:
