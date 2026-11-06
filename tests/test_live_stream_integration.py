@@ -26,17 +26,16 @@ def candle_rows(interval, count, last_open):
 
 
 def ready_snapshot():
-    now = time.time()
-    m1_last = int(now // 60) * 60 - 60
-    m5_last = int(now // 300) * 300 - 300
+    m1_last = int(NOW // 60) * 60 - 60
+    m5_last = int(NOW // 300) * 300 - 300
     symbols = {}
     for symbol in SYMBOLS:
         assessment = assess_pair(candle_rows(60, 1000, m1_last),
                                  candle_rows(300, 31, m5_last),
-                                 now - 2, now - 3, now=now)
+                                 NOW - 2, NOW - 3, now=NOW)
         symbols[symbol] = pair_payload(symbol, assessment)
     return {"ok": True, "ready": True, "status": "ready",
-            "symbols": symbols, "observed_timestamp": now,
+            "symbols": symbols, "observed_timestamp": NOW,
             "read_only": True, "execution_allowed": False,
             "executor_enabled": False}
 

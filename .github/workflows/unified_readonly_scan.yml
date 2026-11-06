@@ -193,6 +193,21 @@ jobs:
           rc=$?
           python scripts/record_sniper_timing.py macro_snapshot "$macro_started"
           exit "$rc"
+      - name: Refresh analysis M5 before snapshot-bound agents
+        if: github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC')
+        env:
+          MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+        run: python scripts/refresh_analysis_m5.py
+      - name: Refresh analysis M1/M5 snapshot before snapshot-bound agents
+        if: github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC')
+        env:
+          MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+        run: python scripts/refresh_analysis_snapshot.py
+      - name: Refresh analysis M1/M5 snapshot before snapshot-bound agents
+        if: github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC')
+        env:
+          MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+        run: python scripts/refresh_analysis_snapshot.py
       - name: Prepare fast lane advisory artifacts (disabled)
         if: false
         run: |
@@ -256,7 +271,7 @@ jobs:
       - name: Test strict market-data contract
         run: python -m unittest -v test_market_data_contract.py
       - name: Compile read-only analysis modules
-        run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/sniper_mode.py scripts/record_sniper_timing.py engines/binary/sniper_timing.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py scripts/run_m5_inference.py scripts/run_sniper_layer_b.py
+        run: python -m py_compile scripts/refresh_analysis_m5.py shared_ai/consultation.py scripts/generate_scan_report.py scripts/sniper_mode.py scripts/record_sniper_timing.py engines/binary/sniper_timing.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py scripts/run_m5_inference.py scripts/run_sniper_layer_b.py
       - name: Refresh final M1/M5 timing without replacing agent evidence
         if: success()
         env:
