@@ -5,7 +5,7 @@ class AnalysisSnapshotRefreshTests(unittest.TestCase):
   self.now=1800000000.0
   m1last=int(self.now//60)*60-60;m5last=int(self.now//300)*300-300
   def rows(interval,count,last):return [{'timestamp':last-interval*(count-i-1),'open':1.1,'high':1.101,'low':1.099,'close':1.1005,'volume':1} for i in range(count)]
-  self.market={'read_only':True,'execution_allowed':False,'symbols':{s:{'candles':{'candles':rows(60,1000,m1last)},'m5_candles':{'candles':rows(300,30,m5last)}} for s in ('EURUSD','GBPUSD')}}
+  self.market={'read_only':True,'symbols':{s:{'candles':{'candles':rows(60,1000,m1last)},'m5_candles':{'candles':rows(300,30,m5last)}} for s in ('EURUSD','GBPUSD')}}
   self.fresh={s:{'status':'ok','read_only':True,'cache_used':False,'execution_allowed':False,'m1':rows(60,120,m1last),'m5':rows(300,40,m5last)} for s in self.market['symbols']}
  def test_promotes_fresh_closed_m1_m5_and_keeps_depth(self):
   out=merge_fresh_snapshot(self.market,self.fresh,self.now);self.assertEqual(out['analysis_snapshot_refresh']['status'],'ok')
