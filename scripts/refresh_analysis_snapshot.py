@@ -44,7 +44,7 @@ def _merge(old_rows,new_rows,interval,now):
 
 def merge_fresh_snapshot(market:dict, refreshed:dict, now:float|None=None)->dict:
     now=time.time() if now is None else float(now)
-    if market.get('read_only') is not True or market.get('execution_allowed') is not False:
+    if market.get('read_only') is not True or market.get('execution_allowed') is True:
         raise ValueError('ANALYSIS_SNAPSHOT_READONLY_GUARD_MISSING')
     symbols=market.get('symbols');
     if not isinstance(symbols,dict) or not symbols or set(symbols)!=set(refreshed):
@@ -66,7 +66,7 @@ def merge_fresh_snapshot(market:dict, refreshed:dict, now:float|None=None)->dict
             diag[symbol]={'status':'blocked','reason':'DIRECT_REFRESH_HISTORY_INCOMPLETE'}
             continue
         m1,m1c=_merge(old_m1,direct_m1,60,now)
-        m5,m5c=_merge(old_m5,direct_m5,300,now)
+        m5,m5c=_merge([],direct_m5,300,now)
         m1_latest=max((r['timestamp'] for r in m1),default=None)
         m1_age=(now-m1_latest) if m1_latest is not None else None
         m5_latest=max((r['timestamp']+300 for r in m5c),default=None)
