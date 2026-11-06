@@ -198,13 +198,16 @@ def validate_snapshot_freshness(symbols: Any, *, now: float | None = None,
         m1_times = [stamp for row in (m1_rows if isinstance(m1_rows, list) else [])
                     if (stamp := _timestamp_seconds(row)) is not None]
         m1_latest = max(m1_times) if m1_times else None
-        m1_age = max(0.0, observed - m1_latest) if m1_latest is not None else None
+        # Candle timestamps identify interval OPEN; freshness is measured from CLOSE.
+        m1_close_timestamp = m1_latest + 60 if m1_latest is not None else None
+        m1_age = max(0.0, observed - m1_close_timestamp) if m1_close_timestamp is not None else None
         m5_closed = closed_candles(m5_rows, 300, now=observed)
         m5_latest = _timestamp_seconds(m5_closed[-1]) if m5_closed else None
         m5_close_timestamp = m5_latest + 300 if m5_latest is not None else None
         m5_close_age = max(0.0, observed - m5_close_timestamp) if m5_close_timestamp is not None else None
         details[symbol] = {
             "m1_latest_timestamp": m1_latest,
+            "m1_latest_closed_timestamp": m1_close_timestamp,
             "m1_age_seconds": m1_age,
             "m5_closed_count": len(m5_closed),
             "m5_latest_closed_timestamp": m5_latest,
@@ -268,12 +271,24 @@ def validate_candles(rows: Any, interval: int, required: int, now: float | None 
     for row in rows:
         if not isinstance(row, dict): invalid_count += 1; continue
         ts = row.get("timestamp")
-        if not _num(ts) or float(ts) > now + 60: invalid_count += 1; continue
-        if any(not _num(row.get(k)) for k in ("open", "high", "low", "close")):
+        if not _num(ts): invalid_count += 1; continue
+        # Providers may return Unix seconds or milliseconds. Store seconds consistently.
+        timestamp = float(ts)
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000.0
+        if timestamp <= 0 or timestamp > now + 60: invalid_count += 1; continue
+        prices = [row.get(k) for k in ("open", "high", "low", "close")]
+        if not all(_num(value) for value in prices):
             invalid_count += 1; continue
-        key = float(ts)
+        opened, high, low, close = (float(value) for value in prices)
+        if min(opened, high, low, close) <= 0 or high < max(opened, close, low) or low > min(opened, close, high):
+            invalid_count += 1; continue
+        key = timestamp
         if key in seen: duplicate_count += 1; continue
-        seen.add(key); valid_rows.append(row)
+        seen.add(key)
+        normalized = dict(row)
+        normalized["timestamp"] = timestamp
+        valid_rows.append(normalized)
     ordered = sorted(valid_rows, key=lambda x: float(x["timestamp"]))
     gaps = 0
     tolerance = max(2.0, interval * 0.25)
