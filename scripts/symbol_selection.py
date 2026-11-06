@@ -1,53 +1,48 @@
-"""Resolve scan symbol selectors against the canonical market allowlists."""
+"""Resolve scan selectors through strict, separated Forex/OTC allowlists."""
 from __future__ import annotations
-
 from market_universes import OTC_SYMBOLS, REAL_SYMBOLS
-
-SELECTORS = {"ALL", "ALL_AVAILABLE", "*"}
 REAL_SET = set(REAL_SYMBOLS)
 OTC_SET = set(OTC_SYMBOLS)
 ALL_SET = REAL_SET | OTC_SET
-
+SELECTORS = {"ALL", "ALL_AVAILABLE", "*"}
 
 def _tokens(raw: str) -> list[str]:
-    return [item.strip().upper().replace("/", "").replace("_OTC", "-OTC")
-            for item in str(raw or "").replace(",", " ").split() if item.strip()]
-
+    return [x.strip().upper().replace("/", "").replace("_OTC", "-OTC")
+            for x in str(raw or "").replace(",", " ").split() if x.strip()]
 
 def resolve_requested_symbols(raw: str, available_symbols: list[str], *,
                               include_otc: bool = False, base_pairs_only: bool = False,
                               otc_only: bool = False) -> list[str]:
-    """Resolve aliases to currently available, allowlisted symbols only."""
-    available = list(dict.fromkeys(str(s).upper().replace("_OTC", "-OTC") for s in available_symbols))
-    allowed = OTC_SET if otc_only else (ALL_SET if include_otc or base_pairs_only else REAL_SET)
-    available = [s for s in available if s in allowed]
+    """Return available allowlisted symbols; expand explicitly requested OTC pairs."""
+    available = list(dict.fromkeys(str(x).strip().upper().replace("_OTC", "-OTC") for x in available_symbols))
+    available = [x for x in available if x in ALL_SET]
     tokens = _tokens(raw)
     if not tokens:
         raise ValueError("NO_SYMBOLS_REQUESTED")
-    if any(token in SELECTORS for token in tokens):
+    if otc_only and include_otc:
+        raise ValueError("OTC_ONLY_AND_INCLUDE_OTC_ARE_MUTUALLY_EXCLUSIVE")
+    if any(x in SELECTORS for x in tokens):
         if len(tokens) != 1:
             raise ValueError("WILDCARD_CANNOT_BE_MIXED_WITH_SYMBOLS")
-        selected = available
+        selected = [x for x in available if not otc_only or x in OTC_SET]
     else:
-        rejected = [s for s in tokens if s not in allowed]
-        if rejected:
-            raise ValueError("UNAUTHORIZED_SYMBOLS:" + ",".join(rejected))
-        selected = [s for s in tokens if s in available]
+        bad = [x for x in tokens if x not in ALL_SET or (otc_only and x not in OTC_SET)]
+        if bad:
+            raise ValueError("UNAUTHORIZED_SYMBOLS:" + ",".join(bad))
+        selected = [x for x in tokens if x in available]
         if include_otc:
-            for symbol in list(selected):
-                if symbol in REAL_SET:
-                    otc_symbol = symbol + "-OTC"
-                    if otc_symbol in available and otc_symbol not in selected:
-                        selected.append(otc_symbol)
+            for x in list(selected):
+                if x in REAL_SET and x + "-OTC" not in selected:
+                    selected.append(x + "-OTC")
     if base_pairs_only:
-        selected = [s for s in selected if s in REAL_SET]
+        selected = [x for x in selected if x in REAL_SET]
+    selected = list(dict.fromkeys(selected))
     if not selected:
         raise ValueError("NO_AVAILABLE_AUTHORIZED_SYMBOLS")
-    return list(dict.fromkeys(selected))
-
+    return selected
 
 def resolve_symbols(raw: str, *, otc_only: bool = False, include_otc: bool = False) -> list[str]:
-    """Resolve a selector to the full, strict permitted market universe."""
+    """Resolve to the canonical full universe for one market mode."""
     if otc_only and include_otc:
         raise ValueError("OTC_ONLY_AND_INCLUDE_OTC_ARE_MUTUALLY_EXCLUSIVE")
     available = OTC_SYMBOLS if otc_only else REAL_SYMBOLS + (OTC_SYMBOLS if include_otc else [])
