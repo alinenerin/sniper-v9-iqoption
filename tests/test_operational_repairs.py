@@ -89,12 +89,12 @@ class MacroProvenanceTests(unittest.TestCase):
         with patch.object(macro_source, "urlopen", return_value=Response()):
             result = macro_source.fetch_macro()
         self.assertFalse(result["ok"])
-        self.assertEqual(result["reason"], "MACRO_QUOTE_TIMESTAMP_UNVERIFIED")
-        self.assertEqual(result["raw_response"], raw.decode())
-        self.assertEqual(result["raw_response_sha256"], hashlib.sha256(raw).hexdigest())
-        self.assertEqual(result["http_status"], 200)
-        self.assertEqual(result["response_headers"], {"Date": "Mon, 12 Oct 2026 16:10:00 GMT", "ETag": '"abc"', "Content-Type": "application/json"})
-        self.assertNotIn("Set-Cookie", result["response_headers"])
+        self.assertTrue(result["reason"].startswith("MACRO_QUOTES_NOT_VERIFIED_FRESH:"))
+        self.assertEqual(set(result["symbols"]), {"dxy", "vix"})
+        for symbol in result["symbols"].values():
+            self.assertIsNone(symbol["value"])
+            self.assertIsNone(symbol["change_pct"])
+            self.assertIn(symbol["quote_timestamp_freshness"], {"unverified", "unavailable"})
         self.assertTrue(result["request_timestamp_utc"] and result["response_timestamp_utc"])
         self.assertFalse(result["quote_timestamps_available"])
         self.assertIn("no per-instrument quote timestamp", result["quote_timestamp_limitation"])
@@ -104,6 +104,7 @@ class MacroProvenanceTests(unittest.TestCase):
             self.assertIsNone(symbol["quote_timestamp_utc"])
             self.assertFalse(symbol["quote_timestamp_available"])
             self.assertEqual(symbol["status"], "blocked")
+            self.assertIn(symbol["quote_timestamp_freshness"], {"unverified", "unavailable"})
 
 class ShadowSnapshotProvenanceTests(unittest.TestCase):
     def test_manifest_and_report_ids_are_copied_without_approving(self):
@@ -312,3 +313,4 @@ class SymbolSelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

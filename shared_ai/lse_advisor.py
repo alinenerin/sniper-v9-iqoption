@@ -11,7 +11,7 @@ import requests
 
 class LSEAdvisor:
     BASE = "https://api.londonstrategicedge.com/vault/candles"
-    MAX_AGE_SECONDS = 6 * 60 * 60
+    MAX_AGE_SECONDS = 300
     CACHE_TTL_SECONDS = 90
     _cache: dict[str, tuple[float, dict]] = {}
     _cache_lock = threading.Lock()
@@ -108,3 +108,4 @@ class LSEAdvisor:
         except Exception as exc:
             return {"status": "blocked", "reason": type(exc).__name__, "read_only": True,
                     "source_role": "advisory_only"}
+

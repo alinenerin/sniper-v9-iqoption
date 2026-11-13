@@ -152,7 +152,7 @@ jobs:
         # The fetcher exits 0 with any valid pair; zero usable pairs remain fatal.
         run: |
           fetch_started=$(date +%s.%N)
-          python scripts/fetch_railway_market.py
+          python scripts/fetch_market_gateway.py
           rc=$?
           python scripts/record_sniper_timing.py market_data_fetch "$fetch_started"
           exit "$rc"
@@ -171,14 +171,11 @@ jobs:
           from pathlib import Path
           payload=json.loads(Path('reports/macro_data.json').read_text())
           symbols=payload.get('symbols') or {}
-          required=('dxy','vix')
           errors=[]
-          for name in required:
+          for name in ('dxy','vix'):
               item=symbols.get(name) or {}
-              if item.get('status') != 'ok' or item.get('quote_timestamp_freshness') != 'fresh':
+              if item.get('status') != 'ok' or item.get('quote_timestamp_freshness') != 'fresh' or item.get('value') is None:
                   errors.append(f'{name.upper()}_NOT_VERIFIED_FRESH:{item.get("quote_timestamp_freshness", "missing_timestamp")}')
-              if item.get('value') is None:
-                  errors.append(f'{name.upper()}_VALUE_MISSING')
           if payload.get('ok') is not True or errors:
               print('macro_readiness=BLOCKED', ';'.join(errors) or payload.get('reason','MACRO_UNVERIFIED'))
               raise SystemExit('FRESH_MACRO_REQUIRED_FOR_REAL_MARKET_SCAN')
@@ -253,7 +250,6 @@ jobs:
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
           FAST_TRIAGE: 'true'
-          USE_WARM_STREAM: ${{ github.event.inputs.otc_only != 'true' && github.event.inputs.include_otc != 'true' && !contains(github.event.inputs.symbols, '-OTC') && 'true' || 'false' }}
           REQUEST_M1_CANDLES: '1000'
           MAX_CANDLE_AGE_SECONDS: '90'
         run: |
@@ -570,3 +566,4 @@ jobs:
           Path(os.environ['RUNNER_TEMP'], 'scan-comment.md').write_text('\n'.join(lines))
           PY
           gh api "repos/$GITHUB_REPOSITORY/issues/$REQUEST_ISSUE/comments" -f body="$(cat "$RUNNER_TEMP/scan-comment.md")"
+

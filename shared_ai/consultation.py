@@ -483,7 +483,7 @@ class SharedAI:
             # mesmo quando seus workflows haviam concluído com inference_ok.
             analysis["symbol"] = request.symbol
             # Prefer the verified per-symbol Darts artifact produced from the
-            # same Railway snapshot. The in-process shield may be unavailable
+            # same current read-only gateway snapshot. The in-process shield may be unavailable
             # on CI even when the dedicated Darts agent completed; never turn
             # that integration mismatch into a fabricated anomaly=100 veto.
             try:
@@ -713,4 +713,5 @@ class SharedAI:
 def consult(request: MarketRequest) -> AIConsultation:
     """Função conveniente e stateless para os entrypoints."""
     return SharedAI().consult(request)
+
 

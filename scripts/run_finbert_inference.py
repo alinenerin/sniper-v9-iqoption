@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from transformers import pipeline
+try:
+    from transformers import pipeline
+except Exception:
+    pipeline = None
 
 
 # Resolve ALL_AVAILABLE against the exact market snapshot keys. The CI
@@ -89,7 +92,42 @@ FETCH_DIAGNOSTICS: dict[str, Any] = {
 }
 
 
-def _normalize_articles(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _article_epoch(article: dict[str, Any]) -> float | None:
+    from datetime import datetime, timezone
+    import math
+    value = article.get("datetime")
+    if value is None:
+        value = article.get("published_at") or article.get("seendate") or article.get("datetime")
+    try:
+        if isinstance(value, (int, float)):
+            stamp = float(value)
+            if stamp > 10_000_000_000:
+                stamp /= 1000.0
+        else:
+            text = str(value or "").strip()
+            if not text:
+                return None
+            if text.isdigit():
+                stamp = float(text)
+                if stamp > 10_000_000_000:
+                    stamp /= 1000.0
+            else:
+                text = text.replace("Z", "+00:00")
+                if len(text) == 14 and text.isdigit():
+                    dt = datetime.strptime(text, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+                else:
+                    dt = datetime.fromisoformat(text)
+                    dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+                stamp = dt.timestamp()
+        return stamp if math.isfinite(stamp) else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _normalize_articles(payload: list[dict[str, Any]], *, now: float | None = None,
+                        max_age_seconds: int = 3600) -> list[dict[str, Any]]:
+    import time
+    observed = time.time() if now is None else float(now)
     unique: dict[str, dict[str, Any]] = {}
     for article in payload:
         if not isinstance(article, dict):
@@ -97,8 +135,15 @@ def _normalize_articles(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
         headline = _clean_text(article.get("headline") or article.get("title"))
         if not headline:
             continue
+        published = _article_epoch(article)
+        age = observed - published if published is not None else None
+        if age is None or age < -30 or age > float(max_age_seconds):
+            continue
         key = str(article.get("id") or article.get("url") or headline)
-        unique[key] = article
+        unique[key] = {**article, "headline": headline,
+                       "published_at_epoch": published,
+                       "published_age_seconds": round(max(0.0, age), 3),
+                       "published_timestamp_verified": True}
     return list(unique.values())[:NEWS_LIMIT]
 
 
@@ -128,6 +173,7 @@ def _fetch_gdelt_news() -> list[dict[str, Any]]:
             "source": item.get("domain"),
             "url": item.get("url"),
             "datetime": item.get("seendate"),
+            "source_published_at": item.get("seendate"),
             "related": "",
         })
     return _normalize_articles(articles)
@@ -167,14 +213,16 @@ def _fetch_forex_news() -> list[dict[str, Any]]:
 
 results: dict[str, dict[str, Any]] = {}
 
-classifier = pipeline(
+classifier = (pipeline(
     "text-classification",
     model="ProsusAI/finbert",
     tokenizer="ProsusAI/finbert",
     top_k=None,
-)
+) if pipeline is not None else None)
 
 try:
+    if classifier is None:
+        raise RuntimeError("FINBERT_MODEL_UNAVAILABLE")
     all_articles = _fetch_forex_news()
     fetch_error: str | None = None
 except Exception as exc:
@@ -207,7 +255,10 @@ for symbol in SYMBOLS:
             )
         results[symbol] = {
             "symbol": symbol,
-            "status": "inference_ok",
+            "status": "inference_ok" if labels else "blocked",
+            "reason": None if labels else "NO_VERIFIED_FRESH_NEWS",
+            "fresh_news_only": True,
+            "max_article_age_seconds": 3600,
             "provider": "GDELT+Finnhub",
             "model": "ProsusAI/finbert",
             "articles": len(labels),
@@ -278,3 +329,4 @@ print(
     f"sources={list(FETCH_DIAGNOSTICS.get('sources', {}))}",
     f"valid_json={FETCH_DIAGNOSTICS.get('valid_json')}",
 )
+

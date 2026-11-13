@@ -49,3 +49,4 @@ class CycleCatalog:
                 if directions[i]==directions[i-1]==directions[i-2] and directions[i]!=0: patterns.append("UP" if directions[i]>0 else "DOWN")
             return {"status":"inference_ok","symbol":symbol,"sessions":report,"repeated_run_count":len(patterns),"latest_cycle":"UP" if patterns and patterns[-1]=="UP" else "DOWN" if patterns else "NONE","data_source":"current_scan_snapshot","age_seconds":round(age, 1),"read_only":True}
         except Exception as exc: return {"status":"blocked","reason":type(exc).__name__,"read_only":True}
+
