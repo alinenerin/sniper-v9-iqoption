@@ -331,7 +331,9 @@ class IQOptionReadonly:
 
     def _warm_collector(self, symbols, market_type):
         global _warm_assets, _warm_payouts, _warm_state
-        intervals = ((60, 1001), (300, 31))
+        # Request extra rows because the provider includes the current open bar;
+        # readiness still requires 1000/30 CLOSED candles in live_stream_cache.
+        intervals = ((60, 1002), (300, 32))
         try:
             for symbol in symbols:
                 if not self.connected or not self.api:
@@ -340,7 +342,7 @@ class IQOptionReadonly:
                     payload = self.candles(symbol, interval, count, market_type,
                                            allow_cache=False)
                     rows = payload.get('candles') or []
-                    required = 1000 if interval == 60 else 31
+                    required = count
                     if payload.get('status') != 'OK' or len(rows) < required:
                         with _lock:
                             _warm_state['errors'][f'{symbol}:{interval}'] = (
