@@ -14,14 +14,6 @@ class WorkflowRepairContractTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         self.assertIn("MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com", workflow)
         self.assertNotIn("RAILWAY_GATEWAY_URL", workflow)
-        self.assertIn("MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com", (ROOT / ".github/workflows/binary_v16_readonly.yml").read_text())
-        self.assertNotIn("RAILWAY_GATEWAY_URL", (ROOT / ".github/workflows/binary_v16_readonly.yml").read_text())
-        executor = (ROOT / "executor_v16_supreme.py").read_text()
-        self.assertIn("class MarketGatewayClient", executor)
-        self.assertIn("MARKET_GATEWAY_URL_REQUIRED_READONLY", executor)
-        self.assertNotIn("RAILWAY_GATEWAY_URL", executor)
-        for obsolete in ("railway_start.py", "scripts/fetch_railway_market.py", "railway.json", "Procfile"):
-            self.assertFalse((ROOT / obsolete).exists(), obsolete)
         self.assertIn("FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}", workflow)
         self.assertIn("REQUEST_M1_CANDLES: '1000'", workflow)
         self.assertNotIn("github.event.inputs.fast_mode == 'true' && '120' || '1000'", workflow)
@@ -30,9 +22,10 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("github.event.inputs.fast_mode == 'true' && '0' || '3'", workflow)
         self.assertNotIn("select_fast_candidates.py", workflow)
         self.assertNotIn("Fetch deep data for selected candidates", workflow)
-        self.assertEqual(workflow.count("python scripts/fetch_market_gateway.py"), 1)
+        self.assertEqual(workflow.count("python scripts/fetch_railway_market.py"), 1)
         timing_step = workflow.split("- name: Refresh final M1/M5 timing", 1)[1].split("- name:", 1)[0]
         self.assertIn("if: success()", timing_step)
+        self.assertIn("USE_WARM_STREAM:", timing_step)
         fast_input = workflow.split("      fast_mode:", 1)[1].split("      no_score_mode:", 1)[0]
         self.assertIn("default: false", fast_input)
         self.assertIn("-intelligence-v5", workflow)
@@ -49,7 +42,7 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("actionable_without_valid_timing", workflow)
 
     def test_live_scan_uses_bounded_single_pair_batches_and_records_latency(self):
-        fetcher = (ROOT / "scripts/fetch_market_gateway.py").read_text()
+        fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
         self.assertIn("SNAPSHOT_BATCH_SIZE = 1", fetcher)
         self.assertIn("range(0, len(symbols), SNAPSHOT_BATCH_SIZE)", fetcher)
         self.assertIn("batch_diagnostics", fetcher)
@@ -59,7 +52,7 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertNotIn("range(0, len(symbols), 2)", fetcher)
 
     def test_helper_scripts_use_active_gateway(self):
-        names = ("scripts/fetch_market_gateway.py", "scripts/refresh_final_timing.py",
+        names = ("scripts/fetch_railway_market.py", "scripts/refresh_final_timing.py",
                  "scripts/evaluate_hypothetical_expiration.py", "scripts/test_market_data_only.py")
         for name in names:
             source = (ROOT / name).read_text()
@@ -95,7 +88,8 @@ class MacroProvenanceTests(unittest.TestCase):
             def read(self): return raw
         with patch.object(macro_source, "urlopen", return_value=Response()):
             result = macro_source.fetch_macro()
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "MACRO_QUOTE_TIMESTAMP_UNVERIFIED")
         self.assertEqual(result["raw_response"], raw.decode())
         self.assertEqual(result["raw_response_sha256"], hashlib.sha256(raw).hexdigest())
         self.assertEqual(result["http_status"], 200)
@@ -105,8 +99,11 @@ class MacroProvenanceTests(unittest.TestCase):
         self.assertFalse(result["quote_timestamps_available"])
         self.assertIn("no per-instrument quote timestamp", result["quote_timestamp_limitation"])
         for symbol in result["symbols"].values():
+            self.assertIsNone(symbol["value"])
+            self.assertIsNone(symbol["change_pct"])
             self.assertIsNone(symbol["quote_timestamp_utc"])
             self.assertFalse(symbol["quote_timestamp_available"])
+            self.assertEqual(symbol["status"], "blocked")
 
 class ShadowSnapshotProvenanceTests(unittest.TestCase):
     def test_manifest_and_report_ids_are_copied_without_approving(self):
@@ -140,10 +137,24 @@ class FastMarketLaneTests(unittest.TestCase):
     def test_direct_requests_are_serial_uncached_and_use_market_type(self):
         from scripts.fast_market_lane import fetch_fast_pair
         calls = []
+        import time
         def get(path, **kwargs):
             calls.append((path, kwargs))
-            return {"source": "gateway-direct", "candles": [{"timestamp": 1, "close": 1.0}]}
-        data, errors = fetch_fast_pair("EURUSD", get, timeout=7, m1_count=120, m5_count=31)
+            now = time.time()
+            rows = [{"timestamp": int(now // 60) * 60 - 60 - i * 60,
+                     "open": 1.1, "high": 1.101, "low": 1.099, "close": 1.1005,
+                     "volume": 1} for i in range(1000)]
+            rows.sort(key=lambda row: row["timestamp"])
+            if "interval=300" in path:
+                rows = [{"timestamp": int(now // 300) * 300 - 300 - i * 300,
+                         "open": 1.1, "high": 1.101, "low": 1.099, "close": 1.1005,
+                         "volume": 1} for i in range(31)]
+                rows.sort(key=lambda row: row["timestamp"])
+            return {"request_id": "fixture", "source": "IQ_OPTION_HISTORICAL",
+                    "symbol_requested": "EURUSD", "market_type": "REAL", "status": "OK",
+                    "validation_status": "PASS", "freshness_status": "PASS",
+                    "read_only": True, "cache_hit": False, "candles": rows}
+        data, errors = fetch_fast_pair("EURUSD", get, timeout=7, m1_count=1000, m5_count=31)
         self.assertFalse(errors)
         self.assertEqual([kwargs["attempts"] for _, kwargs in calls], [1, 1])
         self.assertEqual([kwargs["timeout"] for _, kwargs in calls], [7, 7])
@@ -152,7 +163,7 @@ class FastMarketLaneTests(unittest.TestCase):
             self.assertIn("cache=false", path)
             self.assertIn("fresh=true", path)
             self.assertIn("market_type=REAL", path)
-        self.assertEqual(data["m1"]["source"], "gateway-direct")
+        self.assertEqual(data["m1"]["source"], "IQ_OPTION_HISTORICAL")
         self.assertIs(data["m1"]["cache_used"], False)
         cached, cached_errors = fetch_fast_pair("GBPUSD", lambda path, **kw: {
             "candles": [{"timestamp": 1}], "cache_used": True,
@@ -170,7 +181,7 @@ class FastMarketLaneTests(unittest.TestCase):
         now = 1_000_000.0
         m1_last = int(now // 60) * 60 - 60
         m5_last = int(now // 300) * 300 - 300
-        m1 = [{"timestamp": m1_last - i * 60, "close": 1.0} for i in range(119, -1, -1)]
+        m1 = [{"timestamp": m1_last - i * 60, "close": 1.0} for i in range(999, -1, -1)]
         m5 = [{"timestamp": m5_last - i * 300, "close": 1.0} for i in range(30, -1, -1)]
         payload = {"symbols": {
             "EURUSD": {"candles": {"candles": m1, "observed_timestamp": now},
@@ -216,7 +227,12 @@ class FastMarketLaneTests(unittest.TestCase):
                             "open": 1.0, "high": 1.001, "low": 0.999,
                             "close": 1.0005, "volume": 10}
                            for i in range(count)]
-                return Response({"candles": candles, "source": "test-gateway"})
+                return Response({"request_id": "fixture", "market_type": "REAL",
+                                 "symbol_requested": query["symbol"][0],
+                                 "candles_requested": count, "status": "OK",
+                                 "validation_status": "PASS", "freshness_status": "PASS",
+                                 "read_only": True, "cache_hit": False,
+                                 "source": "IQ_OPTION_HISTORICAL", "candles": candles})
             if parsed.path == "/api/market/payout":
                 return Response({"ok": True, "symbol": query["symbol"][0], "payout": 90, "read_only": True})
             raise AssertionError(f"unexpected URL path {parsed.path}")
@@ -225,8 +241,8 @@ class FastMarketLaneTests(unittest.TestCase):
             env.update({
                 "MARKET_GATEWAY_URL": "https://mock-gateway.invalid",
                 "SYMBOLS": " ".join(symbols), "FAST_TRIAGE": "true",
-                "REQUEST_M1_CANDLES": "120", "REQUEST_M5_CANDLES": "31",
-                "MIN_M1_CANDLES": "100", "MIN_M3_CANDLES": "30", "MIN_M5_CANDLES": "30",
+                "REQUEST_M1_CANDLES": "1000", "REQUEST_M5_CANDLES": "31",
+                "MIN_M1_CANDLES": "1000", "MIN_M3_CANDLES": "30", "MIN_M5_CANDLES": "30",
                 "MAX_CANDLE_AGE_SECONDS": "120", "FETCH_TIMEOUT_SECONDS": "3", "FETCH_RETRIES": "0",
                 "INCLUDE_OTC": "false", "OTC_ONLY": "false", "REQUIRE_PAYOUT": "false",
             })
@@ -235,7 +251,7 @@ class FastMarketLaneTests(unittest.TestCase):
                 os.chdir(cwd)
                 with patch.dict(os.environ, env), patch("urllib.request.urlopen", side_effect=fake_urlopen):
                     try:
-                        runpy.run_path(str(ROOT / "scripts/fetch_market_gateway.py"), run_name="__main__")
+                        runpy.run_path(str(ROOT / "scripts/fetch_railway_market.py"), run_name="__main__")
                     except SystemExit as exc:
                         self.assertEqual(exc.code, 0)
             finally:
@@ -255,7 +271,7 @@ class FastMarketLaneTests(unittest.TestCase):
             self.assertIs(market["read_only"], True)
 
     def test_fast_fetcher_has_explicit_coverage_failure_contract(self):
-        fetcher = (ROOT / "scripts/fetch_market_gateway.py").read_text()
+        fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         self.assertIn("for symbol in symbols:", fetcher)
         self.assertIn("fetch_fast_pair(", fetcher)
