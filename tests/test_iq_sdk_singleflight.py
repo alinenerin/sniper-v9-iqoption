@@ -11,18 +11,16 @@ from types import SimpleNamespace
 class TestIQSDKSingleFlight(unittest.TestCase):
     def test_warm_subscription_queues_without_blocking_for_ack(self):
         calls = []
-        class FakeProviderAPI:
+        class FakeAPI:
             real_time_candles_maxdict_table = defaultdict(lambda: defaultdict(int))
             candle_generated_check = defaultdict(lambda: defaultdict(dict))
             def subscribe(self, active_id, interval):
                 calls.append((active_id, interval))
-        class FakeStable:
-            api = FakeProviderAPI()
-            subscribe_candle = []
         class FakeClient:
-            api = FakeStable()
+            api = FakeAPI()
+            subscribe_candle = []
         client = FakeClient()
-        stable = client.api
+        stable = client
         # Use a temporary official active-id mapping, restored immediately.
         import iqoptionapi.constants as codes
         previous = codes.ACTIVES.get('EURUSD')

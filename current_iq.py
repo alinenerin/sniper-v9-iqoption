@@ -100,8 +100,8 @@ def _queue_candle_stream_subscription(client, symbol, interval, maxdict=120):
     and send the provider subscription here; readiness is granted later only
     after an actual candle-generated event and fresh candles arrive.
     """
-    stable = getattr(client, 'api', None)
-    provider_api = getattr(stable, 'api', None) if stable is not None else None
+    stable = client
+    provider_api = getattr(stable, 'api', None)
     active_id = OP_code.ACTIVES.get(symbol)
     if provider_api is None or active_id is None:
         return False
@@ -117,8 +117,7 @@ def _queue_candle_stream_subscription(client, symbol, interval, maxdict=120):
 
 
 def _candle_stream_ack(client, symbol, interval):
-    stable = getattr(client, 'api', None)
-    provider_api = getattr(stable, 'api', None) if stable is not None else None
+    provider_api = getattr(client, 'api', None)
     if provider_api is None:
         return False
     try:
