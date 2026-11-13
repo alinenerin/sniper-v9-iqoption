@@ -89,6 +89,44 @@ def _bounded_call(fn, *args, timeout=8):
         # must be able to use their fallback parser instead of aborting.
         return None
 
+def _queue_candle_stream_subscription(client, symbol, interval, maxdict=120):
+    """Queue a candle subscription without waiting synchronously for a candle event.
+
+    The upstream SDK's start_candles_stream() performs another blocking history
+    fetch and then waits up to 20 seconds for a websocket event. Calling it from
+    this gateway's single-flight worker with an 8-second timeout poisoned the
+    worker and made every subsequent symbol look unsubscribed. Historical
+    seeding is already done separately, so only initialize the stream buffers
+    and send the provider subscription here; readiness is granted later only
+    after an actual candle-generated event and fresh candles arrive.
+    """
+    stable = getattr(client, 'api', None)
+    provider_api = getattr(stable, 'api', None) if stable is not None else None
+    active_id = OP_code.ACTIVES.get(symbol)
+    if provider_api is None or active_id is None:
+        return False
+    api = provider_api
+    interval = int(interval)
+    api.real_time_candles_maxdict_table[symbol][interval] = int(maxdict)
+    api.candle_generated_check[symbol][interval] = {}
+    subscription = f'{symbol},{interval}'
+    if subscription not in stable.subscribe_candle:
+        stable.subscribe_candle.append(subscription)
+    api.subscribe(active_id, interval)
+    return True
+
+
+def _candle_stream_ack(client, symbol, interval):
+    stable = getattr(client, 'api', None)
+    provider_api = getattr(stable, 'api', None) if stable is not None else None
+    if provider_api is None:
+        return False
+    try:
+        return provider_api.candle_generated_check[symbol][int(interval)] is True
+    except (KeyError, TypeError):
+        return False
+
+
 class IQOptionReadonly:
     def __init__(self):
         global _client, _start_once
@@ -284,7 +322,7 @@ class IQOptionReadonly:
             _warm_state = {'status': 'seeding', 'symbols': normalized,
                            'market_type': market_type, 'started_at': time.time(),
                            'seeded_symbols': [], 'ready_symbols': [], 'errors': {},
-                           'updated': {}, 'subscriptions': {}, 'read_only': True,
+                           'updated': {}, 'subscriptions': {}, 'subscription_pending': {}, 'read_only': True,
                            'execution_allowed': False}
             _warm_thread = threading.Thread(target=self._warm_collector,
                                             args=(normalized, market_type),
@@ -322,16 +360,16 @@ class IQOptionReadonly:
                     if api is None:
                         raise RuntimeError('IQ_OPTION_DISCONNECTED_DURING_SUBSCRIBE')
                     def subscribe(api=api, symbol=symbol, interval=interval):
-                        api.start_candles_stream(symbol, interval, 120)
-                        return True
+                        return _queue_candle_stream_subscription(api, symbol, interval, 120)
                     with _provider_lock:
-                        ok = _bounded_call(subscribe, timeout=8)
+                        queued = _bounded_call(subscribe, timeout=8)
                     key = f'{symbol}:{interval}'
                     with _lock:
-                        _warm_state.setdefault('subscriptions', {})[key] = bool(ok)
-                    if not ok:
+                        _warm_state.setdefault('subscriptions', {})[key] = False
+                        _warm_state.setdefault('subscription_pending', {})[key] = bool(queued)
+                    if not queued:
                         with _lock:
-                            _warm_state['errors'][f'{key}:subscribe'] = 'STREAM_SUBSCRIBE_FAILED'
+                            _warm_state['errors'][f'{key}:subscribe'] = 'STREAM_SUBSCRIBE_QUEUE_FAILED'
                 with _lock:
                     if symbol not in _warm_state['seeded_symbols']:
                         _warm_state['seeded_symbols'].append(symbol)
@@ -364,29 +402,38 @@ class IQOptionReadonly:
                         with _lock:
                             api = self.api if self.connected else None
                             subscribed = _warm_state.get('subscriptions', {}).get(key) is True
+                            pending = _warm_state.get('subscription_pending', {}).get(key) is True
                         if api is None:
                             continue
-                        if not subscribed:
+                        if not subscribed and not pending:
                             def retry_subscribe(api=api, symbol=symbol, interval=interval):
-                                api.start_candles_stream(symbol, interval, 120)
-                                return True
+                                return _queue_candle_stream_subscription(api, symbol, interval, 120)
                             with _provider_lock:
-                                subscribed = bool(_bounded_call(retry_subscribe, timeout=8))
+                                queued = bool(_bounded_call(retry_subscribe, timeout=8))
                             with _lock:
-                                _warm_state.setdefault('subscriptions', {})[key] = subscribed
-                                if subscribed:
-                                    _warm_state['errors'].pop(f'{key}:subscribe', None)
-                                else:
-                                    _warm_state['errors'][f'{key}:subscribe'] = 'STREAM_SUBSCRIBE_FAILED'
-                        if not subscribed:
+                                _warm_state.setdefault('subscription_pending', {})[key] = queued
+                                if not queued:
+                                    _warm_state['errors'][f'{key}:subscribe'] = 'STREAM_SUBSCRIBE_QUEUE_FAILED'
+                            pending = queued
+                        if not subscribed and not pending:
                             continue
                         with _provider_lock:
                             raw = _bounded_call(api.get_realtime_candles, symbol,
                                                 interval, timeout=8)
+                        ack = _candle_stream_ack(api, symbol, interval)
                         if not isinstance(raw, dict) or not raw:
                             with _lock:
-                                _warm_state['errors'][f'{symbol}:{interval}:stream'] = 'REALTIME_STREAM_EMPTY'
+                                if ack:
+                                    _warm_state['errors'][f'{symbol}:{interval}:stream'] = 'REALTIME_STREAM_EMPTY'
                             continue
+                        if not ack:
+                            # Do not treat history preloaded by the SDK as proof
+                            # that the live subscription is active.
+                            continue
+                        with _lock:
+                            _warm_state.setdefault('subscriptions', {})[key] = True
+                            _warm_state.setdefault('subscription_pending', {})[key] = False
+                            _warm_state['errors'].pop(f'{key}:subscribe', None)
                         rows = [{'timestamp': ts, 'open': candle.get('open'),
                                  'high': candle.get('max', candle.get('high')),
                                  'low': candle.get('min', candle.get('low')),
@@ -1053,3 +1100,4 @@ class IQOptionReadonly:
 
 def connection_status():
     return dict(_state)
+
