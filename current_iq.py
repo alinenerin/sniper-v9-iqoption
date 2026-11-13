@@ -741,7 +741,10 @@ class IQOptionReadonly:
                 if attempt > 1:
                     base["backfill_attempt"] = attempt
                 best = sorted({float(x["timestamp"]): x for x in best + rows if x.get("timestamp") is not None}.values(), key=lambda x: x["timestamp"])
-                if len(best) >= required: break
+                # Continue paging to the requested depth, not merely the
+                # minimum valid depth; warmup may need an extra row because
+                # the provider includes the currently open candle.
+                if len(best) >= target: break
                 if best: cursor = min(float(x["timestamp"]) for x in best) - interval
                 time.sleep(0.4 * attempt)
             # Historical batch scans can opt out of the stream cache.  This is
