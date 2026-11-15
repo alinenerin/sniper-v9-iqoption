@@ -172,7 +172,8 @@ def freshness(rows: Any, max_age_seconds: int | float = 900,
     if not rows or not isinstance(rows[-1], dict) or not _num(rows[-1].get("timestamp")):
         return False, None
     age = (time.time() if now is None else float(now)) - float(rows[-1]["timestamp"])
-    return age <= float(max_age_seconds), age
+    # A future-dated candle is not fresh; negative age must fail closed.
+    return 0.0 <= age <= float(max_age_seconds), age
 
 
 def validate_snapshot_freshness(symbols: Any, *, now: float | None = None,
