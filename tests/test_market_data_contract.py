@@ -84,13 +84,24 @@ class TestMarketDataContract(unittest.TestCase):
         now = 9750
         m5 = [candle(300 * i) for i in range(1, 32)]
         data = {
-            'EURUSD': {'m1': [candle(9720)], 'm5': m5},
-            'GBPUSD': {'m1': [candle(9660)], 'm5': m5},
+            'EURUSD': {'m1': [candle(9660)], 'm5': m5},
+            'GBPUSD': {'m1': [candle(9600)], 'm5': m5},
         }
         result = validate_snapshot_freshness(data, now=now)
         self.assertTrue(result['ok'], result['errors'])
         self.assertEqual(result['m1_spread_seconds'], 60)
         self.assertEqual(result['symbols']['EURUSD']['m5_closed_count'], 31)
+        self.assertEqual(result['symbols']['EURUSD']['m1_age_seconds'], 30)
+
+    def test_snapshot_rejects_forming_m1_candle(self):
+        now = 9750
+        m5 = [candle(300 * i) for i in range(1, 32)]
+        result = validate_snapshot_freshness(
+            {'EURUSD': {'m1': [candle(9660), candle(9720)], 'm5': m5}},
+            now=now,
+        )
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('EURUSD:M1_FORMING_CANDLES:1' in e for e in result['errors']))
 
     def test_snapshot_rejects_stale_symbol_even_if_others_are_fresh(self):
         now = 9750
