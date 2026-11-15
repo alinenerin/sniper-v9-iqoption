@@ -158,11 +158,15 @@ class SupremeIntelligence:
             smc_direction, ohlcv_df["close"],
         )
 
+        smc_status = "blocked" if str(smc_details.get("reason", "")).startswith("SMC_ERROR:") else "inference_ok"
+        vsa_status = "blocked" if str(vsa_details.get("reason", "")).startswith("VSA_ERROR:") else "inference_ok"
         score_parts = [
             ("technical_core", technical_core, TRADING_CONFIG.technical_core_weight),
-            ("smc", float(smc_score), TRADING_CONFIG.smc_weight),
-            ("vsa", float(vsa_score), TRADING_CONFIG.vsa_weight),
         ]
+        if smc_status == "inference_ok":
+            score_parts.append(("smc", float(smc_score), TRADING_CONFIG.smc_weight))
+        if vsa_status == "inference_ok":
+            score_parts.append(("vsa", float(vsa_score), TRADING_CONFIG.vsa_weight))
         if sent_score is not None and isinstance(sent_details, dict) and sent_details.get("status") in ("inference_ok", "executed"):
             score_parts.append(("sentiment", float(sent_score), TRADING_CONFIG.sentiment_weight))
 
@@ -218,7 +222,13 @@ class SupremeIntelligence:
             "raw_score": round(final_score, 1),
             "normalized_score": round(final_score, 1),
             "score_components": {
-                name: {"value": round(value, 2), "weight": weight, "status": "executed"}
+                name: {
+                    "value": round(value, 2),
+                    "weight": weight,
+                    "status": ("blocked" if name == "smc" and smc_status != "inference_ok"
+                               else "blocked" if name == "vsa" and vsa_status != "inference_ok"
+                               else "executed"),
+                }
                 for name, value, weight in score_parts
             },
             "analysis_completeness": analysis_completeness,
@@ -234,8 +244,8 @@ class SupremeIntelligence:
             "vsa": vsa_details,
             "sentiment": sent_details,
             "agents": {
-                "SMC": "executed",
-                "VSA": "executed",
+                "SMC": smc_status,
+                "VSA": vsa_status,
                 "DARTS": anomaly_result.get("status", "executed"),
                 "NEWS_SENTIMENT": (
                     sent_details.get("status", "unavailable")
