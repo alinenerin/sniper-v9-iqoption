@@ -41,3 +41,9 @@ jobs:
         run: python -m unittest -v tests.test_directional_score_symmetry
       - name: Test market-data contract regression cases
         run: python -m unittest -v test_market_data_contract.py
+      - name: Test direction aggregation, stream cache, warm readiness, and SMC fallback
+        run: |
+          python -m unittest -v tests.test_direction_aggregator
+          python -m unittest -v tests.test_live_stream_cache
+          python -m unittest -v tests.test_warm_readiness
+          python -m unittest -v tests.test_smc_structure_fallback
