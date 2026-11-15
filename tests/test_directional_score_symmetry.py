@@ -181,5 +181,77 @@ class DirectionalConsensusBonusTest(unittest.TestCase):
         self.assertEqual(contract["score_mode"]["score_before_bonus"], 68.0)
 
 
+    def test_component_status_marks_smc_and_vsa_exceptions_as_blocked(self):
+        status = SharedAI._component_status(
+            {
+                "symbol": "EURUSD",
+                "smc": {"reason": "SMC_ERROR:RuntimeError"},
+                "vsa": {"reason": "VSA_ERROR:ValueError"},
+            },
+            {},
+        )
+        self.assertEqual(status["smc"]["status"], "blocked")
+        self.assertEqual(status["smc"]["reason"], "SMC_ERROR:RuntimeError")
+        self.assertEqual(status["vsa"]["status"], "blocked")
+        self.assertEqual(status["vsa"]["reason"], "VSA_ERROR:ValueError")
+
+    def test_neutral_fusion_does_not_add_direction_relative_models(self):
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+
+        artifacts = {
+            "xgboost_inference.json": {"components": {"EURUSD": {"probability_up": 0.9}}},
+            "timesfm_inference.json": {"components": {"EURUSD": {"forecast": {"direction": "UP", "confidence": 0.9}}}},
+            "finbert_inference.json": {"components": {"EURUSD": {"labels": [{"label": "POSITIVE", "score": 0.95}]}}},
+            "darts_inference.json": {"components": {"EURUSD": {"scan": {"anomaly_score": 0}}}},
+        }
+        def read_text(path, *args, **kwargs):
+            return json.dumps(artifacts[path.name])
+
+        with patch.object(Path, "read_text", read_text):
+            score, fusion = SharedAI._fuse_agent_evidence(
+                50.0, "NEUTRAL",
+                {"xgboost": {"status": "inference_ok"},
+                 "timesfm": {"status": "inference_ok"},
+                 "finbert": {"status": "inference_ok"},
+                 "darts": {"status": "inference_ok"}},
+                {},
+                "EURUSD",
+                {"technical_core": {"value": 50.0, "status": "executed"}},
+            )
+        self.assertEqual(score, 50.0)
+        self.assertEqual(set(fusion), {"technical_core"})
+
+    def test_failed_smc_and_vsa_are_excluded_from_fusion(self):
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+
+        artifacts = {
+            "xgboost_inference.json": {"components": {}},
+            "timesfm_inference.json": {"components": {}},
+            "finbert_inference.json": {"components": {}},
+            "darts_inference.json": {"components": {"EURUSD": {"scan": {"anomaly_score": 0}}}},
+        }
+        def read_text(path, *args, **kwargs):
+            return json.dumps(artifacts[path.name])
+
+        with patch.object(Path, "read_text", read_text):
+            score, fusion = SharedAI._fuse_agent_evidence(
+                50.0, "CALL",
+                {"smc": {"status": "blocked"}, "vsa": {"status": "blocked"},
+                 "xgboost": {"status": "blocked"}, "timesfm": {"status": "blocked"},
+                 "finbert": {"status": "blocked"}, "darts": {"status": "inference_ok"}},
+                {},
+                "EURUSD",
+                {"technical_core": {"value": 50.0, "status": "executed"},
+                 "smc": {"value": 0.0, "status": "blocked"},
+                 "vsa": {"value": 0.0, "status": "blocked"}},
+            )
+        self.assertEqual(score, 50.0)
+        self.assertEqual(set(fusion), {"technical_core"})
+
+
 if __name__ == "__main__":
     unittest.main()
