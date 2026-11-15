@@ -210,6 +210,10 @@ def _m5_confirmation_evidence(candles: list[dict[str, Any]], direction: str,
             continue
         try:
             ts = float(row.get("timestamp"))
+            # Provider timestamps may be Unix milliseconds; normalize before
+            # comparing with the UTC observation epoch, which is in seconds.
+            if ts > 10_000_000_000:
+                ts /= 1000.0
             prices = [float(row.get(key)) for key in ("open", "high", "low", "close")]
         except (TypeError, ValueError):
             invalid_count += 1
