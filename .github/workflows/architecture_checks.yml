@@ -9,6 +9,7 @@ on:
       - 'engines/**'
       - 'config/markets/**'
       - 'tests/**'
+      - '.github/workflows/architecture_checks.yml'
   pull_request:
   workflow_dispatch:
 
