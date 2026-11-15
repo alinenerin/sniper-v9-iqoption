@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from engines.binary.sniper_timing import build_temporal_observation
-from scripts.sniper_mode import emit_approved_signal
+from scripts.sniper_mode import emit_approved_signal, write_timing_report
 
 
 class TemporalObservationTests(unittest.TestCase):
@@ -25,6 +25,41 @@ class TemporalObservationTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     build_temporal_observation(value)
+
+    def test_timing_report_includes_temporal_observations(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            event = {
+                "event_id": "event-1",
+                "symbol": "EURUSD",
+                "signal_emitted": True,
+                "emitted_at_utc": "2027-01-15T08:00:23.400000+00:00",
+                "temporal_observation": {
+                    "observed_at_utc": "2027-01-15T08:00:23.400000+00:00",
+                    "observed_at_brt": "2027-01-15T05:00:23.400000-03:00",
+                    "m3_window_start_timestamp": 1800000000,
+                    "m3_window_end_timestamp": 1800000180,
+                    "second_within_m3_window": 23,
+                    "clock_source": "system_wall_clock",
+                    "selection_performed": False,
+                    "read_only": True,
+                },
+            }
+            (Path(directory) / "live_signals.jsonl").write_text(
+                json.dumps(event) + "\n", encoding="utf-8"
+            )
+            report = write_timing_report(
+                reports_dir=directory,
+                started_epoch=1800000000,
+                started_at_utc="2027-01-15T08:00:00+00:00",
+                pair_timings=[],
+                market_data={"fetch_mode": "offline_test"},
+                run_id="telemetry-report-test",
+            )
+            self.assertEqual(report["temporal_observation_count"], 1)
+            self.assertEqual(report["temporal_observations"][0]["second_within_m3_window"], 23)
+            self.assertFalse(report["temporal_observations"][0]["selection_performed"])
+            self.assertTrue(report["temporal_observations"][0]["read_only"])
 
     def test_emitted_read_only_event_contains_temporal_observation(self):
         analysis = {
