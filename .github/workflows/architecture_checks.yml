@@ -37,5 +37,7 @@ jobs:
           assert 'buy(' not in Path('engines/binary/operational.py').read_text()
           print('engine boundaries: OK')
           PY
+      - name: Test directional score and evidence fusion regressions
+        run: python -m unittest -v tests.test_directional_score_symmetry
       - name: Test market-data contract regression cases
         run: python -m unittest -v test_market_data_contract.py
