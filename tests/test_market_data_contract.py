@@ -75,6 +75,24 @@ class TestMarketDataContract(unittest.TestCase):
         out = aggregate_m1_to_m3(rows, now=2160, required=10)
         self.assertEqual(out, [])
 
+    def test_m3_aggregation_rejects_invalid_ohlc(self):
+        rows = [candle(1800), candle(1860), candle(1920)]
+        rows[1]["high"] = 1.0
+        out = aggregate_m1_to_m3(rows, now=2160, required=10)
+        self.assertEqual(out, [])
+
+    def test_m3_aggregation_rejects_negative_volume(self):
+        rows = [candle(1800), candle(1860), candle(1920)]
+        rows[2]["volume"] = -1
+        out = aggregate_m1_to_m3(rows, now=2160, required=10)
+        self.assertEqual(out, [])
+
+    def test_m3_aggregation_rejects_boolean_ohlcv_values(self):
+        rows = [candle(1800), candle(1860), candle(1920)]
+        rows[0]["open"] = True
+        out = aggregate_m1_to_m3(rows, now=2160, required=10)
+        self.assertEqual(out, [])
+
     def test_closed_candles_excludes_forming_m5_bar(self):
         rows = [candle(9300), candle(9600)]
         closed = closed_candles(rows, 300, now=9750)
