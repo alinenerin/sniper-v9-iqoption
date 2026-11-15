@@ -1,6 +1,6 @@
 import unittest
 from market_data_contract import (aggregate_m1_to_m3, closed_candles,
-                                  validate_candles, validate_snapshot_freshness)
+                                  freshness, validate_candles, validate_snapshot_freshness)
 
 
 def candle(t=1700000000):
@@ -68,7 +68,6 @@ class TestMarketDataContract(unittest.TestCase):
         self.assertEqual(out[0]['low'], .99)
         self.assertEqual(out[0]['close'], 1.12)
         self.assertEqual(out[0]['volume'], 9)
-        # The 2160 bucket is incomplete and must not be emitted.
         self.assertEqual(out[-1]['timestamp'], 1980)
 
     def test_m3_aggregation_does_not_fill_missing_minutes(self):
