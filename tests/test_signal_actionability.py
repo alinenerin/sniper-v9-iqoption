@@ -79,5 +79,21 @@ class SignalActionabilityTest(unittest.TestCase):
         self.assertIn("DIRECTION_UNCONFIRMED", neutral["actionability_reasons"])
 
 
+    def test_future_m1_timestamp_blocks_actionability(self):
+        checked_at = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+        analysis = self.make_analysis(checked_at)
+        analysis["candle_timing"]["last_candle_timestamp_utc"] = _iso(checked_at.timestamp() + 3)
+        _finalize_signal_actionability(analysis, checked_at)
+        self.assertFalse(analysis["signal_actionable"])
+        self.assertIn("FINAL_M1_CANDLE_TIMESTAMP_IN_FUTURE", analysis["actionability_reasons"])
+
+    def test_future_m5_close_timestamp_blocks_actionability(self):
+        checked_at = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+        analysis = self.make_analysis(checked_at)
+        analysis["m5_confirmation"]["latest_completed_candle_close_utc"] = _iso(checked_at.timestamp() + 3)
+        _finalize_signal_actionability(analysis, checked_at)
+        self.assertFalse(analysis["signal_actionable"])
+        self.assertIn("M5_CLOSE_TIMESTAMP_IN_FUTURE", analysis["actionability_reasons"])
+
 if __name__ == "__main__":
     unittest.main()
