@@ -40,7 +40,9 @@ jobs:
       - name: Test directional score and evidence fusion regressions
         run: python -m unittest -v tests.test_directional_score_symmetry
       - name: Test market-data contract regression cases
-        run: python -m unittest -v test_market_data_contract.py
+        run: |
+          python -m unittest -v test_market_data_contract.py
+          python -m unittest -v tests.test_market_data_contract
       - name: Test direction aggregation, stream cache, warm readiness, and SMC fallback
         run: |
           python -m unittest -v tests.test_direction_aggregator
