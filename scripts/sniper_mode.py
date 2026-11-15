@@ -282,6 +282,23 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
     first_epoch = None
     if first:
         first_epoch = datetime.fromisoformat(first.replace("Z", "+00:00")).timestamp()
+    temporal_observations = []
+    for event in events:
+        observation = event.get("temporal_observation")
+        if not isinstance(observation, dict):
+            continue
+        temporal_observations.append({
+            "event_id": event.get("event_id"),
+            "symbol": event.get("symbol"),
+            "observed_at_utc": observation.get("observed_at_utc"),
+            "observed_at_brt": observation.get("observed_at_brt"),
+            "m3_window_start_timestamp": observation.get("m3_window_start_timestamp"),
+            "m3_window_end_timestamp": observation.get("m3_window_end_timestamp"),
+            "second_within_m3_window": observation.get("second_within_m3_window"),
+            "clock_source": observation.get("clock_source"),
+            "selection_performed": observation.get("selection_performed") is True,
+            "read_only": observation.get("read_only") is True,
+        })
     fetch_mode = str(market_data.get("fetch_mode") or "").lower()
     warm_state = "warm" if ("warm" in fetch_mode or "stream" in fetch_mode) else (
         "cold" if ("uncached" in fetch_mode or "direct" in fetch_mode) else "unknown")
@@ -318,6 +335,8 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
         "warm_cold_classification": warm_state,
         "fetch_mode": market_data.get("fetch_mode"),
         "early_signal_count": len(events),
+        "temporal_observation_count": len(temporal_observations),
+        "temporal_observations": temporal_observations,
         "read_only": True,
         "execution_allowed": False,
         "executor_enabled": False,
