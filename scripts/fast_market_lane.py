@@ -46,6 +46,30 @@ def _duplicate_timestamp_count(rows: list[tuple[float, dict[str, Any]]]) -> int:
     return len(rows) - len({timestamp for timestamp, _ in rows})
 
 
+def _gap_count(rows: list[tuple[float, dict[str, Any]]], interval: int) -> int:
+    """Count missing or irregular intervals in chronological candle data."""
+    return sum(
+        1 for (previous, _), (current, _) in zip(rows, rows[1:])
+        if abs((current - previous) - interval) > 2.0
+    )
+
+
+def _observed_epoch(payload: Any, fallback: float) -> tuple[float, bool]:
+    """Normalize an observation epoch and reject malformed/future clocks."""
+    raw = payload.get("observed_timestamp") if isinstance(payload, dict) else None
+    if raw is None:
+        return fallback, True
+    try:
+        observed = float(raw)
+        if observed > 10_000_000_000:
+            observed /= 1000.0
+    except (TypeError, ValueError, OverflowError):
+        return fallback, False
+    if not math.isfinite(observed) or observed <= 0 or observed > fallback + 2.0:
+        return fallback, False
+    return observed, True
+
+
 def fetch_fast_pair(
     symbol: str,
     get: Callable[..., dict[str, Any]],
@@ -124,29 +148,45 @@ def build_fast_timing(market_data: dict[str, Any], *, now: float | None = None,
         m5_rows = _rows(m5_payload)
         m1_valid = _sorted_valid(m1_rows)
         m5_valid = _sorted_valid(m5_rows)
-        m1_observed = float(m1_payload.get("observed_timestamp") or fallback_observed) if isinstance(m1_payload, dict) else fallback_observed
-        m5_observed = float(m5_payload.get("observed_timestamp") or fallback_observed) if isinstance(m5_payload, dict) else fallback_observed
+        m1_observed, m1_observation_valid = _observed_epoch(m1_payload, fallback_observed)
+        m5_observed, m5_observation_valid = _observed_epoch(m5_payload, fallback_observed)
         m1_closed = [(ts, row) for ts, row in m1_valid if ts + 60 <= m1_observed]
         m5_closed = [(ts, row) for ts, row in m5_valid if ts + 300 <= m5_observed]
         m1_duplicate_count = _duplicate_timestamp_count(m1_valid)
         m5_duplicate_count = _duplicate_timestamp_count(m5_valid)
+        m1_future_count = sum(ts > m1_observed + 2.0 for ts, _ in m1_valid)
+        m5_future_count = sum(ts > m5_observed + 2.0 for ts, _ in m5_valid)
+        m1_gap_count = _gap_count(m1_closed, 60)
+        m5_gap_count = _gap_count(m5_closed, 300)
         m1_latest = m1_closed[-1][0] if m1_closed else None
         m5_latest = m5_closed[-1][0] if m5_closed else None
         m1_age = max(0.0, m1_observed - (m1_latest + 60)) if m1_latest is not None else None
         m1_raw_age = max(0.0, m1_observed - m1_valid[-1][0]) if m1_valid else None
         m5_age = max(0.0, m5_observed - (m5_latest + 300)) if m5_latest is not None else None
         m1_status, m1_reason = "ok", None
-        if m1_duplicate_count:
+        if not m1_observation_valid:
+            m1_status, m1_reason = "blocked", "M1_OBSERVATION_TIMESTAMP_INVALID_OR_FUTURE"
+        elif m1_future_count:
+            m1_status, m1_reason = "blocked", f"M1_FUTURE_CANDLE_TIMESTAMPS:{m1_future_count}"
+        elif m1_duplicate_count:
             m1_status, m1_reason = "blocked", f"M1_DUPLICATE_CANDLE_TIMESTAMPS:{m1_duplicate_count}"
-        elif len(m1_valid) < 100 or m1_latest is None:
+        elif m1_gap_count:
+            m1_status, m1_reason = "blocked", f"M1_CANDLE_INTERVAL_GAPS:{m1_gap_count}"
+        elif len(m1_closed) < 100 or m1_latest is None:
             m1_status, m1_reason = "blocked", "FINAL_TIMING_INCOMPLETE_M1"
         # Provider timestamps mark the candle start, so freshness must be
         # measured from the completed candle close, not its opening timestamp.
         elif m1_age is None or m1_age > float(max_m1_age_seconds):
             m1_status, m1_reason = "blocked", "FINAL_M1_CANDLE_STALE"
         m5_status, m5_reason = "ok", None
-        if m5_duplicate_count:
+        if not m5_observation_valid:
+            m5_status, m5_reason = "blocked", "M5_OBSERVATION_TIMESTAMP_INVALID_OR_FUTURE"
+        elif m5_future_count:
+            m5_status, m5_reason = "blocked", f"M5_FUTURE_CANDLE_TIMESTAMPS:{m5_future_count}"
+        elif m5_duplicate_count:
             m5_status, m5_reason = "blocked", f"M5_DUPLICATE_CANDLE_TIMESTAMPS:{m5_duplicate_count}"
+        elif m5_gap_count:
+            m5_status, m5_reason = "blocked", f"M5_CANDLE_INTERVAL_GAPS:{m5_gap_count}"
         elif len(m5_closed) < 25:
             m5_status, m5_reason = "blocked", f"M5_INCOMPLETE_CLOSED_CANDLES:{len(m5_closed)}<25"
         elif m5_age is None:
