@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from engines.binary.sniper_timing import build_temporal_observation
+
 REAL_FX_SYMBOLS = (
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
     "USDCHF", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY",
@@ -177,8 +179,10 @@ def emit_approved_signal(analysis: dict[str, Any], *, reports_dir: str | Path = 
     actionability_reasons = list(analysis.get("actionability_reasons") or [])
     if status == "TOO_LATE" and "ENTRY_WINDOW_EXPIRED_BEFORE_EMISSION" not in actionability_reasons:
         actionability_reasons.append("ENTRY_WINDOW_EXPIRED_BEFORE_EMISSION")
+    temporal_observation = build_temporal_observation(emitted_epoch)
     event = {
         "event_id": _event_id(analysis, run_id),
+        "temporal_observation": temporal_observation,
         "market": "binary",
         "symbol": analysis.get("symbol"),
         "direction": str(analysis.get("direction_confirmed") or "").upper(),
