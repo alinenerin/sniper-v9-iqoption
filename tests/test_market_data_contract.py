@@ -35,6 +35,16 @@ class TestMarketDataContract(unittest.TestCase):
         self.assertEqual(out.freshness_status, 'PASS')
         self.assertEqual(out.status, 'PASS')
 
+    def test_freshness_rejects_future_dated_candle(self):
+        is_fresh, age = freshness([candle(1060)], max_age_seconds=120, now=1050)
+        self.assertFalse(is_fresh)
+        self.assertEqual(age, -10)
+
+    def test_freshness_accepts_recent_non_future_candle(self):
+        is_fresh, age = freshness([candle(1040)], max_age_seconds=120, now=1050)
+        self.assertTrue(is_fresh)
+        self.assertEqual(age, 10)
+
     def test_aggregates_only_complete_aligned_closed_m3_bars(self):
         rows = [
             {'symbol': 'EURUSD', 'timestamp': t, 'open': o, 'high': h,
