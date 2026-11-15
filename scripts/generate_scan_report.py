@@ -477,8 +477,9 @@ def _timestamp_epoch(value: Any) -> float | None:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        return timestamp if math.isfinite(timestamp) else None
+    except (ValueError, OverflowError, OSError):
         return None
 
 
@@ -542,10 +543,13 @@ def _finalize_signal_actionability(analysis: dict[str, Any], checked_at: datetim
             or candle_timing.get("cache_used") is not False or last_m1 is None):
         reasons.append("FINAL_M1_TIMING_UNVERIFIED")
     else:
-        m1_age = max(0.0, checked_at.timestamp() - (last_m1 + 60.0))
-        candle_timing["age_at_actionability_check_seconds"] = round(m1_age, 3)
-        if m1_age > FINAL_M1_MAX_AGE_SECONDS:
-            reasons.append("FINAL_M1_CANDLE_STALE")
+        if last_m1 > checked_at.timestamp() + 2.0:
+            reasons.append("FINAL_M1_CANDLE_TIMESTAMP_IN_FUTURE")
+        else:
+            m1_age = max(0.0, checked_at.timestamp() - (last_m1 + 60.0))
+            candle_timing["age_at_actionability_check_seconds"] = round(m1_age, 3)
+            if m1_age > FINAL_M1_MAX_AGE_SECONDS:
+                reasons.append("FINAL_M1_CANDLE_STALE")
 
     if market in {"binary", "otc"}:
         m5 = analysis.get("m5_confirmation") or {}
@@ -555,14 +559,17 @@ def _finalize_signal_actionability(analysis: dict[str, Any], checked_at: datetim
         if latest_m5_close is None:
             reasons.append("M5_CLOSE_TIMESTAMP_UNVERIFIED")
         else:
-            m5_age = max(0.0, checked_at.timestamp() - latest_m5_close)
-            m5["age_at_actionability_check_seconds"] = round(m5_age, 3)
-            m5["closed_candle_age_at_publication_seconds"] = round(m5_age, 3)
-            if m5_age > M5_ENTRY_MAX_CLOSED_AGE_SECONDS:
-                reasons.append("M5_CLOSED_CANDLES_STALE_AT_PUBLICATION")
-            lead = float(timing.get("lead_time_seconds") or 0.0)
-            if timing.get("valid") is True and m5_age + lead > M5_ENTRY_MAX_CLOSED_AGE_SECONDS:
-                reasons.append("M5_CONFIRMATION_EXPIRES_BEFORE_ENTRY")
+            if latest_m5_close > checked_at.timestamp() + 2.0:
+                reasons.append("M5_CLOSE_TIMESTAMP_IN_FUTURE")
+            else:
+                m5_age = max(0.0, checked_at.timestamp() - latest_m5_close)
+                m5["age_at_actionability_check_seconds"] = round(m5_age, 3)
+                m5["closed_candle_age_at_publication_seconds"] = round(m5_age, 3)
+                if m5_age > M5_ENTRY_MAX_CLOSED_AGE_SECONDS:
+                    reasons.append("M5_CLOSED_CANDLES_STALE_AT_PUBLICATION")
+                lead = float(timing.get("lead_time_seconds") or 0.0)
+                if timing.get("valid") is True and m5_age + lead > M5_ENTRY_MAX_CLOSED_AGE_SECONDS:
+                    reasons.append("M5_CONFIRMATION_EXPIRES_BEFORE_ENTRY")
 
     analysis["actionability_checked_at_utc"] = checked_at.isoformat()
     analysis["actionability_reasons"] = list(dict.fromkeys(reasons))
