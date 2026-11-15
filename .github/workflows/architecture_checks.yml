@@ -55,3 +55,6 @@ jobs:
           python -m unittest -v tests.test_m5_signal_gate
           python -m unittest -v tests.test_market_lane_routing
           python -m unittest -v tests.test_fast_market_lane
+
+      - name: Test isolated sniper timing and temporal observation telemetry
+        run: python -m unittest -v tests.test_sniper_mode
