@@ -196,21 +196,41 @@ def validate_snapshot_freshness(symbols: Any, *, now: float | None = None,
         m5_payload = data.get("m5") or data.get("m5_candles") or []
         m1_rows = m1_payload.get("candles", []) if isinstance(m1_payload, dict) else m1_payload
         m5_rows = m5_payload.get("candles", []) if isinstance(m5_payload, dict) else m5_payload
-        m1_times = [stamp for row in (m1_rows if isinstance(m1_rows, list) else [])
+        m1_payload_rows = m1_rows if isinstance(m1_rows, list) else []
+        m5_payload_rows = m5_rows if isinstance(m5_rows, list) else []
+        m1_times = [stamp for row in m1_payload_rows
                     if (stamp := _timestamp_seconds(row)) is not None]
+        m5_times = [stamp for row in m5_payload_rows
+                    if (stamp := _timestamp_seconds(row)) is not None]
+        m1_duplicate_count = len(m1_times) - len(set(m1_times))
+        m5_duplicate_count = len(m5_times) - len(set(m5_times))
+        m1_future_count = sum(stamp > observed + 2.0 for stamp in m1_times)
+        m5_future_count = sum(stamp > observed + 2.0 for stamp in m5_times)
         m1_latest = max(m1_times) if m1_times else None
         m1_age = max(0.0, observed - m1_latest) if m1_latest is not None else None
-        m5_closed = closed_candles(m5_rows, 300, now=observed)
+        m5_closed = closed_candles(m5_payload_rows, 300, now=observed)
         m5_latest = _timestamp_seconds(m5_closed[-1]) if m5_closed else None
         m5_close_timestamp = m5_latest + 300 if m5_latest is not None else None
         m5_close_age = max(0.0, observed - m5_close_timestamp) if m5_close_timestamp is not None else None
         details[symbol] = {
             "m1_latest_timestamp": m1_latest,
             "m1_age_seconds": m1_age,
+            "m1_duplicate_count": m1_duplicate_count,
+            "m5_duplicate_count": m5_duplicate_count,
+            "m1_future_count": m1_future_count,
+            "m5_future_count": m5_future_count,
             "m5_closed_count": len(m5_closed),
             "m5_latest_closed_timestamp": m5_latest,
             "m5_close_age_seconds": m5_close_age,
         }
+        if m1_duplicate_count:
+            errors.append(f"{symbol}:M1_DUPLICATE_TIMESTAMPS:{m1_duplicate_count}")
+        if m5_duplicate_count:
+            errors.append(f"{symbol}:M5_DUPLICATE_TIMESTAMPS:{m5_duplicate_count}")
+        if m1_future_count:
+            errors.append(f"{symbol}:M1_FUTURE_CANDLES:{m1_future_count}")
+        if m5_future_count:
+            errors.append(f"{symbol}:M5_FUTURE_CANDLES:{m5_future_count}")
         if m1_latest is None:
             errors.append(f"{symbol}:M1_MISSING")
         else:
