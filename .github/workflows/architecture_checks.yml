@@ -47,3 +47,8 @@ jobs:
           python -m unittest -v tests.test_live_stream_cache
           python -m unittest -v tests.test_warm_readiness
           python -m unittest -v tests.test_smc_structure_fallback
+      - name: Test signal actionability, M5 confirmation, and market-lane routing
+        run: |
+          python -m unittest -v tests.test_signal_actionability
+          python -m unittest -v tests.test_m5_signal_gate
+          python -m unittest -v tests.test_market_lane_routing
