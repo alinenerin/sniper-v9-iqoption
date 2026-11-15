@@ -206,14 +206,20 @@ def validate_snapshot_freshness(symbols: Any, *, now: float | None = None,
         m5_duplicate_count = len(m5_times) - len(set(m5_times))
         m1_future_count = sum(stamp > observed + 2.0 for stamp in m1_times)
         m5_future_count = sum(stamp > observed + 2.0 for stamp in m5_times)
+        m1_closed = closed_candles(m1_payload_rows, 60, now=observed)
         m1_latest = max(m1_times) if m1_times else None
-        m1_age = max(0.0, observed - m1_latest) if m1_latest is not None else None
+        m1_latest_closed = _timestamp_seconds(m1_closed[-1]) if m1_closed else None
+        m1_close_timestamp = m1_latest_closed + 60 if m1_latest_closed is not None else None
+        m1_age = max(0.0, observed - m1_close_timestamp) if m1_close_timestamp is not None else None
+        m1_forming_count = sum(stamp + 60 > observed + 1.0 for stamp in m1_times)
         m5_closed = closed_candles(m5_payload_rows, 300, now=observed)
         m5_latest = _timestamp_seconds(m5_closed[-1]) if m5_closed else None
         m5_close_timestamp = m5_latest + 300 if m5_latest is not None else None
         m5_close_age = max(0.0, observed - m5_close_timestamp) if m5_close_timestamp is not None else None
         details[symbol] = {
             "m1_latest_timestamp": m1_latest,
+            "m1_latest_closed_timestamp": m1_latest_closed,
+            "m1_forming_count": m1_forming_count,
             "m1_age_seconds": m1_age,
             "m1_duplicate_count": m1_duplicate_count,
             "m5_duplicate_count": m5_duplicate_count,
@@ -233,11 +239,13 @@ def validate_snapshot_freshness(symbols: Any, *, now: float | None = None,
             errors.append(f"{symbol}:M5_FUTURE_CANDLES:{m5_future_count}")
         if m1_latest is None:
             errors.append(f"{symbol}:M1_MISSING")
+        elif m1_forming_count:
+            errors.append(f"{symbol}:M1_FORMING_CANDLES:{m1_forming_count}")
+        if m1_latest_closed is None:
+            errors.append(f"{symbol}:M1_NO_CLOSED_CANDLES")
         else:
-            m1_stamps.append(m1_latest)
-            if m1_latest > observed + 2:
-                errors.append(f"{symbol}:M1_FUTURE")
-            elif m1_age is not None and m1_age > float(max_m1_age_seconds):
+            m1_stamps.append(m1_close_timestamp)
+            if m1_age is not None and m1_age > float(max_m1_age_seconds):
                 errors.append(f"{symbol}:M1_STALE:{round(m1_age, 1)}s")
         if len(m5_closed) < int(min_m5_closed):
             errors.append(f"{symbol}:M5_CLOSED_INSUFFICIENT:{len(m5_closed)}<{int(min_m5_closed)}")
