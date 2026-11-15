@@ -388,8 +388,28 @@ class SharedAI:
                              "data_source": (advisory.get("cycle_catalog") or {}).get("data_source", "current_scan_snapshot"),
                              "reason": (advisory.get("cycle_catalog") or {}).get("reason"),
                              "read_only": True},
-            "smc": {"status": "inference_ok" if "smc" in analysis else "blocked", "reason": None if "smc" in analysis else "SMC_NOT_RUN"},
-            "vsa": {"status": "inference_ok" if "vsa" in analysis else "blocked", "reason": None if "vsa" in analysis else "VSA_NOT_RUN"},
+            "smc": {
+                "status": (
+                    "blocked"
+                    if not isinstance(analysis.get("smc"), dict)
+                    or str((analysis.get("smc") or {}).get("reason", "")).startswith("SMC_ERROR:")
+                    or str((analysis.get("smc") or {}).get("status", "")).lower() in {"blocked", "error", "failed", "unavailable"}
+                    else "inference_ok"
+                ),
+                "reason": ((analysis.get("smc") or {}).get("reason")
+                           if isinstance(analysis.get("smc"), dict) else "SMC_NOT_RUN"),
+            },
+            "vsa": {
+                "status": (
+                    "blocked"
+                    if not isinstance(analysis.get("vsa"), dict)
+                    or str((analysis.get("vsa") or {}).get("reason", "")).startswith("VSA_ERROR:")
+                    or str((analysis.get("vsa") or {}).get("status", "")).lower() in {"blocked", "error", "failed", "unavailable"}
+                    else "inference_ok"
+                ),
+                "reason": ((analysis.get("vsa") or {}).get("reason")
+                           if isinstance(analysis.get("vsa"), dict) else "VSA_NOT_RUN"),
+            },
         }
         # Every declared agent has an explicit state and a reason for a block;
         # advisory components never become implicit vetoes through a missing
@@ -409,8 +429,13 @@ class SharedAI:
         parts = []
         for name, weight in (("technical_core", cfg.technical_core_weight), ("smc", cfg.smc_weight), ("vsa", cfg.vsa_weight), ("sentiment", cfg.sentiment_weight)):
             item = (core_components or {}).get(name) if isinstance(core_components, dict) else None
-            if isinstance(item, dict) and item.get("value") is not None:
-                parts.append((name, max(0.0, min(100.0, float(item["value"]))), weight, "evidence"))
+            if not isinstance(item, dict) or item.get("value") is None:
+                continue
+            if name in {"smc", "vsa"} and component_status.get(name, {}).get("status") != "inference_ok":
+                continue
+            if name == "sentiment" and str(item.get("status", "")).lower() not in {"inference_ok", "executed", "ok", "success"}:
+                continue
+            parts.append((name, max(0.0, min(100.0, float(item["value"]))), weight, "evidence"))
         if not parts:
             parts.append(("technical_core", max(0.0, min(100.0, technical_score)), cfg.technical_core_weight, "fallback"))
         direction = direction.upper()
@@ -422,11 +447,12 @@ class SharedAI:
             except (OSError, json.JSONDecodeError):
                 return {}
         xgb = report_item("xgboost_inference.json")
-        if component_status.get("xgboost", {}).get("status") == "inference_ok" and xgb.get("probability_up") is not None:
+        directional = direction in {"CALL", "BUY", "PUT", "SELL"}
+        if directional and component_status.get("xgboost", {}).get("status") == "inference_ok" and xgb.get("probability_up") is not None:
             p = float(xgb["probability_up"]) * 100.0
             parts.append(("xgboost", p if direction in ("CALL", "BUY") else 100.0 - p, cfg.ai_ensemble_weight * 0.50, "ai"))
         times = report_item("timesfm_inference.json")
-        if component_status.get("timesfm", {}).get("status") == "inference_ok":
+        if directional and component_status.get("timesfm", {}).get("status") == "inference_ok":
             td = str((times.get("forecast") or times).get("direction", "")).upper()
             conf = max(0.0, min(1.0, float((times.get("forecast") or times).get("confidence", 0.5) or 0.5)))
             aligned = td in (("UP",) if direction in ("CALL", "BUY") else ("DOWN",))
@@ -439,7 +465,8 @@ class SharedAI:
         # direction-relative evidence value; absence remains unavailable and
         # is never converted to zero.
         finbert = report_item("finbert_inference.json")
-        if ("sentiment" not in {name for name, *_ in parts}
+        if (directional
+                and "sentiment" not in {name for name, *_ in parts}
                 and component_status.get("finbert", {}).get("status") == "inference_ok"
                 and isinstance(finbert.get("labels"), list) and finbert.get("labels")):
             label = max(finbert["labels"], key=lambda item: float(item.get("score", 0.0) or 0.0))
@@ -613,17 +640,8 @@ class SharedAI:
                 request.symbol, component_status, market_snapshot_id, request.timeframe
             )
             analysis["specialist_committee"] = committee_report
-            direction = str(analysis.get("direction", "NEUTRAL")).upper()
-            technical_score = float(analysis.get("score", 0) or 0)
-            score, fused_components = self._fuse_agent_evidence(technical_score, direction, component_status, advisory, request.symbol, analysis.get("score_components"))
-            analysis["technical_score"] = round(technical_score, 1)
-            analysis["score"] = score
-            analysis["normalized_score"] = score
-            analysis["score_fusion"] = fused_components
-            analysis["score_breakdown"] = self._score_breakdown(analysis, fused_components, score)
-
-            # Direction is confirmed only by the existing independent-source
-            # aggregator. Never use candle-to-candle movement as a directional vote.
+            # Confirm direction before fusing any direction-relative model evidence.
+            # NEUTRAL remains non-directional and cannot be interpreted as DOWN.
             xgb_item = self._artifact_item("xgboost_inference.json", request.symbol)
             metadata = request.metadata if isinstance(request.metadata, dict) else {}
             direction_fields = self._direction_breakdown(
@@ -631,8 +649,20 @@ class SharedAI:
                 metadata.get("m5_engine") if isinstance(metadata.get("m5_engine"), dict) else None,
             )
             analysis.update(direction_fields)
-            direction = direction_fields["direction_confirmed"]
+            direction = str(direction_fields["direction_confirmed"]).upper()
             analysis["direction"] = direction
+
+            technical_score = float(analysis.get("score", 0) or 0)
+            score, fused_components = self._fuse_agent_evidence(
+                technical_score, direction, component_status, advisory,
+                request.symbol, analysis.get("score_components"),
+            )
+            analysis["technical_score"] = round(technical_score, 1)
+            analysis["score"] = score
+            analysis["normalized_score"] = score
+            analysis["score_fusion"] = fused_components
+            analysis["score_breakdown"] = self._score_breakdown(analysis, fused_components, score)
+
             # Re-align the technical component only after consensus is known;
             # use completed candles and preserve every existing fusion weight.
             closed_closes = self._closed_close_values(
