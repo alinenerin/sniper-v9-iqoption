@@ -130,7 +130,7 @@ class FastMarketLaneDuplicateTimestampTest(unittest.TestCase):
              "low": 1, "close": 1}
             for offset in range(100, 0, -1)
         ]
-        m1[50]["timestamp"] += 60
+        m1[50]["timestamp"] += 30
         m5 = [
             {"timestamp": observed - 300 * offset, "open": 1, "high": 1,
              "low": 1, "close": 1}
