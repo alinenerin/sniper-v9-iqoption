@@ -33,7 +33,17 @@ def _timestamp(row: dict[str, Any]) -> float | None:
 
 
 def _sorted_valid(rows: list[dict[str, Any]]) -> list[tuple[float, dict[str, Any]]]:
-    return sorted((ts, row) for row in rows if (ts := _timestamp(row)) is not None)
+    # A timestamp tie makes tuple sorting compare the row dictionaries, which
+    # raises TypeError. Sort explicitly by timestamp and preserve duplicates
+    # so the timing gate can reject them rather than inflate candle counts.
+    return sorted(
+        ((ts, row) for row in rows if (ts := _timestamp(row)) is not None),
+        key=lambda item: item[0],
+    )
+
+
+def _duplicate_timestamp_count(rows: list[tuple[float, dict[str, Any]]]) -> int:
+    return len(rows) - len({timestamp for timestamp, _ in rows})
 
 
 def fetch_fast_pair(
@@ -118,20 +128,26 @@ def build_fast_timing(market_data: dict[str, Any], *, now: float | None = None,
         m5_observed = float(m5_payload.get("observed_timestamp") or fallback_observed) if isinstance(m5_payload, dict) else fallback_observed
         m1_closed = [(ts, row) for ts, row in m1_valid if ts + 60 <= m1_observed]
         m5_closed = [(ts, row) for ts, row in m5_valid if ts + 300 <= m5_observed]
+        m1_duplicate_count = _duplicate_timestamp_count(m1_valid)
+        m5_duplicate_count = _duplicate_timestamp_count(m5_valid)
         m1_latest = m1_closed[-1][0] if m1_closed else None
         m5_latest = m5_closed[-1][0] if m5_closed else None
         m1_age = max(0.0, m1_observed - (m1_latest + 60)) if m1_latest is not None else None
         m1_raw_age = max(0.0, m1_observed - m1_valid[-1][0]) if m1_valid else None
         m5_age = max(0.0, m5_observed - (m5_latest + 300)) if m5_latest is not None else None
         m1_status, m1_reason = "ok", None
-        if len(m1_valid) < 100 or m1_latest is None:
+        if m1_duplicate_count:
+            m1_status, m1_reason = "blocked", f"M1_DUPLICATE_CANDLE_TIMESTAMPS:{m1_duplicate_count}"
+        elif len(m1_valid) < 100 or m1_latest is None:
             m1_status, m1_reason = "blocked", "FINAL_TIMING_INCOMPLETE_M1"
         # Provider timestamps mark the candle start, so freshness must be
         # measured from the completed candle close, not its opening timestamp.
         elif m1_age is None or m1_age > float(max_m1_age_seconds):
             m1_status, m1_reason = "blocked", "FINAL_M1_CANDLE_STALE"
         m5_status, m5_reason = "ok", None
-        if len(m5_closed) < 25:
+        if m5_duplicate_count:
+            m5_status, m5_reason = "blocked", f"M5_DUPLICATE_CANDLE_TIMESTAMPS:{m5_duplicate_count}"
+        elif len(m5_closed) < 25:
             m5_status, m5_reason = "blocked", f"M5_INCOMPLETE_CLOSED_CANDLES:{len(m5_closed)}<25"
         elif m5_age is None:
             m5_status, m5_reason = "blocked", "M5_NO_COMPLETED_CANDLE"
