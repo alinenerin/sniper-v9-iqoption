@@ -112,5 +112,31 @@ class TestMarketDataContract(unittest.TestCase):
         self.assertTrue(any('M5_CLOSED_INSUFFICIENT:29<30' in error for error in result['errors']))
 
 
+    def test_snapshot_rejects_duplicate_m1_and_m5_timestamps(self):
+        now = 9750
+        m5 = [candle(300 * i) for i in range(1, 32)]
+        m5.append(dict(m5[-1]))
+        m1 = [candle(9600), candle(9660), candle(9720), candle(9720)]
+        result = validate_snapshot_freshness(
+            {"EURUSD": {"m1": m1, "m5": m5}},
+            now=now, min_m5_closed=30,
+        )
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("EURUSD:M1_DUPLICATE_TIMESTAMPS:1" in e for e in result["errors"]))
+        self.assertTrue(any("EURUSD:M5_DUPLICATE_TIMESTAMPS:1" in e for e in result["errors"]))
+
+    def test_snapshot_rejects_future_m1_and_m5_candles(self):
+        now = 9750
+        m5 = [candle(300 * i) for i in range(1, 32)]
+        m5.append(candle(now + 60))
+        m1 = [candle(9600), candle(9660), candle(9720), candle(now + 60)]
+        result = validate_snapshot_freshness(
+            {"EURUSD": {"m1": m1, "m5": m5}},
+            now=now, min_m5_closed=30,
+        )
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("EURUSD:M1_FUTURE_CANDLES:1" in e for e in result["errors"]))
+        self.assertTrue(any("EURUSD:M5_FUTURE_CANDLES:1" in e for e in result["errors"]))
+
 if __name__ == '__main__':
     unittest.main()
