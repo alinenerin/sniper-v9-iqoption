@@ -44,6 +44,13 @@ def aggregate_m1_to_m3(rows: Any, *, now: float | None = None,
         if len(items) != 3 or any(abs(a - b) > 2 for a, b in zip(normalized_stamps, expected)):
             continue
         try:
+            # Reject booleans and malformed numeric values instead of silently
+            # coercing them into prices or volume.
+            numeric_fields = ("open", "high", "low", "close")
+            if any(isinstance(x.get(field), bool) for x in items for field in numeric_fields):
+                continue
+            if any(isinstance(x.get("volume"), bool) for x in items):
+                continue
             opens = [float(x["open"]) for x in items]
             highs = [float(x["high"]) for x in items]
             lows = [float(x["low"]) for x in items]
@@ -51,7 +58,12 @@ def aggregate_m1_to_m3(rows: Any, *, now: float | None = None,
             volumes = [float(x.get("volume") or 0) for x in items]
         except (TypeError, ValueError, OverflowError):
             continue
-        if not all(math.isfinite(v) for v in opens + highs + lows + closes + volumes):
+        values = opens + highs + lows + closes + volumes
+        if not all(math.isfinite(v) for v in values):
+            continue
+        if any(min(o, h, l, c) <= 0 or h < max(o, c, l) or l > min(o, c, h)
+               or volume < 0
+               for o, h, l, c, volume in zip(opens, highs, lows, closes, volumes)):
             continue
         aggregated.append({
             "symbol": items[0].get("symbol"), "timeframe": "M3",
