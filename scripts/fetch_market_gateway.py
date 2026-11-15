@@ -384,7 +384,9 @@ for recovery_attempt in range(1, 1 if fast_triage else 3):
     recovery_now = time.time()
     short_symbols = [
         s for s, item in collected.items()
-        if len((item.get('m1') or {}).get('candles') or []) < MIN_M1
+        if len(closed_candles((item.get('m1') or {}).get('candles') or [], 60, now=recovery_now)) < MIN_M1
+        or (latest_timestamp(closed_candles((item.get('m1') or {}).get('candles') or [], 60, now=recovery_now)) is None)
+        or recovery_now - (latest_timestamp(closed_candles((item.get('m1') or {}).get('candles') or [], 60, now=recovery_now)) + 60) > max_age
         or len(closed_candles((item.get('m5') or {}).get('candles') or [], 300, now=recovery_now)) < MIN_M5
         or latest_closed_m5_timestamp((item.get('m5') or {}).get('candles') or [], recovery_now) is None
         or recovery_now - (latest_closed_m5_timestamp((item.get('m5') or {}).get('candles') or [], recovery_now) + 300) > 360
@@ -404,10 +406,19 @@ for recovery_attempt in range(1, 1 if fast_triage else 3):
             (300, 'm5', REQUEST_M5, MIN_M5),
         ):
             current = (collected[symbol].get(key) or {}).get('candles') or []
-            current_count = len(closed_candles(current, 300)) if key == 'm5' else len(current)
-            current_latest = (latest_closed_m5_timestamp(current) if key == 'm5' else latest_timestamp(current))
-            current_stale = (key == 'm5' and (current_latest is None or
-                               time.time() - (current_latest + 300) > 360))
+            recovery_observed = time.time()
+            if key == 'm5':
+                current_closed = closed_candles(current, 300, now=recovery_observed)
+                current_count = len(current_closed)
+                current_latest = latest_timestamp(current_closed)
+                current_stale = (current_latest is None or
+                                 recovery_observed - (current_latest + 300) > 360)
+            else:
+                current_closed = closed_candles(current, 60, now=recovery_observed)
+                current_count = len(current_closed)
+                current_latest = latest_timestamp(current_closed)
+                current_stale = (current_latest is None or
+                                 recovery_observed - (current_latest + 60) > max_age)
             if current_count >= minimum and not current_stale:
                 continue
             try:
