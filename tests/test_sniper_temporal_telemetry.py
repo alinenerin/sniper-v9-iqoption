@@ -167,7 +167,7 @@ class TemporalObservationTests(unittest.TestCase):
                 "emitted_at_utc": "2027-01-15T08:00:23.400000+00:00",
             }
             (Path(directory) / "live_signals.jsonl").write_text(
-                json.dumps(event) + "\\n", encoding="utf-8"
+                json.dumps(event) + "\n", encoding="utf-8"
             )
             report = write_timing_report(
                 reports_dir=directory,
@@ -196,7 +196,7 @@ class TemporalObservationTests(unittest.TestCase):
                 },
             }
             (Path(directory) / "live_signals.jsonl").write_text(
-                json.dumps(event) + "\\n", encoding="utf-8"
+                json.dumps(event) + "\n", encoding="utf-8"
             )
             report = write_timing_report(
                 reports_dir=directory,
