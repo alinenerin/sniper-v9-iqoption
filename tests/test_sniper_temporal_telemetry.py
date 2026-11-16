@@ -157,6 +157,59 @@ class TemporalObservationTests(unittest.TestCase):
             self.assertEqual(report["report_integrity_status"], "invalid")
             self.assertEqual(report["first_signal_emitted_at_utc"], valid_event["emitted_at_utc"])
 
+    def test_report_integrity_fails_when_signal_has_no_temporal_observation(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            event = {
+                "event_id": "event-without-observation",
+                "symbol": "EURUSD",
+                "signal_emitted": True,
+                "emitted_at_utc": "2027-01-15T08:00:23.400000+00:00",
+            }
+            (Path(directory) / "live_signals.jsonl").write_text(
+                json.dumps(event) + "\\n", encoding="utf-8"
+            )
+            report = write_timing_report(
+                reports_dir=directory,
+                started_epoch=1800000000,
+                started_at_utc="2027-01-15T08:00:00+00:00",
+                pair_timings=[],
+                market_data={"fetch_mode": "offline_test"},
+                run_id="missing-temporal-observation-test",
+            )
+            self.assertEqual(report["early_signal_count"], 1)
+            self.assertEqual(report["temporal_observation_count"], 0)
+            self.assertEqual(report["missing_temporal_observation_count"], 1)
+            self.assertEqual(report["report_integrity_status"], "invalid")
+
+    def test_report_integrity_fails_when_temporal_observation_is_invalid(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            event = {
+                "event_id": "event-invalid-observation",
+                "symbol": "EURUSD",
+                "signal_emitted": True,
+                "emitted_at_utc": "2027-01-15T08:00:23.400000+00:00",
+                "temporal_observation": {
+                    **build_temporal_observation(1800000023.4),
+                    "m3_window_end_timestamp": 1800000181,
+                },
+            }
+            (Path(directory) / "live_signals.jsonl").write_text(
+                json.dumps(event) + "\\n", encoding="utf-8"
+            )
+            report = write_timing_report(
+                reports_dir=directory,
+                started_epoch=1800000000,
+                started_at_utc="2027-01-15T08:00:00+00:00",
+                pair_timings=[],
+                market_data={"fetch_mode": "offline_test"},
+                run_id="invalid-temporal-observation-test",
+            )
+            self.assertEqual(report["temporal_observation_invalid_count"], 1)
+            self.assertEqual(report["missing_temporal_observation_count"], 0)
+            self.assertEqual(report["report_integrity_status"], "invalid")
+
     def test_emitted_read_only_event_contains_temporal_observation(self):
         analysis = {
             "market": "binary",
