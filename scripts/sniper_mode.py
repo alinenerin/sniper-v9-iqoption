@@ -14,10 +14,13 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
 from engines.binary.sniper_timing import build_temporal_observation
+
+BRT = ZoneInfo("America/Sao_Paulo")
 
 REAL_FX_SYMBOLS = (
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
