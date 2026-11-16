@@ -388,9 +388,12 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
             invalid_emitted_timestamp_count += 1
     first_epoch, first = min(emitted_timestamps, default=(None, None), key=lambda item: item[0])
     temporal_observations = []
+    missing_temporal_observation_count = 0
     for event in events:
         observation = event.get("temporal_observation")
         if not isinstance(observation, dict):
+            if event.get("signal_emitted") is True:
+                missing_temporal_observation_count += 1
             continue
         validation_errors = validate_temporal_observation(observation)
         temporal_observations.append({
@@ -450,14 +453,17 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
         "duplicate_event_id_count": duplicate_event_id_count,
         "missing_event_id_count": missing_event_id_count,
         "invalid_emitted_timestamp_count": invalid_emitted_timestamp_count,
-        "report_integrity_status": (
-            "valid" if not any((malformed_event_count, duplicate_event_id_count,
-                                missing_event_id_count, invalid_emitted_timestamp_count))
-            else "invalid"
-        ),
+        "missing_temporal_observation_count": missing_temporal_observation_count,
         "temporal_observation_count": len(temporal_observations),
         "temporal_observation_valid_count": sum(item["validation_status"] == "valid" for item in temporal_observations),
         "temporal_observation_invalid_count": sum(item["validation_status"] == "invalid" for item in temporal_observations),
+        "report_integrity_status": (
+            "valid" if not any((malformed_event_count, duplicate_event_id_count,
+                                missing_event_id_count, invalid_emitted_timestamp_count,
+                                missing_temporal_observation_count,
+                                sum(item["validation_status"] == "invalid" for item in temporal_observations)))
+            else "invalid"
+        ),
         "temporal_observations": temporal_observations,
         "read_only": True,
         "execution_allowed": False,
