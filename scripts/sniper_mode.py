@@ -8,6 +8,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import sys
 import tempfile
@@ -265,6 +266,76 @@ def record_pipeline_step(name: str, started_epoch: float, reports_dir: str | Pat
         os.fsync(stream.fileno())
 
 
+
+def validate_temporal_observation(observation: dict[str, Any]) -> list[str]:
+    """Validate read-only temporal metadata without selecting or ranking seconds."""
+    errors: list[str] = []
+    try:
+        observed_epoch = float(observation.get("observed_epoch"))
+        if not math.isfinite(observed_epoch) or observed_epoch <= 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        observed_epoch = None
+        errors.append("INVALID_OBSERVED_EPOCH")
+
+    start = observation.get("m3_window_start_timestamp")
+    end = observation.get("m3_window_end_timestamp")
+    second = observation.get("second_within_m3_window")
+    for value, code in ((start, "INVALID_M3_WINDOW_START"),
+                        (end, "INVALID_M3_WINDOW_END"),
+                        (second, "INVALID_M3_SECOND")):
+        if isinstance(value, bool) or not isinstance(value, int):
+            errors.append(code)
+
+    if isinstance(start, int) and not isinstance(start, bool):
+        if start % 180 != 0:
+            errors.append("M3_WINDOW_START_NOT_ALIGNED")
+    if (isinstance(start, int) and not isinstance(start, bool)
+            and isinstance(end, int) and not isinstance(end, bool)
+            and end != start + 180):
+        errors.append("M3_WINDOW_DURATION_INVALID")
+    if isinstance(second, int) and not isinstance(second, bool):
+        if not 0 <= second <= 179:
+            errors.append("M3_SECOND_OUT_OF_RANGE")
+    if (observed_epoch is not None and isinstance(start, int) and not isinstance(start, bool)
+            and isinstance(end, int) and not isinstance(end, bool)):
+        if not start <= observed_epoch < end:
+            errors.append("OBSERVATION_OUTSIDE_M3_WINDOW")
+        elif isinstance(second, int) and not isinstance(second, bool):
+            if int(observed_epoch - start) != second:
+                errors.append("M3_SECOND_DOES_NOT_MATCH_EPOCH")
+
+    parsed_times: list[tuple[str, datetime, timezone | Any]] = []
+    for key, code in (("observed_at_utc", "INVALID_OBSERVED_UTC"),
+                      ("observed_at_brt", "INVALID_OBSERVED_BRT")):
+        try:
+            parsed = datetime.fromisoformat(str(observation.get(key)).replace("Z", "+00:00"))
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError
+            parsed_times.append((key, parsed, timezone.utc if key.endswith("utc") else BRT))
+        except (TypeError, ValueError, OverflowError):
+            errors.append(code)
+
+    if observed_epoch is not None:
+        for key, parsed, expected_zone in parsed_times:
+            expected = datetime.fromtimestamp(observed_epoch, expected_zone)
+            if abs(parsed.timestamp() - observed_epoch) > 0.002:
+                errors.append("OBSERVED_TIMESTAMP_MISMATCH")
+                break
+            if key == "observed_at_utc" and parsed.utcoffset().total_seconds() != 0:
+                errors.append("UTC_OFFSET_INVALID")
+            if key == "observed_at_brt" and parsed.utcoffset() != expected.utcoffset():
+                errors.append("BRT_OFFSET_INVALID")
+
+    if observation.get("clock_source") != "system_wall_clock":
+        errors.append("CLOCK_SOURCE_INVALID")
+    if observation.get("selection_performed") is not False:
+        errors.append("UNEXPECTED_TEMPORAL_SELECTION")
+    if observation.get("read_only") is not True:
+        errors.append("READ_ONLY_FLAG_MISSING")
+    return sorted(set(errors))
+
+
 def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
                         started_at_utc: str, pair_timings: list[dict[str, Any]],
                         market_data: dict[str, Any], run_id: str | None = None,
@@ -287,9 +358,11 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
         observation = event.get("temporal_observation")
         if not isinstance(observation, dict):
             continue
+        validation_errors = validate_temporal_observation(observation)
         temporal_observations.append({
             "event_id": event.get("event_id"),
             "symbol": event.get("symbol"),
+            "observed_epoch": observation.get("observed_epoch"),
             "observed_at_utc": observation.get("observed_at_utc"),
             "observed_at_brt": observation.get("observed_at_brt"),
             "m3_window_start_timestamp": observation.get("m3_window_start_timestamp"),
@@ -298,6 +371,8 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
             "clock_source": observation.get("clock_source"),
             "selection_performed": observation.get("selection_performed") is True,
             "read_only": observation.get("read_only") is True,
+            "validation_status": "valid" if not validation_errors else "invalid",
+            "validation_errors": validation_errors,
         })
     fetch_mode = str(market_data.get("fetch_mode") or "").lower()
     warm_state = "warm" if ("warm" in fetch_mode or "stream" in fetch_mode) else (
@@ -336,6 +411,8 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
         "fetch_mode": market_data.get("fetch_mode"),
         "early_signal_count": len(events),
         "temporal_observation_count": len(temporal_observations),
+        "temporal_observation_valid_count": sum(item["validation_status"] == "valid" for item in temporal_observations),
+        "temporal_observation_invalid_count": sum(item["validation_status"] == "invalid" for item in temporal_observations),
         "temporal_observations": temporal_observations,
         "read_only": True,
         "execution_allowed": False,
