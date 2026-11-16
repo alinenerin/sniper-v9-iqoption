@@ -109,6 +109,54 @@ class TemporalObservationTests(unittest.TestCase):
                 ["M3_WINDOW_DURATION_INVALID"],
             )
 
+    def test_timing_report_accounts_for_jsonl_integrity(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            valid_event = {
+                "event_id": "event-duplicate",
+                "symbol": "EURUSD",
+                "signal_emitted": True,
+                "emitted_at_utc": "2027-01-15T08:00:23.400000+00:00",
+                "temporal_observation": build_temporal_observation(1800000023.4),
+            }
+            duplicate_event = dict(valid_event)
+            non_signal_event = {
+                "event_id": "event-other",
+                "signal_emitted": False,
+            }
+            missing_id_event = {
+                "signal_emitted": True,
+                "emitted_at_utc": "not-a-timestamp",
+            }
+            lines = [
+                json.dumps(valid_event),
+                json.dumps(duplicate_event),
+                json.dumps(non_signal_event),
+                json.dumps(missing_id_event),
+                "not-json",
+                json.dumps(["not", "an", "event-object"]),
+            ]
+            (Path(directory) / "live_signals.jsonl").write_text(
+                "\\n".join(lines) + "\\n", encoding="utf-8"
+            )
+            report = write_timing_report(
+                reports_dir=directory,
+                started_epoch=1800000000,
+                started_at_utc="2027-01-15T08:00:00+00:00",
+                pair_timings=[],
+                market_data={"fetch_mode": "offline_test"},
+                run_id="jsonl-integrity-test",
+            )
+            self.assertEqual(report["raw_event_count"], 6)
+            self.assertEqual(report["parsed_event_count"], 4)
+            self.assertEqual(report["early_signal_count"], 3)
+            self.assertEqual(report["malformed_event_count"], 2)
+            self.assertEqual(report["duplicate_event_id_count"], 1)
+            self.assertEqual(report["missing_event_id_count"], 1)
+            self.assertEqual(report["invalid_emitted_timestamp_count"], 1)
+            self.assertEqual(report["report_integrity_status"], "invalid")
+            self.assertEqual(report["first_signal_emitted_at_utc"], valid_event["emitted_at_utc"])
+
     def test_emitted_read_only_event_contains_temporal_observation(self):
         analysis = {
             "market": "binary",
