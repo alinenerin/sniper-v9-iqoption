@@ -137,7 +137,7 @@ class TemporalObservationTests(unittest.TestCase):
                 json.dumps(["not", "an", "event-object"]),
             ]
             (Path(directory) / "live_signals.jsonl").write_text(
-                "\\n".join(lines) + "\\n", encoding="utf-8"
+                "\n".join(lines) + "\n", encoding="utf-8"
             )
             report = write_timing_report(
                 reports_dir=directory,
