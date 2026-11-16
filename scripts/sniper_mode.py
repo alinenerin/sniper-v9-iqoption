@@ -345,17 +345,48 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
                         job_started_epoch: float | None = None) -> dict[str, Any]:
     root = Path(reports_dir)
     signals_path = root / "live_signals.jsonl"
-    events = []
+    events: list[dict[str, Any]] = []
+    malformed_event_count = 0
+    duplicate_event_id_count = 0
+    missing_event_id_count = 0
+    seen_event_ids: set[str] = set()
+    raw_event_count = 0
     if signals_path.exists():
         for line in signals_path.read_text(encoding="utf-8").splitlines():
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
+            if not line.strip():
                 continue
-    first = min((event.get("emitted_at_utc") for event in events if event.get("signal_emitted")), default=None)
-    first_epoch = None
-    if first:
-        first_epoch = datetime.fromisoformat(first.replace("Z", "+00:00")).timestamp()
+            raw_event_count += 1
+            try:
+                parsed_event = json.loads(line)
+            except json.JSONDecodeError:
+                malformed_event_count += 1
+                continue
+            if not isinstance(parsed_event, dict):
+                malformed_event_count += 1
+                continue
+            event_id = parsed_event.get("event_id")
+            if not isinstance(event_id, str) or not event_id.strip():
+                missing_event_id_count += 1
+            elif event_id in seen_event_ids:
+                duplicate_event_id_count += 1
+            else:
+                seen_event_ids.add(event_id)
+            events.append(parsed_event)
+
+    emitted_timestamps: list[tuple[float, str]] = []
+    invalid_emitted_timestamp_count = 0
+    for event in events:
+        if event.get("signal_emitted") is not True:
+            continue
+        raw_timestamp = event.get("emitted_at_utc")
+        try:
+            parsed_timestamp = datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+            if parsed_timestamp.tzinfo is None or parsed_timestamp.utcoffset() is None:
+                raise ValueError("timezone required")
+            emitted_timestamps.append((parsed_timestamp.timestamp(), str(raw_timestamp)))
+        except (TypeError, ValueError, OverflowError):
+            invalid_emitted_timestamp_count += 1
+    first_epoch, first = min(emitted_timestamps, default=(None, None), key=lambda item: item[0])
     temporal_observations = []
     for event in events:
         observation = event.get("temporal_observation")
@@ -412,7 +443,18 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
         "pipeline_step_timings": pipeline_steps,
         "warm_cold_classification": warm_state,
         "fetch_mode": market_data.get("fetch_mode"),
-        "early_signal_count": len(events),
+        "raw_event_count": raw_event_count,
+        "parsed_event_count": len(events),
+        "early_signal_count": sum(event.get("signal_emitted") is True for event in events),
+        "malformed_event_count": malformed_event_count,
+        "duplicate_event_id_count": duplicate_event_id_count,
+        "missing_event_id_count": missing_event_id_count,
+        "invalid_emitted_timestamp_count": invalid_emitted_timestamp_count,
+        "report_integrity_status": (
+            "valid" if not any((malformed_event_count, duplicate_event_id_count,
+                                missing_event_id_count, invalid_emitted_timestamp_count))
+            else "invalid"
+        ),
         "temporal_observation_count": len(temporal_observations),
         "temporal_observation_valid_count": sum(item["validation_status"] == "valid" for item in temporal_observations),
         "temporal_observation_invalid_count": sum(item["validation_status"] == "invalid" for item in temporal_observations),
