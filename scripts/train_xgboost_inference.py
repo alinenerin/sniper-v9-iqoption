@@ -16,7 +16,7 @@ _SOURCE_AUDIT = audit_xgboost_source(Path(__file__).read_text(encoding="utf-8"))
 if not _SOURCE_AUDIT["ok"]:
     Path("reports").mkdir(exist_ok=True)
     Path("reports/xgboost_inference.json").write_text(
-        json.dumps(blocked_report(_SOURCE_AUDIT), indent=2) + "\\n",
+        json.dumps(blocked_report(_SOURCE_AUDIT), indent=2) + "\n",
         encoding="utf-8",
     )
     print("xgboost_inference_blocked_dataset_integrity", *_SOURCE_AUDIT["blockers"])
