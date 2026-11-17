@@ -150,6 +150,8 @@ def audit_candle_rows(
     rows: Any,
     *,
     timestamp_field: str = "timestamp",
+    interval_seconds: int | None = None,
+    interval_tolerance_seconds: float = 2.0,
 ) -> dict[str, Any]:
     """Audit one symbol's candle rows without sorting, repairing, or labeling.
 
@@ -180,6 +182,8 @@ def audit_candle_rows(
     out_of_order = 0
     invalid = 0
     previous: float | None = None
+    gap_count = 0
+    irregular_interval_count = 0
 
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -222,10 +226,30 @@ def audit_candle_rows(
         if previous is not None and stamp <= previous:
             out_of_order += 1
             errors.append(f"NOT_STRICTLY_CHRONOLOGICAL:{index}")
+        elif previous is not None and interval_seconds is not None:
+            expected = int(interval_seconds)
+            tolerance = float(interval_tolerance_seconds)
+            if expected <= 0 or not math.isfinite(tolerance) or tolerance < 0:
+                errors.append("INVALID_EXPECTED_INTERVAL_CONFIGURATION")
+            else:
+                delta = stamp - previous
+                multiples = max(1, round(delta / expected))
+                deviation = abs(delta - multiples * expected)
+                if deviation > tolerance:
+                    irregular_interval_count += 1
+                    errors.append(f"IRREGULAR_INTERVAL:{index}")
+                elif multiples > 1:
+                    missing = multiples - 1
+                    gap_count += missing
+                    errors.append(f"MISSING_CANDLE_INTERVALS:{index}:{missing}")
         previous = stamp
         normalized.append(stamp)
 
-    has_invalid_order = invalid > 0 or duplicates > 0 or out_of_order > 0
+    has_invalid_order = (
+        invalid > 0 or duplicates > 0 or out_of_order > 0
+        or gap_count > 0 or irregular_interval_count > 0
+        or "INVALID_EXPECTED_INTERVAL_CONFIGURATION" in errors
+    )
     later_observations = 0
     if not has_invalid_order:
         later_observations = max(0, len(normalized) - 1)
@@ -244,6 +268,9 @@ def audit_candle_rows(
         "valid_timestamps": sum(value is not None for value in normalized),
         "duplicate_timestamps": duplicates,
         "out_of_order_timestamps": out_of_order,
+        "gap_count": gap_count,
+        "irregular_interval_count": irregular_interval_count,
+        "expected_interval_seconds": interval_seconds,
         "invalid_timestamps": invalid,
         "rows_with_later_observation": later_observations,
         "terminal_rows_without_later_observation": terminal_without_future,
