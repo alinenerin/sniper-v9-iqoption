@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.forecasting.google_timesfm_bridge import TimesFMBridge
 from market_data_contract import snapshot_id
+from shared_ai.agent_runtime import aggregate_component_status
 
 market=json.loads(Path('reports/market_data.json').read_text())
 MARKET_SNAPSHOT_ID = snapshot_id(market)
@@ -33,10 +34,6 @@ for item in results.values():
 
 # Root status must reflect component provenance instead of reporting success
 # when every symbol was blocked or used cache/fallback data.
-overall_status = (
-    'ok'
-    if results and all(item.get('status') == 'inference_ok' for item in results.values())
-    else 'degraded'
-)
+overall_status = aggregate_component_status(results)
 Path('reports/timesfm_inference.json').write_text(json.dumps({'status':overall_status,'snapshot_id':MARKET_SNAPSHOT_ID,'components':results,'read_only':True},ensure_ascii=False,indent=2)+'\n')
 print('timesfm_inference_complete',len(results),overall_status)
