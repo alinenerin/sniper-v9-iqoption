@@ -55,6 +55,31 @@ class SharedAI:
         return item if isinstance(item, dict) else {}
 
     @staticmethod
+    def _validate_artifact_provenance(
+        components: Dict[str, Any], expected_snapshot_id: str | None,
+        names: tuple[str, ...] = ("darts", "timesfm", "xgboost", "finbert"),
+    ) -> Dict[str, Any]:
+        """Block artifact evidence that cannot prove the current snapshot.
+
+        Advisory artifacts are blocked individually; they do not veto the
+        primary committee. Their provenance is still required before they can
+        contribute to a downstream fusion.
+        """
+        validated = {
+            name: dict(item) if isinstance(item, dict) else item
+            for name, item in (components or {}).items()
+        }
+        for name in names:
+            item = validated.get(name)
+            if not isinstance(item, dict) or item.get("status") != "inference_ok":
+                continue
+            supplied_snapshot = item.get("snapshot_id")
+            if not expected_snapshot_id or supplied_snapshot != expected_snapshot_id:
+                item["status"] = "blocked"
+                item["reason"] = "ARTIFACT_SNAPSHOT_MISSING_OR_MISMATCH"
+        return validated
+
+    @staticmethod
     def _score_breakdown(analysis: Dict[str, Any], score_fusion: dict[str, Any],
                          final_score: float) -> dict[str, Any]:
         """Expose the actual inputs and arithmetic behind the reported score."""
@@ -509,6 +534,14 @@ class SharedAI:
             # Sem isso, DARTS/FinBERT/XGBoost eram reportados como blocked
             # mesmo quando seus workflows haviam concluído com inference_ok.
             analysis["symbol"] = request.symbol
+            from market_data_contract import snapshot_id
+            metadata = request.metadata if isinstance(request.metadata, dict) else {}
+            market_snapshot_id = metadata.get("snapshot_id") or snapshot_id({
+                "market": request.market,
+                "symbol": request.symbol,
+                "timeframe": request.timeframe,
+                "candles": request.candles,
+            })
             # Prefer the verified per-symbol Darts artifact produced from the
             # same current read-only gateway snapshot. The in-process shield may be unavailable
             # on CI even when the dedicated Darts agent completed; never turn
@@ -516,7 +549,8 @@ class SharedAI:
             try:
                 darts_artifact = json.loads((Path("reports") / "darts_inference.json").read_text())
                 darts_item = (darts_artifact.get("components") or {}).get(request.symbol, {})
-                if darts_item.get("status") == "inference_ok":
+                if (darts_item.get("status") == "inference_ok"
+                        and darts_item.get("snapshot_id") == market_snapshot_id):
                     scan = darts_item.get("scan") or {}
                     verified = float(scan.get("anomaly_score", scan.get("score", 0)) or 0)
                     analysis["anomaly_details"] = {"status": "inference_ok", "score": verified,
@@ -612,19 +646,14 @@ class SharedAI:
             analysis["shared_advisory"] = advisory
             analysis["symbol"] = request.symbol
             component_status = self._component_status(analysis, advisory)
+            component_status = self._validate_artifact_provenance(
+                component_status, market_snapshot_id,
+            )
             # The committee is a real execution lane for specialist evidence:
             # every report is validated against this exact market snapshot.
             # It remains consultative and fail-closed; it cannot approve or
             # execute an operation.
             from core.trading_crew import crew_v16
-            from market_data_contract import snapshot_id
-            market_snapshot_id = request.metadata.get("snapshot_id") if isinstance(request.metadata, dict) else None
-            market_snapshot_id = market_snapshot_id or snapshot_id({
-                "market": request.market,
-                "symbol": request.symbol,
-                "timeframe": request.timeframe,
-                "candles": request.candles,
-            })
             # Bind locally computed chart specialists (SMC/VSA) to the exact
             # request, but preserve IDs from independent agent artifacts. Never
             # overwrite an artifact's provenance: required evidence without an
@@ -643,7 +672,6 @@ class SharedAI:
             # Confirm direction before fusing any direction-relative model evidence.
             # NEUTRAL remains non-directional and cannot be interpreted as DOWN.
             xgb_item = self._artifact_item("xgboost_inference.json", request.symbol)
-            metadata = request.metadata if isinstance(request.metadata, dict) else {}
             direction_fields = self._direction_breakdown(
                 analysis, component_status, xgb_item, market_snapshot_id, request.symbol,
                 metadata.get("m5_engine") if isinstance(metadata.get("m5_engine"), dict) else None,
@@ -702,7 +730,9 @@ class SharedAI:
             try:
                 darts_check = json.loads((Path("reports") / "darts_inference.json").read_text())
                 darts_check_item = (darts_check.get("components") or {}).get(request.symbol, {})
-                if darts_check_item.get("status") == "inference_ok":
+                if (component_status.get("darts", {}).get("status") == "inference_ok"
+                        and darts_check_item.get("status") == "inference_ok"
+                        and darts_check_item.get("snapshot_id") == market_snapshot_id):
                     dscan = darts_check_item.get("scan") or {}
                     anomaly = float(dscan.get("anomaly_score", dscan.get("score", 0)) or 0)
             except (OSError, json.JSONDecodeError, TypeError, ValueError):
