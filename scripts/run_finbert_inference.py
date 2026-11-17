@@ -27,7 +27,8 @@ from market_data_contract import snapshot_id
 
 MARKET_PATH = Path("reports/market_data.json")
 try:
-    MARKET_DATA = json.loads(MARKET_PATH.read_text())
+    loaded_market = json.loads(MARKET_PATH.read_text())
+    MARKET_DATA = loaded_market if isinstance(loaded_market, dict) else {}
 except (OSError, json.JSONDecodeError):
     MARKET_DATA = {}
 MARKET_SNAPSHOT_ID = snapshot_id(MARKET_DATA)
@@ -38,7 +39,15 @@ SYMBOLS = resolve_requested_symbols(
 )
 INCLUDE_OTC = os.getenv("INCLUDE_OTC", "false").lower() == "true"
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
-NEWS_LIMIT = max(1, min(int(os.getenv("FINNHUB_NEWS_LIMIT", "30")), 100))
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+NEWS_LIMIT = _bounded_int_env("FINNHUB_NEWS_LIMIT", 30, 1, 100)
 
 
 def _clean_text(value: Any) -> str:
@@ -215,16 +224,18 @@ def _fetch_forex_news() -> list[dict[str, Any]]:
 
 results: dict[str, dict[str, Any]] = {}
 
-classifier = (pipeline(
-    "text-classification",
-    model="ProsusAI/finbert",
-    tokenizer="ProsusAI/finbert",
-    top_k=None,
-) if pipeline is not None else None)
-
+classifier = None
 try:
-    if classifier is None:
-        raise RuntimeError("FINBERT_MODEL_UNAVAILABLE")
+    if pipeline is None:
+        raise RuntimeError("FINBERT_TRANSFORMERS_UNAVAILABLE")
+    # Model download/initialization can fail independently of the package import.
+    # Keep that failure inside the report contract instead of aborting before JSON.
+    classifier = pipeline(
+        "text-classification",
+        model="ProsusAI/finbert",
+        tokenizer="ProsusAI/finbert",
+        top_k=None,
+    )
     all_articles = _fetch_forex_news()
     fetch_error: str | None = None
 except Exception as exc:
@@ -309,7 +320,7 @@ for item in results.values():
         item.setdefault("snapshot_id", MARKET_SNAPSHOT_ID)
 
 Path("reports").mkdir(exist_ok=True)
-report_status = "ok" if fetch_error is None else "degraded"
+report_status = "ok" if fetch_error is None and any(item.get("status") == "inference_ok" for item in results.values()) else "degraded"
 Path("reports/finbert_inference.json").write_text(
     json.dumps(
         {
