@@ -1,6 +1,7 @@
 import unittest
 from market_data_contract import (aggregate_m1_to_m3, closed_candles,
                                   freshness, normalize_and_validate, validate_candles,
+                                  validate_snapshot_envelope,
                                   validate_snapshot_freshness)
 
 
@@ -195,6 +196,57 @@ class TestMarketDataContract(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("EURUSD:M1_FUTURE_CANDLES:1" in e for e in result["errors"]))
         self.assertTrue(any("EURUSD:M5_FUTURE_CANDLES:1" in e for e in result["errors"]))
+
+
+
+    def test_snapshot_envelope_accepts_matching_symbol_and_timeframe_metadata(self):
+        payload = {
+            "requested_symbols": ["EURUSD"],
+            "collected_symbols": ["eurusd"],
+            "symbols": {
+                "EURUSD": {
+                    "m1": {"symbol": "EURUSD", "symbol_requested": "EURUSD",
+                           "interval_seconds": 60, "timeframe": "M1", "candles": []},
+                    "m5": {"symbol": "EURUSD", "interval_seconds": 300,
+                           "timeframe": "5m", "candles": []},
+                }
+            },
+        }
+        result = validate_snapshot_envelope(payload)
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_snapshot_envelope_rejects_batch_symbol_coverage_mismatch(self):
+        payload = {
+            "requested_symbols": ["EURUSD", "GBPUSD"],
+            "collected_symbols": ["EURUSD"],
+            "symbols": {"EURUSD": {"m1": {}, "m5": {}}},
+        }
+        result = validate_snapshot_envelope(payload)
+        self.assertFalse(result["ok"])
+        self.assertIn("REQUESTED_COLLECTED_SYMBOLS_MISMATCH", result["errors"])
+        self.assertIn("SNAPSHOT_MAP_COVERAGE_MISMATCH", result["errors"])
+
+    def test_snapshot_envelope_rejects_nested_symbol_and_interval_mismatch(self):
+        payload = {
+            "requested_symbols": ["EURUSD"],
+            "collected_symbols": ["EURUSD"],
+            "symbols": {
+                "EURUSD": {
+                    "m1": {"symbol": "GBPUSD", "interval_seconds": 300,
+                           "timeframe": "M5", "candles": [
+                               {"symbol": "GBPUSD", "interval_seconds": 300}
+                           ]},
+                    "m5": {"symbol": "EURUSD", "interval_seconds": 300,
+                           "timeframe": "M5", "candles": []},
+                }
+            },
+        }
+        result = validate_snapshot_envelope(payload)
+        self.assertFalse(result["ok"])
+        self.assertIn("EURUSD:M1_SYMBOL_MISMATCH", result["errors"])
+        self.assertIn("EURUSD:M1_INTERVAL_MISMATCH", result["errors"])
+        self.assertIn("EURUSD:M1_CANDLE_SYMBOL_MISMATCH:0", result["errors"])
+
 
 if __name__ == '__main__':
     unittest.main()
