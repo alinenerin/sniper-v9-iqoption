@@ -396,6 +396,20 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
                 missing_temporal_observation_count += 1
             continue
         validation_errors = validate_temporal_observation(observation)
+        if event.get("signal_emitted") is True:
+            raw_emitted_at = event.get("emitted_at_utc")
+            try:
+                emitted_at = datetime.fromisoformat(str(raw_emitted_at).replace("Z", "+00:00"))
+                if emitted_at.tzinfo is None or emitted_at.utcoffset() is None:
+                    raise ValueError("timezone required")
+                observed_epoch = float(observation.get("observed_epoch"))
+                if abs(observed_epoch - emitted_at.timestamp()) > 0.002:
+                    validation_errors.append("OBSERVATION_EMISSION_TIMESTAMP_MISMATCH")
+            except (TypeError, ValueError, OverflowError, OSError):
+                # The emitted timestamp has its own integrity counter; do not
+                # obscure that primary error with a duplicate observation error.
+                pass
+        validation_errors = sorted(set(validation_errors))
         temporal_observations.append({
             "event_id": event.get("event_id"),
             "symbol": event.get("symbol"),
