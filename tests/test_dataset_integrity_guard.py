@@ -158,6 +158,18 @@ def inspect_rows(rows):
         self.assertEqual(audit["status"], "blocked")
         self.assertIn("INVALID_EXPECTED_INTERVAL_CONFIGURATION", audit["errors"])
 
+    def test_candle_audit_fails_closed_on_malformed_interval_configuration(self):
+        rows = [{"timestamp": 1_700_000_000}, {"timestamp": 1_700_000_060}]
+
+        invalid_tolerance = audit_candle_rows(rows, interval_seconds=60, interval_tolerance_seconds="bad")
+        fractional_interval = audit_candle_rows(rows, interval_seconds=60.5)
+        boolean_interval = audit_candle_rows(rows, interval_seconds=True)
+
+        for audit in (invalid_tolerance, fractional_interval, boolean_interval):
+            self.assertFalse(audit["ok"])
+            self.assertEqual(audit["status"], "blocked")
+            self.assertIn("INVALID_EXPECTED_INTERVAL_CONFIGURATION", audit["errors"])
+
     def test_candle_audit_blocks_invalid_timestamps_and_non_list_input(self):
         invalid_rows = [
             {"timestamp": 100},
