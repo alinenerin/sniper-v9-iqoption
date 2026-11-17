@@ -284,6 +284,12 @@ class SniperWorkflowContractTests(unittest.TestCase):
         self.assertIn("reports/latest_signal.json", early_block)
         self.assertIn("reports/sniper_timing.json", early_block)
 
+    def test_report_blocks_missing_or_non_ok_gateway_fetch_status(self):
+        report_generator = (ROOT / "scripts/generate_scan_report.py").read_text()
+        self.assertIn('fetch_status.get("status") != "ok"', report_generator)
+        self.assertIn('fetch_status.get("blocked") is True', report_generator)
+        self.assertIn('"GATEWAY_FETCH_STATUS_MISSING"', report_generator)
+
     def test_input_validation_precedes_gateway_and_fetch(self):
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         validation = workflow.index("Validate and prepare isolated sniper inputs before gateway calls")
