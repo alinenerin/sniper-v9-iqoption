@@ -1,5 +1,6 @@
 """Read-only dynamic sniper timing; no order or quote selection."""
 from __future__ import annotations
+import math
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -9,12 +10,12 @@ TIMEFRAME_SECONDS = {"M1": 60, "M3": 180}
 def build_temporal_observation(epoch: float) -> dict:
     """Describe the wall-clock observation inside its M3 bucket; never rank seconds."""
     observed = float(epoch)
-    if not (observed > 0 and observed < float("inf")):
+    if not math.isfinite(observed) or observed <= 0:
         raise ValueError("INVALID_OBSERVATION_EPOCH")
     window_start = int(observed // 180) * 180
     second_offset = int(observed - window_start)
     return {
-        "observed_epoch": round(observed, 3),
+        "observed_epoch": observed,
         "observed_at_utc": datetime.fromtimestamp(observed, timezone.utc).isoformat(),
         "observed_at_brt": datetime.fromtimestamp(observed, BRT).isoformat(),
         "m3_window_start_timestamp": window_start,
