@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.symbol_selection import resolve_requested_symbols
 from market_data_contract import snapshot_id
+from shared_ai.agent_runtime import bounded_int_env, write_json_atomic
 
 MARKET_PATH = Path("reports/market_data.json")
 try:
@@ -39,15 +40,7 @@ SYMBOLS = resolve_requested_symbols(
 )
 INCLUDE_OTC = os.getenv("INCLUDE_OTC", "false").lower() == "true"
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
-def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        value = default
-    return max(minimum, min(value, maximum))
-
-
-NEWS_LIMIT = _bounded_int_env("FINNHUB_NEWS_LIMIT", 30, 1, 100)
+NEWS_LIMIT = bounded_int_env(os.getenv("FINNHUB_NEWS_LIMIT", "30"), 30, 1, 100)
 
 
 def _clean_text(value: Any) -> str:
@@ -319,11 +312,10 @@ for item in results.values():
     if isinstance(item, dict):
         item.setdefault("snapshot_id", MARKET_SNAPSHOT_ID)
 
-Path("reports").mkdir(exist_ok=True)
 report_status = "ok" if fetch_error is None and any(item.get("status") == "inference_ok" for item in results.values()) else "degraded"
-Path("reports/finbert_inference.json").write_text(
-    json.dumps(
-        {
+write_json_atomic(
+    "reports/finbert_inference.json",
+    {
             "status": report_status,
             "purpose": "Free GDELT/Finnhub Forex news classified by FinBERT; OTC receives base-pair context only",
             "provider": "GDELT+Finnhub",
@@ -336,8 +328,6 @@ Path("reports/finbert_inference.json").write_text(
         },
         ensure_ascii=False,
         indent=2,
-    )
-    + "\n"
 )
 print(
     "finbert_inference_complete",
