@@ -248,5 +248,43 @@ class TestMarketDataContract(unittest.TestCase):
         self.assertIn("EURUSD:M1_CANDLE_SYMBOL_MISMATCH:0", result["errors"])
 
 
+    def test_snapshot_envelope_accepts_integral_numeric_string_intervals(self):
+        payload = {
+            "requested_symbols": ["EURUSD"],
+            "collected_symbols": ["EURUSD"],
+            "symbols": {
+                "EURUSD": {
+                    "m1": {"interval_seconds": "60.0", "candles": [
+                        {"interval_seconds": "60.0"}
+                    ]},
+                    "m5": {"interval_seconds": "300.0", "candles": [
+                        {"interval_seconds": "300.0"}
+                    ]},
+                }
+            },
+        }
+        result = validate_snapshot_envelope(payload)
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_snapshot_envelope_rejects_nonfinite_and_boolean_intervals(self):
+        payload = {
+            "requested_symbols": ["EURUSD"],
+            "collected_symbols": ["EURUSD"],
+            "symbols": {
+                "EURUSD": {
+                    "m1": {"interval_seconds": "nan", "candles": [
+                        {"interval_seconds": float("inf")}
+                    ]},
+                    "m5": {"interval_seconds": True, "candles": []},
+                }
+            },
+        }
+        result = validate_snapshot_envelope(payload)
+        self.assertFalse(result["ok"])
+        self.assertIn("EURUSD:M1_INTERVAL_MISMATCH", result["errors"])
+        self.assertIn("EURUSD:M1_CANDLE_INTERVAL_MISMATCH:0", result["errors"])
+        self.assertIn("EURUSD:M5_INTERVAL_MISMATCH", result["errors"])
+
+
 if __name__ == '__main__':
     unittest.main()
