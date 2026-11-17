@@ -1,7 +1,5 @@
 """Read-only parity tests for the two candle timestamp validators."""
 from __future__ import annotations
-
-import math
 import sys
 import unittest
 from pathlib import Path
