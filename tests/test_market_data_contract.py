@@ -22,6 +22,34 @@ class TestMarketDataContract(unittest.TestCase):
         self.assertEqual(out.status, 'INSUFFICIENT_DATA')
         self.assertEqual(out.invalid_count, 1)
 
+    def test_rejects_candle_symbol_mismatch(self):
+        rows = [dict(candle(), symbol="GBPUSD")]
+        with self.assertRaisesRegex(ValueError, "SYMBOL_MISMATCH"):
+            normalize_and_validate(rows, "EURUSD", 60)
+
+    def test_accepts_matching_symbol_case_insensitively(self):
+        rows = [dict(candle(), symbol="eurusd")]
+        out = normalize_and_validate(rows, "EURUSD", 60)
+        self.assertEqual(out[0]["symbol"], "EURUSD")
+
+    def test_rejects_timeframe_mismatch(self):
+        rows = [dict(candle(), timeframe="M5")]
+        with self.assertRaisesRegex(ValueError, "TIMEFRAME_MISMATCH"):
+            normalize_and_validate(rows, "EURUSD", 60)
+
+    def test_accepts_timeframe_aliases_and_numeric_interval_metadata(self):
+        rows = [
+            dict(candle(), timeframe="1m", interval_seconds="60"),
+            dict(candle(1700000060), timeframe=60, interval_seconds=60),
+        ]
+        out = normalize_and_validate(rows, "EURUSD", 60)
+        self.assertEqual(len(out), 2)
+
+    def test_rejects_invalid_interval_metadata(self):
+        rows = [dict(candle(), interval_seconds=True)]
+        with self.assertRaisesRegex(ValueError, "INTERVAL_MISMATCH"):
+            normalize_and_validate(rows, "EURUSD", 60)
+
     def test_rejects_duplicate_timestamps(self):
         out = validate_candles([candle(), candle()], 60, required=1,
                                now=1700000060, max_age=300)
