@@ -23,12 +23,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.symbol_selection import resolve_requested_symbols
+from market_data_contract import snapshot_id
 
 MARKET_PATH = Path("reports/market_data.json")
 try:
     MARKET_DATA = json.loads(MARKET_PATH.read_text())
 except (OSError, json.JSONDecodeError):
     MARKET_DATA = {}
+MARKET_SNAPSHOT_ID = snapshot_id(MARKET_DATA)
 SYMBOLS = resolve_requested_symbols(
     os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD"),
     (MARKET_DATA.get("symbols") or {}).keys(),
@@ -302,6 +304,10 @@ if INCLUDE_OTC:
             "execution_allowed": False,
         }
 
+for item in results.values():
+    if isinstance(item, dict):
+        item.setdefault("snapshot_id", MARKET_SNAPSHOT_ID)
+
 Path("reports").mkdir(exist_ok=True)
 report_status = "ok" if fetch_error is None else "degraded"
 Path("reports/finbert_inference.json").write_text(
@@ -313,6 +319,7 @@ Path("reports/finbert_inference.json").write_text(
             "fetch_diagnostics": FETCH_DIAGNOSTICS,
             "fetch_error": fetch_error,
             "components": results,
+            "snapshot_id": MARKET_SNAPSHOT_ID,
             "read_only": True,
             "execution_allowed": False,
         },
