@@ -20,6 +20,15 @@ class TemporalObservationTests(unittest.TestCase):
         self.assertTrue(observation["read_only"])
         self.assertTrue(observation["observed_at_utc"].endswith("+00:00"))
 
+    def test_observation_preserves_fractional_epoch_at_m3_boundary(self):
+        epoch = 1800000179.9999
+        observation = build_temporal_observation(epoch)
+        self.assertEqual(observation["m3_window_start_timestamp"], 1800000000)
+        self.assertEqual(observation["m3_window_end_timestamp"], 1800000180)
+        self.assertEqual(observation["second_within_m3_window"], 179)
+        self.assertEqual(observation["observed_epoch"], epoch)
+        self.assertLess(observation["observed_epoch"], observation["m3_window_end_timestamp"])
+
     def test_invalid_epochs_fail_closed(self):
         for value in (0, -1, float("inf"), float("-inf"), float("nan")):
             with self.subTest(value=value):
