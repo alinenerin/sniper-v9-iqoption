@@ -316,19 +316,18 @@ report_status = "ok" if fetch_error is None and any(item.get("status") == "infer
 write_json_atomic(
     "reports/finbert_inference.json",
     {
-            "status": report_status,
-            "purpose": "Free GDELT/Finnhub Forex news classified by FinBERT; OTC receives base-pair context only",
-            "provider": "GDELT+Finnhub",
-            "fetch_diagnostics": FETCH_DIAGNOSTICS,
-            "fetch_error": fetch_error,
-            "components": results,
-            "snapshot_id": MARKET_SNAPSHOT_ID,
-            "read_only": True,
-            "execution_allowed": False,
-        },
-        ensure_ascii=False,
-        indent=2,
+        "status": report_status,
+        "purpose": "Free GDELT/Finnhub Forex news classified by FinBERT; OTC receives base-pair context only",
+        "provider": "GDELT+Finnhub",
+        "fetch_diagnostics": FETCH_DIAGNOSTICS,
+        "fetch_error": fetch_error,
+        "components": results,
+        "snapshot_id": MARKET_SNAPSHOT_ID,
+        "read_only": True,
+        "execution_allowed": False,
+    },
 )
+
 print(
     "finbert_inference_complete",
     len(results),
