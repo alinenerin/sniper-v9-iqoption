@@ -160,6 +160,19 @@ def audit_candle_rows(
     A row has a later observation only when the next input row has a strictly
     greater timestamp; the terminal row is never treated as having one.
     """
+    configuration_errors: list[str] = []
+    expected_interval: int | None = None
+    tolerance = float(interval_tolerance_seconds)
+    if interval_seconds is not None:
+        try:
+            expected_interval = int(interval_seconds)
+        except (TypeError, ValueError, OverflowError):
+            configuration_errors.append("INVALID_EXPECTED_INTERVAL_CONFIGURATION")
+        if expected_interval is not None and expected_interval <= 0:
+            configuration_errors.append("INVALID_EXPECTED_INTERVAL_CONFIGURATION")
+    if not math.isfinite(tolerance) or tolerance < 0:
+        configuration_errors.append("INVALID_EXPECTED_INTERVAL_CONFIGURATION")
+
     if not isinstance(rows, list):
         return {
             "ok": False,
@@ -169,13 +182,16 @@ def audit_candle_rows(
             "valid_timestamps": 0,
             "duplicate_timestamps": 0,
             "out_of_order_timestamps": 0,
+            "gap_count": 0,
+            "irregular_interval_count": 0,
+            "expected_interval_seconds": expected_interval,
             "invalid_timestamps": 0,
             "rows_with_later_observation": 0,
             "terminal_rows_without_later_observation": 0,
             "read_only": True,
         }
 
-    errors: list[str] = []
+    errors: list[str] = list(configuration_errors)
     normalized: list[float | None] = []
     seen: set[float] = set()
     duplicates = 0
@@ -226,29 +242,24 @@ def audit_candle_rows(
         if previous is not None and stamp <= previous:
             out_of_order += 1
             errors.append(f"NOT_STRICTLY_CHRONOLOGICAL:{index}")
-        elif previous is not None and interval_seconds is not None:
-            expected = int(interval_seconds)
-            tolerance = float(interval_tolerance_seconds)
-            if expected <= 0 or not math.isfinite(tolerance) or tolerance < 0:
-                errors.append("INVALID_EXPECTED_INTERVAL_CONFIGURATION")
-            else:
-                delta = stamp - previous
-                multiples = max(1, round(delta / expected))
-                deviation = abs(delta - multiples * expected)
-                if deviation > tolerance:
-                    irregular_interval_count += 1
-                    errors.append(f"IRREGULAR_INTERVAL:{index}")
-                elif multiples > 1:
-                    missing = multiples - 1
-                    gap_count += missing
-                    errors.append(f"MISSING_CANDLE_INTERVALS:{index}:{missing}")
+        elif previous is not None and expected_interval is not None and not configuration_errors:
+            delta = stamp - previous
+            multiples = max(1, round(delta / expected_interval))
+            deviation = abs(delta - multiples * expected_interval)
+            if deviation > tolerance:
+                irregular_interval_count += 1
+                errors.append(f"IRREGULAR_INTERVAL:{index}")
+            elif multiples > 1:
+                missing = multiples - 1
+                gap_count += missing
+                errors.append(f"MISSING_CANDLE_INTERVALS:{index}:{missing}")
         previous = stamp
         normalized.append(stamp)
 
     has_invalid_order = (
         invalid > 0 or duplicates > 0 or out_of_order > 0
         or gap_count > 0 or irregular_interval_count > 0
-        or "INVALID_EXPECTED_INTERVAL_CONFIGURATION" in errors
+        or bool(configuration_errors)
     )
     later_observations = 0
     if not has_invalid_order:
@@ -270,7 +281,7 @@ def audit_candle_rows(
         "out_of_order_timestamps": out_of_order,
         "gap_count": gap_count,
         "irregular_interval_count": irregular_interval_count,
-        "expected_interval_seconds": interval_seconds,
+        "expected_interval_seconds": expected_interval,
         "invalid_timestamps": invalid,
         "rows_with_later_observation": later_observations,
         "terminal_rows_without_later_observation": terminal_without_future,
