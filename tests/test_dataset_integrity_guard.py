@@ -148,6 +148,16 @@ def inspect_rows(rows):
         self.assertEqual(audit["irregular_interval_count"], 1)
         self.assertIn("IRREGULAR_INTERVAL:1", audit["errors"])
 
+    def test_candle_audit_rejects_invalid_interval_configuration_even_for_one_row(self):
+        audit = audit_candle_rows(
+            [{"timestamp": 1_700_000_000}],
+            interval_seconds=0,
+        )
+
+        self.assertFalse(audit["ok"])
+        self.assertEqual(audit["status"], "blocked")
+        self.assertIn("INVALID_EXPECTED_INTERVAL_CONFIGURATION", audit["errors"])
+
     def test_candle_audit_blocks_invalid_timestamps_and_non_list_input(self):
         invalid_rows = [
             {"timestamp": 100},
