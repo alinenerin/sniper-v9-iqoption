@@ -452,6 +452,15 @@ def validate_snapshot_envelope(payload: Any) -> dict[str, Any]:
     if set(map_keys) != set(collected_keys):
         errors.append("SNAPSHOT_MAP_COVERAGE_MISMATCH")
 
+    def interval_matches(value: Any, expected_seconds: int) -> bool:
+        if isinstance(value, bool):
+            return False
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return math.isfinite(parsed) and parsed.is_integer() and int(parsed) == expected_seconds
+
     expected = {"m1": 60, "m5": 300}
     for raw_symbol, pair in data.items():
         symbol = canonical(raw_symbol) or str(raw_symbol)
@@ -472,10 +481,7 @@ def validate_snapshot_envelope(payload: Any) -> dict[str, Any]:
                     errors.append(f"{symbol}:{key.upper()}_{field.upper()}_MISMATCH")
             raw_interval = block.get("interval_seconds")
             if raw_interval is not None:
-                try:
-                    if isinstance(raw_interval, bool) or int(raw_interval) != interval or float(raw_interval) != interval:
-                        raise ValueError
-                except (TypeError, ValueError, OverflowError):
+                if not interval_matches(raw_interval, interval):
                     errors.append(f"{symbol}:{key.upper()}_INTERVAL_MISMATCH")
             aliases = {60: {"M1", "1M", "1MIN", "60", "60S"},
                        300: {"M5", "5M", "5MIN", "300", "300S"}}
@@ -496,10 +502,7 @@ def validate_snapshot_envelope(payload: Any) -> dict[str, Any]:
                     errors.append(f"{symbol}:{key.upper()}_CANDLE_SYMBOL_MISMATCH:{index}")
                 row_interval = row.get("interval_seconds")
                 if row_interval is not None:
-                    try:
-                        if isinstance(row_interval, bool) or int(row_interval) != interval or float(row_interval) != interval:
-                            raise ValueError
-                    except (TypeError, ValueError, OverflowError):
+                    if not interval_matches(row_interval, interval):
                         errors.append(f"{symbol}:{key.upper()}_CANDLE_INTERVAL_MISMATCH:{index}")
                 row_timeframe = row.get("timeframe")
                 if row_timeframe is not None and (
