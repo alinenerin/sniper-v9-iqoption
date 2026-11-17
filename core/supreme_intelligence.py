@@ -74,15 +74,16 @@ class SupremeIntelligence:
         return round(max(0.0, min(100.0, float(score))), 4), details
 
     @staticmethod
-    def _evidence_component_status(details, error_prefix):
-        """Return blocked for explicit unavailable states or component errors."""
+    def _evidence_component_status(details, error_prefix, required_fields):
+        """Accept chart evidence only when its result shape is complete and successful."""
         if not isinstance(details, dict):
             return "blocked"
         status = str(details.get("status", "")).strip().lower()
         reason = str(details.get("reason", ""))
-        if status in {"blocked", "error", "failed", "unavailable"}:
+        accepted_statuses = {"", "ok", "success", "inference_ok", "executed", "completed"}
+        if status not in accepted_statuses or reason.startswith(error_prefix):
             return "blocked"
-        if reason.startswith(error_prefix):
+        if any(field not in details or details[field] is None for field in required_fields):
             return "blocked"
         return "inference_ok"
 
@@ -171,8 +172,8 @@ class SupremeIntelligence:
             smc_direction, ohlcv_df["close"],
         )
 
-        smc_status = self._evidence_component_status(smc_details, "SMC_ERROR:")
-        vsa_status = self._evidence_component_status(vsa_details, "VSA_ERROR:")
+        smc_status = self._evidence_component_status(smc_details, "SMC_ERROR:", ("fvg", "bos", "direction"))
+        vsa_status = self._evidence_component_status(vsa_details, "VSA_ERROR:", ("anomaly", "rel_vol"))
         score_parts = [
             ("technical_core", technical_core, TRADING_CONFIG.technical_core_weight),
         ]
