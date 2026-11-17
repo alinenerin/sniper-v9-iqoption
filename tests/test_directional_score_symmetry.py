@@ -56,6 +56,27 @@ class DirectionalTechnicalCoreTest(unittest.TestCase):
         self.assertEqual(flat, 50.0)
         self.assertIsNone(flat_detail["aligned"])
 
+    def test_explicit_blocked_smc_vsa_states_are_not_counted_as_evidence(self):
+        cases = (
+            ({"status": "blocked", "reason": "INPUT_NOT_READY"}, "SMC_ERROR:"),
+            ({"status": "failed", "reason": "MODEL_FAILURE"}, "VSA_ERROR:"),
+            ({"status": "unavailable", "reason": "SOURCE_MISSING"}, "SMC_ERROR:"),
+            ({"reason": "VSA_ERROR:RuntimeError"}, "VSA_ERROR:"),
+            (None, "SMC_ERROR:"),
+        )
+        for details, error_prefix in cases:
+            with self.subTest(details=details, error_prefix=error_prefix):
+                self.assertEqual(
+                    SupremeIntelligence._evidence_component_status(details, error_prefix),
+                    "blocked",
+                )
+
+    def test_successful_smc_vsa_details_remain_available_without_status_field(self):
+        self.assertEqual(
+            SupremeIntelligence._evidence_component_status({"reason": "STRUCTURE_CONFIRMED"}, "SMC_ERROR:"),
+            "inference_ok",
+        )
+
     @staticmethod
     def realignment_fixture(smc=None):
         core = {
