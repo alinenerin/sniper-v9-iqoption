@@ -121,6 +121,33 @@ def inspect_rows(rows):
         self.assertEqual(audit["rows_with_later_observation"], 0)
         self.assertEqual(audit["terminal_rows_without_later_observation"], 0)
 
+    def test_candle_audit_detects_missing_intervals_when_expected_interval_is_known(self):
+        rows = [
+            {"timestamp": 1_700_000_000},
+            {"timestamp": 1_700_000_060},
+            {"timestamp": 1_700_000_180},
+        ]
+
+        audit = audit_candle_rows(rows, interval_seconds=60)
+
+        self.assertFalse(audit["ok"])
+        self.assertEqual(audit["gap_count"], 1)
+        self.assertEqual(audit["irregular_interval_count"], 0)
+        self.assertIn("MISSING_CANDLE_INTERVALS:2:1", audit["errors"])
+
+    def test_candle_audit_distinguishes_irregular_spacing_from_aligned_gaps(self):
+        rows = [
+            {"timestamp": 1_700_000_000},
+            {"timestamp": 1_700_000_090},
+        ]
+
+        audit = audit_candle_rows(rows, interval_seconds=60)
+
+        self.assertFalse(audit["ok"])
+        self.assertEqual(audit["gap_count"], 0)
+        self.assertEqual(audit["irregular_interval_count"], 1)
+        self.assertIn("IRREGULAR_INTERVAL:1", audit["errors"])
+
     def test_candle_audit_blocks_invalid_timestamps_and_non_list_input(self):
         invalid_rows = [
             {"timestamp": 100},
