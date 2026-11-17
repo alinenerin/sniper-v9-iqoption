@@ -44,3 +44,15 @@ def write_json_atomic(path: str | Path, payload: dict[str, Any]) -> None:
                 os.unlink(temporary_path)
             except FileNotFoundError:
                 pass
+
+
+def aggregate_component_status(components: dict[str, Any], success_status: str = "inference_ok") -> str:
+    """Return ok only when a non-empty artifact has exclusively successful components."""
+    if not components:
+        return "degraded"
+    if all(
+        isinstance(component, dict) and component.get("status") == success_status
+        for component in components.values()
+    ):
+        return "ok"
+    return "degraded"
