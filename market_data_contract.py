@@ -402,3 +402,111 @@ def snapshot_id(payload: Any) -> str:
     import hashlib, json
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+def validate_snapshot_envelope(payload: Any) -> dict[str, Any]:
+    """Validate batch identity and per-timeframe metadata without altering data.
+
+    This provider-neutral guard is intentionally side-effect free. Missing
+    optional metadata is tolerated; contradictory identity or coverage fails.
+    """
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return {"ok": False, "errors": ["SNAPSHOT_NOT_OBJECT"], "read_only": True}
+
+    requested = payload.get("requested_symbols")
+    collected = payload.get("collected_symbols")
+    data = payload.get("symbols")
+    if not isinstance(requested, list) or not requested:
+        errors.append("REQUESTED_SYMBOLS_INVALID")
+        requested = []
+    if not isinstance(collected, list) or not collected:
+        errors.append("COLLECTED_SYMBOLS_INVALID")
+        collected = []
+    if not isinstance(data, dict):
+        errors.append("SNAPSHOT_SYMBOL_MAP_INVALID")
+        data = {}
+
+    def canonical(value: Any) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip().upper().replace("/", "").replace("_OTC", "-OTC")
+
+    requested_keys = [canonical(item) for item in requested]
+    collected_keys = [canonical(item) for item in collected]
+    if any(item is None for item in requested_keys):
+        errors.append("REQUESTED_SYMBOL_INVALID")
+    if any(item is None for item in collected_keys):
+        errors.append("COLLECTED_SYMBOL_INVALID")
+    if len(set(requested_keys)) != len(requested_keys):
+        errors.append("REQUESTED_SYMBOLS_DUPLICATED")
+    if len(set(collected_keys)) != len(collected_keys):
+        errors.append("COLLECTED_SYMBOLS_DUPLICATED")
+    if requested_keys != collected_keys:
+        errors.append("REQUESTED_COLLECTED_SYMBOLS_MISMATCH")
+
+    map_keys = [canonical(key) for key in data]
+    if any(item is None for item in map_keys):
+        errors.append("SNAPSHOT_MAP_SYMBOL_INVALID")
+    if len(set(map_keys)) != len(map_keys):
+        errors.append("SNAPSHOT_MAP_SYMBOLS_COLLIDE")
+    if set(map_keys) != set(collected_keys):
+        errors.append("SNAPSHOT_MAP_COVERAGE_MISMATCH")
+
+    expected = {"m1": 60, "m5": 300}
+    for raw_symbol, pair in data.items():
+        symbol = canonical(raw_symbol) or str(raw_symbol)
+        if not isinstance(pair, dict):
+            errors.append(f"{symbol}:PAIR_PAYLOAD_INVALID")
+            continue
+        for key, interval in expected.items():
+            block = pair.get(key)
+            if block is None:
+                errors.append(f"{symbol}:{key.upper()}_PAYLOAD_MISSING")
+                continue
+            if not isinstance(block, dict):
+                errors.append(f"{symbol}:{key.upper()}_PAYLOAD_INVALID")
+                continue
+            for field in ("symbol", "symbol_requested"):
+                value = block.get(field)
+                if value is not None and canonical(value) != symbol:
+                    errors.append(f"{symbol}:{key.upper()}_{field.upper()}_MISMATCH")
+            raw_interval = block.get("interval_seconds")
+            if raw_interval is not None:
+                try:
+                    if isinstance(raw_interval, bool) or int(raw_interval) != interval or float(raw_interval) != interval:
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
+                    errors.append(f"{symbol}:{key.upper()}_INTERVAL_MISMATCH")
+            timeframe = block.get("timeframe")
+            if timeframe is not None:
+                aliases = {60: {"M1", "1M", "1MIN", "60", "60S"},
+                           300: {"M5", "5M", "5MIN", "300", "300S"}}
+                if isinstance(timeframe, bool) or str(timeframe).strip().upper().replace(" ", "") not in aliases[interval]:
+                    errors.append(f"{symbol}:{key.upper()}_TIMEFRAME_MISMATCH")
+            rows = block.get("candles", [])
+            if not isinstance(rows, list):
+                errors.append(f"{symbol}:{key.upper()}_CANDLES_NOT_LIST")
+                continue
+            for index, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    errors.append(f"{symbol}:{key.upper()}_CANDLE_NOT_OBJECT:{index}")
+                    continue
+                row_symbol = row.get("symbol")
+                if row_symbol is not None and canonical(row_symbol) != symbol:
+                    errors.append(f"{symbol}:{key.upper()}_CANDLE_SYMBOL_MISMATCH:{index}")
+                row_interval = row.get("interval_seconds")
+                if row_interval is not None:
+                    try:
+                        if isinstance(row_interval, bool) or int(row_interval) != interval or float(row_interval) != interval:
+                            raise ValueError
+                    except (TypeError, ValueError, OverflowError):
+                        errors.append(f"{symbol}:{key.upper()}_CANDLE_INTERVAL_MISMATCH:{index}")
+                row_timeframe = row.get("timeframe")
+                if row_timeframe is not None and (
+                    isinstance(row_timeframe, bool)
+                    or str(row_timeframe).strip().upper().replace(" ", "") not in aliases[interval]
+                ):
+                    errors.append(f"{symbol}:{key.upper()}_CANDLE_TIMEFRAME_MISMATCH:{index}")
+
+    return {"ok": not errors, "errors": errors, "read_only": True}
+
