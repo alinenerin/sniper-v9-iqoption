@@ -59,6 +59,17 @@ class WorkflowRepairContractTests(unittest.TestCase):
             self.assertIn("iqoption-readonly-gateway.onrender.com", source)
             self.assertNotIn("RAILWAY_GATEWAY_URL", source)
 
+    def test_final_timing_rejects_cached_stale_and_millisecond_timestamp_contracts(self):
+        source = (ROOT / "scripts/refresh_final_timing.py").read_text()
+        self.assertIn('payload.get("cache_used") is True', source)
+        self.assertIn('payload.get("cache_hit") is True', source)
+        self.assertIn('payload.get("fresh") is False', source)
+        self.assertIn('payload.get("stale") is True', source)
+        self.assertIn('if ts > 10_000_000_000:', source)
+        self.assertIn('ts /= 1000.0', source)
+        self.assertIn('FINAL_TIMING_DUPLICATE_M1_TIMESTAMPS', source)
+        self.assertIn('M5_DUPLICATE_CANDLE_TIMESTAMPS', source)
+
     def test_m5_shadow_runs_and_is_artifact_only(self):
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         parallel_step = workflow.split("- name: Run intelligence modules in parallel (read-only)", 1)[1].split("- name:", 1)[0]
