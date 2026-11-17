@@ -162,16 +162,28 @@ def audit_candle_rows(
     """
     configuration_errors: list[str] = []
     expected_interval: int | None = None
-    tolerance = float(interval_tolerance_seconds)
+    tolerance = 2.0
+    try:
+        if isinstance(interval_tolerance_seconds, bool):
+            raise ValueError("boolean tolerance")
+        tolerance = float(interval_tolerance_seconds)
+        if not math.isfinite(tolerance) or tolerance < 0:
+            raise ValueError("invalid tolerance")
+    except (TypeError, ValueError, OverflowError):
+        configuration_errors.append("INVALID_EXPECTED_INTERVAL_CONFIGURATION")
+
     if interval_seconds is not None:
         try:
-            expected_interval = int(interval_seconds)
+            if isinstance(interval_seconds, bool):
+                raise ValueError("boolean interval")
+            parsed_interval = float(interval_seconds)
+            if not math.isfinite(parsed_interval) or not parsed_interval.is_integer():
+                raise ValueError("non-integral interval")
+            expected_interval = int(parsed_interval)
+            if expected_interval <= 0:
+                raise ValueError("non-positive interval")
         except (TypeError, ValueError, OverflowError):
             configuration_errors.append("INVALID_EXPECTED_INTERVAL_CONFIGURATION")
-        if expected_interval is not None and expected_interval <= 0:
-            configuration_errors.append("INVALID_EXPECTED_INTERVAL_CONFIGURATION")
-    if not math.isfinite(tolerance) or tolerance < 0:
-        configuration_errors.append("INVALID_EXPECTED_INTERVAL_CONFIGURATION")
 
     if not isinstance(rows, list):
         return {
