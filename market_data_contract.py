@@ -80,7 +80,19 @@ class CandleContractError(ValueError):
 
 def normalize_and_validate(rows: Any, symbol: str, interval_seconds: int) -> list[dict[str, Any]]:
     """Normalize valid provider candles without repairing or reordering them."""
-    interval_seconds = int(interval_seconds)
+    try:
+        if isinstance(interval_seconds, bool):
+            raise ValueError("boolean interval")
+        parsed_interval = float(interval_seconds)
+        if (not math.isfinite(parsed_interval)
+                or not parsed_interval.is_integer()
+                or parsed_interval <= 0):
+            raise ValueError("invalid interval")
+        interval_seconds = int(parsed_interval)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise CandleContractError(
+            f"INVALID_INTERVAL:{symbol}:{interval_seconds}"
+        ) from exc
     if not isinstance(rows, list):
         raise CandleContractError(f"CANDLES_NOT_LIST:{symbol}:{interval_seconds}")
     out: list[dict[str, Any]] = []
