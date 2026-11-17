@@ -49,7 +49,8 @@ class XGBoostDatasetIntegrityAuditTests(unittest.TestCase):
 
         self.assertEqual(labels, [1, 0, 0])
         self.assertEqual(has_future, [True, True, False])
-        self.assertFalse(has_future[-1] and labels[-1] == 0)
+        self.assertFalse(has_future[-1])
+        self.assertEqual(labels[-1], 0)
 
         # The audit verdict is BLOCKED because the final row has no target horizon.
         audit_status = "BLOCKED" if not has_future[-1] else "CLEAR"
@@ -88,12 +89,10 @@ class XGBoostDatasetIntegrityAuditTests(unittest.TestCase):
         self.assertIn("split=int(len(data)*0.8)", self.source)
 
     def test_audit_never_imports_or_invokes_the_training_model(self):
+        audit_source = Path(__file__).read_text(encoding="utf-8")
         forbidden = ("XGBClassifier", "predict_proba", ".fit(", "pickle.dump")
         for token in forbidden:
-            self.assertNotIn(token, self.source.replace("XGBClassifier", ""))
-        audit_source = Path(__file__).read_text(encoding="utf-8")
-        self.assertNotIn("XGBClassifier", audit_source)
-        self.assertNotIn("predict_proba", audit_source)
+            self.assertNotIn(token, audit_source)
 
 
 if __name__ == "__main__":
