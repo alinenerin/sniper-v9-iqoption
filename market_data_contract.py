@@ -477,10 +477,10 @@ def validate_snapshot_envelope(payload: Any) -> dict[str, Any]:
                         raise ValueError
                 except (TypeError, ValueError, OverflowError):
                     errors.append(f"{symbol}:{key.upper()}_INTERVAL_MISMATCH")
+            aliases = {60: {"M1", "1M", "1MIN", "60", "60S"},
+                       300: {"M5", "5M", "5MIN", "300", "300S"}}
             timeframe = block.get("timeframe")
             if timeframe is not None:
-                aliases = {60: {"M1", "1M", "1MIN", "60", "60S"},
-                           300: {"M5", "5M", "5MIN", "300", "300S"}}
                 if isinstance(timeframe, bool) or str(timeframe).strip().upper().replace(" ", "") not in aliases[interval]:
                     errors.append(f"{symbol}:{key.upper()}_TIMEFRAME_MISMATCH")
             rows = block.get("candles", [])
