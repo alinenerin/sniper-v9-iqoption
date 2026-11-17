@@ -6,6 +6,7 @@ binds the audit to the current source patterns in the XGBoost runner.
 """
 from __future__ import annotations
 
+import ast
 import unittest
 from pathlib import Path
 
@@ -88,11 +89,25 @@ class XGBoostDatasetIntegrityAuditTests(unittest.TestCase):
         )
         self.assertIn("split=int(len(data)*0.8)", self.source)
 
-    def test_audit_never_imports_or_invokes_the_training_model(self):
-        audit_source = Path(__file__).read_text(encoding="utf-8")
-        forbidden = ("XGBClassifier", "predict_proba", ".fit(", "pickle.dump")
-        for token in forbidden:
-            self.assertNotIn(token, audit_source)
+    def test_audit_does_not_import_or_call_model_training_or_inference(self):
+        audit_tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        imported_modules: list[str] = []
+        called_names: list[str] = []
+
+        for node in ast.walk(audit_tree):
+            if isinstance(node, ast.Import):
+                imported_modules.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_modules.append(node.module)
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    called_names.append(node.func.id)
+                elif isinstance(node.func, ast.Attribute):
+                    called_names.append(node.func.attr)
+
+        self.assertFalse(any("xgboost" in name.lower() for name in imported_modules))
+        self.assertFalse(any("pickle" in name.lower() for name in imported_modules))
+        self.assertFalse(any(name in {"fit", "predict_proba", "dump"} for name in called_names))
 
 
 if __name__ == "__main__":
