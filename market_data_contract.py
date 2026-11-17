@@ -119,6 +119,54 @@ def normalize_and_validate(rows: Any, symbol: str, interval_seconds: int) -> lis
     for index, raw in enumerate(rows):
         if not isinstance(raw, dict):
             raise CandleContractError(f"CANDLE_NOT_OBJECT:{symbol}:{index}")
+
+        raw_symbol = raw.get("symbol")
+        if raw_symbol is not None:
+            if (not isinstance(raw_symbol, str)
+                    or raw_symbol.strip().upper() != str(symbol).strip().upper()):
+                raise CandleContractError(f"SYMBOL_MISMATCH:{symbol}:{index}")
+
+        raw_interval = raw.get("interval_seconds")
+        if raw_interval is not None:
+            try:
+                if isinstance(raw_interval, bool):
+                    raise ValueError("boolean interval")
+                parsed_raw_interval = float(raw_interval)
+                if (not math.isfinite(parsed_raw_interval)
+                        or not parsed_raw_interval.is_integer()
+                        or int(parsed_raw_interval) != interval_seconds):
+                    raise ValueError("interval mismatch")
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise CandleContractError(
+                    f"INTERVAL_MISMATCH:{symbol}:{index}"
+                ) from exc
+
+        raw_timeframe = raw.get("timeframe")
+        if raw_timeframe is not None:
+            timeframe_aliases = {
+                60: {"M1", "1M", "1MIN", "1MINUTE", "60", "60S"},
+                180: {"M3", "3M", "3MIN", "3MINUTE", "180", "180S"},
+                300: {"M5", "5M", "5MIN", "5MINUTE", "300", "300S"},
+            }
+            if isinstance(raw_timeframe, bool):
+                raise CandleContractError(f"TIMEFRAME_MISMATCH:{symbol}:{index}")
+            if isinstance(raw_timeframe, (int, float)):
+                try:
+                    timeframe_value = float(raw_timeframe)
+                except (TypeError, ValueError, OverflowError):
+                    timeframe_value = math.nan
+                timeframe_matches = (
+                    math.isfinite(timeframe_value)
+                    and timeframe_value == interval_seconds
+                )
+            else:
+                timeframe_value = str(raw_timeframe).strip().upper().replace(" ", "")
+                timeframe_matches = timeframe_value in timeframe_aliases.get(
+                    interval_seconds, {f"M{interval_seconds // 60}"}
+                )
+            if not timeframe_matches:
+                raise CandleContractError(f"TIMEFRAME_MISMATCH:{symbol}:{index}")
+
         timestamp = number(raw, "timestamp", index, "from", "time")
         if timestamp > 10_000_000_000:
             timestamp /= 1000.0
