@@ -55,6 +55,31 @@ class SharedAI:
         return item if isinstance(item, dict) else {}
 
     @staticmethod
+    def _validate_artifact_provenance(
+        components: Dict[str, Any], expected_snapshot_id: str | None,
+        names: tuple[str, ...] = ("darts", "timesfm", "xgboost", "finbert"),
+    ) -> Dict[str, Any]:
+        """Block artifact evidence that cannot prove the current snapshot.
+
+        Advisory artifacts are blocked individually; they do not veto the
+        primary committee. Their provenance is still required before they can
+        contribute to a downstream fusion.
+        """
+        validated = {
+            name: dict(item) if isinstance(item, dict) else item
+            for name, item in (components or {}).items()
+        }
+        for name in names:
+            item = validated.get(name)
+            if not isinstance(item, dict) or item.get("status") != "inference_ok":
+                continue
+            supplied_snapshot = item.get("snapshot_id")
+            if not expected_snapshot_id or supplied_snapshot != expected_snapshot_id:
+                item["status"] = "blocked"
+                item["reason"] = "ARTIFACT_SNAPSHOT_MISSING_OR_MISMATCH"
+        return validated
+
+    @staticmethod
     def _score_breakdown(analysis: Dict[str, Any], score_fusion: dict[str, Any],
                          final_score: float) -> dict[str, Any]:
         """Expose the actual inputs and arithmetic behind the reported score."""
@@ -360,6 +385,18 @@ class SharedAI:
         times_report=report_status("timesfm_inference.json", symbol)
         finbert_report=report_status("finbert_inference.json", symbol)
         xgb_report=report_status("xgboost_inference.json", symbol)
+        def chart_status(details: Any, error_prefix: str, required_fields: tuple[str, ...]) -> str:
+            if not isinstance(details, dict):
+                return "blocked"
+            status = str(details.get("status", "")).strip().lower()
+            reason = str(details.get("reason", ""))
+            accepted = {"", "ok", "success", "inference_ok", "executed", "completed"}
+            if status not in accepted or reason.startswith(error_prefix):
+                return "blocked"
+            if any(field not in details or details[field] is None for field in required_fields):
+                return "blocked"
+            return "inference_ok"
+
         components = {
             "darts": {"status": darts_report.get("status", "inference_ok" if darts_available else "blocked"),
                       "snapshot_id": darts_report.get("snapshot_id"),
@@ -388,8 +425,16 @@ class SharedAI:
                              "data_source": (advisory.get("cycle_catalog") or {}).get("data_source", "current_scan_snapshot"),
                              "reason": (advisory.get("cycle_catalog") or {}).get("reason"),
                              "read_only": True},
-            "smc": {"status": "inference_ok" if "smc" in analysis else "blocked", "reason": None if "smc" in analysis else "SMC_NOT_RUN"},
-            "vsa": {"status": "inference_ok" if "vsa" in analysis else "blocked", "reason": None if "vsa" in analysis else "VSA_NOT_RUN"},
+            "smc": {
+                "status": chart_status(analysis.get("smc"), "SMC_ERROR:", ("fvg", "bos", "direction")),
+                "reason": ((analysis.get("smc") or {}).get("reason")
+                           if isinstance(analysis.get("smc"), dict) else "SMC_NOT_RUN"),
+            },
+            "vsa": {
+                "status": chart_status(analysis.get("vsa"), "VSA_ERROR:", ("anomaly", "rel_vol")),
+                "reason": ((analysis.get("vsa") or {}).get("reason")
+                           if isinstance(analysis.get("vsa"), dict) else "VSA_NOT_RUN"),
+            },
         }
         # Every declared agent has an explicit state and a reason for a block;
         # advisory components never become implicit vetoes through a missing
@@ -409,8 +454,13 @@ class SharedAI:
         parts = []
         for name, weight in (("technical_core", cfg.technical_core_weight), ("smc", cfg.smc_weight), ("vsa", cfg.vsa_weight), ("sentiment", cfg.sentiment_weight)):
             item = (core_components or {}).get(name) if isinstance(core_components, dict) else None
-            if isinstance(item, dict) and item.get("value") is not None:
-                parts.append((name, max(0.0, min(100.0, float(item["value"]))), weight, "evidence"))
+            if not isinstance(item, dict) or item.get("value") is None:
+                continue
+            if name in {"smc", "vsa"} and component_status.get(name, {}).get("status") != "inference_ok":
+                continue
+            if name == "sentiment" and str(item.get("status", "")).lower() not in {"inference_ok", "executed", "ok", "success"}:
+                continue
+            parts.append((name, max(0.0, min(100.0, float(item["value"]))), weight, "evidence"))
         if not parts:
             parts.append(("technical_core", max(0.0, min(100.0, technical_score)), cfg.technical_core_weight, "fallback"))
         direction = direction.upper()
@@ -422,11 +472,12 @@ class SharedAI:
             except (OSError, json.JSONDecodeError):
                 return {}
         xgb = report_item("xgboost_inference.json")
-        if component_status.get("xgboost", {}).get("status") == "inference_ok" and xgb.get("probability_up") is not None:
+        directional = direction in {"CALL", "BUY", "PUT", "SELL"}
+        if directional and component_status.get("xgboost", {}).get("status") == "inference_ok" and xgb.get("probability_up") is not None:
             p = float(xgb["probability_up"]) * 100.0
             parts.append(("xgboost", p if direction in ("CALL", "BUY") else 100.0 - p, cfg.ai_ensemble_weight * 0.50, "ai"))
         times = report_item("timesfm_inference.json")
-        if component_status.get("timesfm", {}).get("status") == "inference_ok":
+        if directional and component_status.get("timesfm", {}).get("status") == "inference_ok":
             td = str((times.get("forecast") or times).get("direction", "")).upper()
             conf = max(0.0, min(1.0, float((times.get("forecast") or times).get("confidence", 0.5) or 0.5)))
             aligned = td in (("UP",) if direction in ("CALL", "BUY") else ("DOWN",))
@@ -439,7 +490,8 @@ class SharedAI:
         # direction-relative evidence value; absence remains unavailable and
         # is never converted to zero.
         finbert = report_item("finbert_inference.json")
-        if ("sentiment" not in {name for name, *_ in parts}
+        if (directional
+                and "sentiment" not in {name for name, *_ in parts}
                 and component_status.get("finbert", {}).get("status") == "inference_ok"
                 and isinstance(finbert.get("labels"), list) and finbert.get("labels")):
             label = max(finbert["labels"], key=lambda item: float(item.get("score", 0.0) or 0.0))
@@ -482,6 +534,14 @@ class SharedAI:
             # Sem isso, DARTS/FinBERT/XGBoost eram reportados como blocked
             # mesmo quando seus workflows haviam concluído com inference_ok.
             analysis["symbol"] = request.symbol
+            from market_data_contract import snapshot_id
+            metadata = request.metadata if isinstance(request.metadata, dict) else {}
+            market_snapshot_id = metadata.get("snapshot_id") or snapshot_id({
+                "market": request.market,
+                "symbol": request.symbol,
+                "timeframe": request.timeframe,
+                "candles": request.candles,
+            })
             # Prefer the verified per-symbol Darts artifact produced from the
             # same current read-only gateway snapshot. The in-process shield may be unavailable
             # on CI even when the dedicated Darts agent completed; never turn
@@ -489,7 +549,8 @@ class SharedAI:
             try:
                 darts_artifact = json.loads((Path("reports") / "darts_inference.json").read_text())
                 darts_item = (darts_artifact.get("components") or {}).get(request.symbol, {})
-                if darts_item.get("status") == "inference_ok":
+                if (darts_item.get("status") == "inference_ok"
+                        and darts_item.get("snapshot_id") == market_snapshot_id):
                     scan = darts_item.get("scan") or {}
                     verified = float(scan.get("anomaly_score", scan.get("score", 0)) or 0)
                     analysis["anomaly_details"] = {"status": "inference_ok", "score": verified,
@@ -585,19 +646,14 @@ class SharedAI:
             analysis["shared_advisory"] = advisory
             analysis["symbol"] = request.symbol
             component_status = self._component_status(analysis, advisory)
+            component_status = self._validate_artifact_provenance(
+                component_status, market_snapshot_id,
+            )
             # The committee is a real execution lane for specialist evidence:
             # every report is validated against this exact market snapshot.
             # It remains consultative and fail-closed; it cannot approve or
             # execute an operation.
             from core.trading_crew import crew_v16
-            from market_data_contract import snapshot_id
-            market_snapshot_id = request.metadata.get("snapshot_id") if isinstance(request.metadata, dict) else None
-            market_snapshot_id = market_snapshot_id or snapshot_id({
-                "market": request.market,
-                "symbol": request.symbol,
-                "timeframe": request.timeframe,
-                "candles": request.candles,
-            })
             # Bind locally computed chart specialists (SMC/VSA) to the exact
             # request, but preserve IDs from independent agent artifacts. Never
             # overwrite an artifact's provenance: required evidence without an
@@ -613,26 +669,28 @@ class SharedAI:
                 request.symbol, component_status, market_snapshot_id, request.timeframe
             )
             analysis["specialist_committee"] = committee_report
-            direction = str(analysis.get("direction", "NEUTRAL")).upper()
+            # Confirm direction before fusing any direction-relative model evidence.
+            # NEUTRAL remains non-directional and cannot be interpreted as DOWN.
+            xgb_item = self._artifact_item("xgboost_inference.json", request.symbol)
+            direction_fields = self._direction_breakdown(
+                analysis, component_status, xgb_item, market_snapshot_id, request.symbol,
+                metadata.get("m5_engine") if isinstance(metadata.get("m5_engine"), dict) else None,
+            )
+            analysis.update(direction_fields)
+            direction = str(direction_fields["direction_confirmed"]).upper()
+            analysis["direction"] = direction
+
             technical_score = float(analysis.get("score", 0) or 0)
-            score, fused_components = self._fuse_agent_evidence(technical_score, direction, component_status, advisory, request.symbol, analysis.get("score_components"))
+            score, fused_components = self._fuse_agent_evidence(
+                technical_score, direction, component_status, advisory,
+                request.symbol, analysis.get("score_components"),
+            )
             analysis["technical_score"] = round(technical_score, 1)
             analysis["score"] = score
             analysis["normalized_score"] = score
             analysis["score_fusion"] = fused_components
             analysis["score_breakdown"] = self._score_breakdown(analysis, fused_components, score)
 
-            # Direction is confirmed only by the existing independent-source
-            # aggregator. Never use candle-to-candle movement as a directional vote.
-            xgb_item = self._artifact_item("xgboost_inference.json", request.symbol)
-            metadata = request.metadata if isinstance(request.metadata, dict) else {}
-            direction_fields = self._direction_breakdown(
-                analysis, component_status, xgb_item, market_snapshot_id, request.symbol,
-                metadata.get("m5_engine") if isinstance(metadata.get("m5_engine"), dict) else None,
-            )
-            analysis.update(direction_fields)
-            direction = direction_fields["direction_confirmed"]
-            analysis["direction"] = direction
             # Re-align the technical component only after consensus is known;
             # use completed candles and preserve every existing fusion weight.
             closed_closes = self._closed_close_values(
@@ -672,7 +730,9 @@ class SharedAI:
             try:
                 darts_check = json.loads((Path("reports") / "darts_inference.json").read_text())
                 darts_check_item = (darts_check.get("components") or {}).get(request.symbol, {})
-                if darts_check_item.get("status") == "inference_ok":
+                if (component_status.get("darts", {}).get("status") == "inference_ok"
+                        and darts_check_item.get("status") == "inference_ok"
+                        and darts_check_item.get("snapshot_id") == market_snapshot_id):
                     dscan = darts_check_item.get("scan") or {}
                     anomaly = float(dscan.get("anomaly_score", dscan.get("score", 0)) or 0)
             except (OSError, json.JSONDecodeError, TypeError, ValueError):

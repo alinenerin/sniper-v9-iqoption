@@ -129,8 +129,9 @@ class LiveStreamIntegrationTests(unittest.TestCase):
         self.assertIn("!contains(github.event.inputs.symbols, '-OTC')", fetch_step)
         timing_step = workflow.split("- name: Refresh final M1/M5 timing", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("USE_WARM_STREAM:", timing_step)
+        fetcher = (root / "scripts/fetch_market_gateway.py").read_text()
+        self.assertIn("fast_direct_live_stream_warm_cache", fetcher)
         coverage = workflow.split("- name: Verify fast-mode pair coverage and timing provenance", 1)[1].split("- name:", 1)[0]
-        self.assertIn("fast_direct_live_stream_warm_cache", coverage)
         self.assertIn("fast_direct_m1_m5_uncached", coverage)
 
     def test_gateway_prewarm_and_snapshot_routes_forward_pair_subset_read_only(self):

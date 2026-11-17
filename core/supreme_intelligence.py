@@ -73,6 +73,20 @@ class SupremeIntelligence:
         })
         return round(max(0.0, min(100.0, float(score))), 4), details
 
+    @staticmethod
+    def _evidence_component_status(details, error_prefix, required_fields):
+        """Accept chart evidence only when its result shape is complete and successful."""
+        if not isinstance(details, dict):
+            return "blocked"
+        status = str(details.get("status", "")).strip().lower()
+        reason = str(details.get("reason", ""))
+        accepted_statuses = {"", "ok", "success", "inference_ok", "executed", "completed"}
+        if status not in accepted_statuses or reason.startswith(error_prefix):
+            return "blocked"
+        if any(field not in details or details[field] is None for field in required_fields):
+            return "blocked"
+        return "inference_ok"
+
     def get_full_analysis(self, ohlcv_df):
         """
         Pipeline Completo: Camada 0 → Camada 1 → Camada 2 → Score
@@ -158,11 +172,15 @@ class SupremeIntelligence:
             smc_direction, ohlcv_df["close"],
         )
 
+        smc_status = self._evidence_component_status(smc_details, "SMC_ERROR:", ("fvg", "bos", "direction"))
+        vsa_status = self._evidence_component_status(vsa_details, "VSA_ERROR:", ("anomaly", "rel_vol"))
         score_parts = [
             ("technical_core", technical_core, TRADING_CONFIG.technical_core_weight),
-            ("smc", float(smc_score), TRADING_CONFIG.smc_weight),
-            ("vsa", float(vsa_score), TRADING_CONFIG.vsa_weight),
         ]
+        if smc_status == "inference_ok":
+            score_parts.append(("smc", float(smc_score), TRADING_CONFIG.smc_weight))
+        if vsa_status == "inference_ok":
+            score_parts.append(("vsa", float(vsa_score), TRADING_CONFIG.vsa_weight))
         if sent_score is not None and isinstance(sent_details, dict) and sent_details.get("status") in ("inference_ok", "executed"):
             score_parts.append(("sentiment", float(sent_score), TRADING_CONFIG.sentiment_weight))
 
@@ -218,7 +236,13 @@ class SupremeIntelligence:
             "raw_score": round(final_score, 1),
             "normalized_score": round(final_score, 1),
             "score_components": {
-                name: {"value": round(value, 2), "weight": weight, "status": "executed"}
+                name: {
+                    "value": round(value, 2),
+                    "weight": weight,
+                    "status": ("blocked" if name == "smc" and smc_status != "inference_ok"
+                               else "blocked" if name == "vsa" and vsa_status != "inference_ok"
+                               else "executed"),
+                }
                 for name, value, weight in score_parts
             },
             "analysis_completeness": analysis_completeness,
@@ -234,8 +258,8 @@ class SupremeIntelligence:
             "vsa": vsa_details,
             "sentiment": sent_details,
             "agents": {
-                "SMC": "executed",
-                "VSA": "executed",
+                "SMC": smc_status,
+                "VSA": vsa_status,
                 "DARTS": anomaly_result.get("status", "executed"),
                 "NEWS_SENTIMENT": (
                     sent_details.get("status", "unavailable")

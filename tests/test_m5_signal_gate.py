@@ -87,6 +87,24 @@ class M5SignalGateTest(unittest.TestCase):
             components={"component_status": components, "core_analysis": {}},
         )
 
+    def test_millisecond_timestamps_match_second_timestamps(self):
+        rows = self.candles_m5()
+        observed = datetime.fromtimestamp(rows[-1]["timestamp"] + 330, timezone.utc)
+        seconds_evidence = _m5_confirmation_evidence(rows, "CALL", observed, "bundle-seconds")
+        millisecond_rows = [
+            {**row, "timestamp": row["timestamp"] * 1000}
+            for row in rows
+        ]
+        millisecond_evidence = _m5_confirmation_evidence(
+            millisecond_rows, "CALL", observed, "bundle-milliseconds"
+        )
+        self.assertEqual(millisecond_evidence["valid_closed_candles"],
+                         seconds_evidence["valid_closed_candles"])
+        self.assertEqual(millisecond_evidence["closed_candle_age_seconds"],
+                         seconds_evidence["closed_candle_age_seconds"])
+        self.assertEqual(millisecond_evidence["m5_bias"], seconds_evidence["m5_bias"])
+        self.assertEqual(millisecond_evidence["confirmed"], seconds_evidence["confirmed"])
+
     def test_valid_closed_m5_confirms_trend(self):
         rows = self.candles_m5()
         observed = datetime.fromtimestamp(rows[-1]["timestamp"] + 330, timezone.utc)

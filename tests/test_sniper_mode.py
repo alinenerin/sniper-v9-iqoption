@@ -14,7 +14,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from engines.binary.sniper_timing import plan_sniper_window
+from engines.binary.sniper_timing import build_temporal_observation, plan_sniper_window
 from scripts.sniper_mode import (
     DEFAULT_SNIPER_SYMBOLS,
     classify_early_timing,
@@ -139,6 +139,22 @@ class SniperEmissionTests(unittest.TestCase):
     def test_unknown_timing_is_never_actionable(self):
         record = self.analysis(signal_actionable=False, actionability_reasons=["M5_NOT_CONFIRMED"])
         self.assertEqual(classify_early_timing(record, 1800000000.0), ("UNKNOWN", False))
+
+    def test_temporal_observation_records_m3_bucket_without_selecting_a_second(self):
+        observed = build_temporal_observation(1800000023.4)
+        self.assertEqual(observed["m3_window_start_timestamp"], 1800000000)
+        self.assertEqual(observed["m3_window_end_timestamp"], 1800000180)
+        self.assertEqual(observed["second_within_m3_window"], 23)
+        self.assertEqual(observed["clock_source"], "system_wall_clock")
+        self.assertFalse(observed["selection_performed"])
+        self.assertTrue(observed["read_only"])
+        self.assertTrue(observed["observed_at_utc"].endswith("+00:00"))
+
+    def test_temporal_observation_rejects_non_positive_and_non_finite_epochs(self):
+        for invalid in (0, -1, float("inf"), float("-inf"), float("nan")):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    build_temporal_observation(invalid)
 
     def test_entry_is_next_m1_boundary_and_expiry_exactly_m3(self):
         now = 1800000023.4
@@ -267,6 +283,12 @@ class SniperWorkflowContractTests(unittest.TestCase):
         self.assertIn("reports/live_signals.jsonl", early_block)
         self.assertIn("reports/latest_signal.json", early_block)
         self.assertIn("reports/sniper_timing.json", early_block)
+
+    def test_report_blocks_missing_or_non_ok_gateway_fetch_status(self):
+        report_generator = (ROOT / "scripts/generate_scan_report.py").read_text()
+        self.assertIn('fetch_status.get("status") != "ok"', report_generator)
+        self.assertIn('fetch_status.get("blocked") is True', report_generator)
+        self.assertIn('"GATEWAY_FETCH_STATUS_MISSING"', report_generator)
 
     def test_input_validation_precedes_gateway_and_fetch(self):
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()

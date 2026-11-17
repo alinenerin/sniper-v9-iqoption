@@ -33,8 +33,20 @@ for symbol in requested:
             if train.get('darts') != 'trained':
                 evidence.update(status='error', reason=train.get('darts') or train.get('status'), training=train)
             else:
-                evidence.update(status='inference_ok', training=train,
-                                scan=shield.scan(symbol, frame.iloc[-1].to_dict()))
+                # The native detector is trained, but DartsAnomalyShield.scan()
+                # currently evaluates its statistical baseline, not the native
+                # Darts detector. Keep this artifact non-inference_ok so the
+                # shared evidence layer cannot mistake baseline output for
+                # native Darts inference.
+                evidence.update(
+                    status='degraded',
+                    reason='NATIVE_DARTS_TRAINED_BUT_SCAN_USES_STATISTICAL_BASELINE',
+                    inference_engine='statistical_baseline',
+                    native_detector_training='completed',
+                    native_detector_inference='not_used',
+                    training=train,
+                    scan=shield.scan(symbol, frame.iloc[-1].to_dict()),
+                )
         except Exception as exc:
             evidence.update(status='error', reason=f'{type(exc).__name__}: {exc}')
     results[symbol] = evidence

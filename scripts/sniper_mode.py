@@ -8,13 +8,19 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import sys
 import tempfile
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
+
+from engines.binary.sniper_timing import build_temporal_observation
+
+BRT = ZoneInfo("America/Sao_Paulo")
 
 REAL_FX_SYMBOLS = (
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
@@ -177,8 +183,10 @@ def emit_approved_signal(analysis: dict[str, Any], *, reports_dir: str | Path = 
     actionability_reasons = list(analysis.get("actionability_reasons") or [])
     if status == "TOO_LATE" and "ENTRY_WINDOW_EXPIRED_BEFORE_EMISSION" not in actionability_reasons:
         actionability_reasons.append("ENTRY_WINDOW_EXPIRED_BEFORE_EMISSION")
+    temporal_observation = build_temporal_observation(emitted_epoch)
     event = {
         "event_id": _event_id(analysis, run_id),
+        "temporal_observation": temporal_observation,
         "market": "binary",
         "symbol": analysis.get("symbol"),
         "direction": str(analysis.get("direction_confirmed") or "").upper(),
@@ -261,23 +269,162 @@ def record_pipeline_step(name: str, started_epoch: float, reports_dir: str | Pat
         os.fsync(stream.fileno())
 
 
+
+def validate_temporal_observation(observation: dict[str, Any]) -> list[str]:
+    """Validate read-only temporal metadata without selecting or ranking seconds."""
+    errors: list[str] = []
+    try:
+        observed_epoch = float(observation.get("observed_epoch"))
+        if not math.isfinite(observed_epoch) or observed_epoch <= 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        observed_epoch = None
+        errors.append("INVALID_OBSERVED_EPOCH")
+
+    start = observation.get("m3_window_start_timestamp")
+    end = observation.get("m3_window_end_timestamp")
+    second = observation.get("second_within_m3_window")
+    for value, code in ((start, "INVALID_M3_WINDOW_START"),
+                        (end, "INVALID_M3_WINDOW_END"),
+                        (second, "INVALID_M3_SECOND")):
+        if isinstance(value, bool) or not isinstance(value, int):
+            errors.append(code)
+
+    if isinstance(start, int) and not isinstance(start, bool):
+        if start % 180 != 0:
+            errors.append("M3_WINDOW_START_NOT_ALIGNED")
+    if (isinstance(start, int) and not isinstance(start, bool)
+            and isinstance(end, int) and not isinstance(end, bool)
+            and end != start + 180):
+        errors.append("M3_WINDOW_DURATION_INVALID")
+    if isinstance(second, int) and not isinstance(second, bool):
+        if not 0 <= second <= 179:
+            errors.append("M3_SECOND_OUT_OF_RANGE")
+    if (observed_epoch is not None and isinstance(start, int) and not isinstance(start, bool)
+            and isinstance(end, int) and not isinstance(end, bool)):
+        if not start <= observed_epoch < end:
+            errors.append("OBSERVATION_OUTSIDE_M3_WINDOW")
+        elif isinstance(second, int) and not isinstance(second, bool):
+            if int(observed_epoch - start) != second:
+                errors.append("M3_SECOND_DOES_NOT_MATCH_EPOCH")
+
+    parsed_times: list[tuple[str, datetime, timezone | Any]] = []
+    for key, code in (("observed_at_utc", "INVALID_OBSERVED_UTC"),
+                      ("observed_at_brt", "INVALID_OBSERVED_BRT")):
+        try:
+            parsed = datetime.fromisoformat(str(observation.get(key)).replace("Z", "+00:00"))
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError
+            parsed_times.append((key, parsed, timezone.utc if key.endswith("utc") else BRT))
+        except (TypeError, ValueError, OverflowError):
+            errors.append(code)
+
+    if observed_epoch is not None:
+        for key, parsed, expected_zone in parsed_times:
+            expected = datetime.fromtimestamp(observed_epoch, expected_zone)
+            if abs(parsed.timestamp() - observed_epoch) > 0.002:
+                errors.append("OBSERVED_TIMESTAMP_MISMATCH")
+                break
+            if key == "observed_at_utc" and parsed.utcoffset().total_seconds() != 0:
+                errors.append("UTC_OFFSET_INVALID")
+            if key == "observed_at_brt" and parsed.utcoffset() != expected.utcoffset():
+                errors.append("BRT_OFFSET_INVALID")
+
+    if observation.get("clock_source") != "system_wall_clock":
+        errors.append("CLOCK_SOURCE_INVALID")
+    if observation.get("selection_performed") is not False:
+        errors.append("UNEXPECTED_TEMPORAL_SELECTION")
+    if observation.get("read_only") is not True:
+        errors.append("READ_ONLY_FLAG_MISSING")
+    return sorted(set(errors))
+
+
 def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
                         started_at_utc: str, pair_timings: list[dict[str, Any]],
                         market_data: dict[str, Any], run_id: str | None = None,
                         job_started_epoch: float | None = None) -> dict[str, Any]:
     root = Path(reports_dir)
     signals_path = root / "live_signals.jsonl"
-    events = []
+    events: list[dict[str, Any]] = []
+    malformed_event_count = 0
+    duplicate_event_id_count = 0
+    missing_event_id_count = 0
+    seen_event_ids: set[str] = set()
+    raw_event_count = 0
     if signals_path.exists():
         for line in signals_path.read_text(encoding="utf-8").splitlines():
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
+            if not line.strip():
                 continue
-    first = min((event.get("emitted_at_utc") for event in events if event.get("signal_emitted")), default=None)
-    first_epoch = None
-    if first:
-        first_epoch = datetime.fromisoformat(first.replace("Z", "+00:00")).timestamp()
+            raw_event_count += 1
+            try:
+                parsed_event = json.loads(line)
+            except json.JSONDecodeError:
+                malformed_event_count += 1
+                continue
+            if not isinstance(parsed_event, dict):
+                malformed_event_count += 1
+                continue
+            event_id = parsed_event.get("event_id")
+            if not isinstance(event_id, str) or not event_id.strip():
+                missing_event_id_count += 1
+            elif event_id in seen_event_ids:
+                duplicate_event_id_count += 1
+            else:
+                seen_event_ids.add(event_id)
+            events.append(parsed_event)
+
+    emitted_timestamps: list[tuple[float, str]] = []
+    invalid_emitted_timestamp_count = 0
+    for event in events:
+        if event.get("signal_emitted") is not True:
+            continue
+        raw_timestamp = event.get("emitted_at_utc")
+        try:
+            parsed_timestamp = datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+            if parsed_timestamp.tzinfo is None or parsed_timestamp.utcoffset() is None:
+                raise ValueError("timezone required")
+            emitted_timestamps.append((parsed_timestamp.timestamp(), str(raw_timestamp)))
+        except (TypeError, ValueError, OverflowError):
+            invalid_emitted_timestamp_count += 1
+    first_epoch, first = min(emitted_timestamps, default=(None, None), key=lambda item: item[0])
+    temporal_observations = []
+    missing_temporal_observation_count = 0
+    for event in events:
+        observation = event.get("temporal_observation")
+        if not isinstance(observation, dict):
+            if event.get("signal_emitted") is True:
+                missing_temporal_observation_count += 1
+            continue
+        validation_errors = validate_temporal_observation(observation)
+        if event.get("signal_emitted") is True:
+            raw_emitted_at = event.get("emitted_at_utc")
+            try:
+                emitted_at = datetime.fromisoformat(str(raw_emitted_at).replace("Z", "+00:00"))
+                if emitted_at.tzinfo is None or emitted_at.utcoffset() is None:
+                    raise ValueError("timezone required")
+                observed_epoch = float(observation.get("observed_epoch"))
+                if abs(observed_epoch - emitted_at.timestamp()) > 0.002:
+                    validation_errors.append("OBSERVATION_EMISSION_TIMESTAMP_MISMATCH")
+            except (TypeError, ValueError, OverflowError, OSError):
+                # The emitted timestamp has its own integrity counter; do not
+                # obscure that primary error with a duplicate observation error.
+                pass
+        validation_errors = sorted(set(validation_errors))
+        temporal_observations.append({
+            "event_id": event.get("event_id"),
+            "symbol": event.get("symbol"),
+            "observed_epoch": observation.get("observed_epoch"),
+            "observed_at_utc": observation.get("observed_at_utc"),
+            "observed_at_brt": observation.get("observed_at_brt"),
+            "m3_window_start_timestamp": observation.get("m3_window_start_timestamp"),
+            "m3_window_end_timestamp": observation.get("m3_window_end_timestamp"),
+            "second_within_m3_window": observation.get("second_within_m3_window"),
+            "clock_source": observation.get("clock_source"),
+            "selection_performed": observation.get("selection_performed") is True,
+            "read_only": observation.get("read_only") is True,
+            "validation_status": "valid" if not validation_errors else "invalid",
+            "validation_errors": validation_errors,
+        })
     fetch_mode = str(market_data.get("fetch_mode") or "").lower()
     warm_state = "warm" if ("warm" in fetch_mode or "stream" in fetch_mode) else (
         "cold" if ("uncached" in fetch_mode or "direct" in fetch_mode) else "unknown")
@@ -313,7 +460,25 @@ def write_timing_report(*, reports_dir: str | Path, started_epoch: float,
         "pipeline_step_timings": pipeline_steps,
         "warm_cold_classification": warm_state,
         "fetch_mode": market_data.get("fetch_mode"),
-        "early_signal_count": len(events),
+        "raw_event_count": raw_event_count,
+        "parsed_event_count": len(events),
+        "early_signal_count": sum(event.get("signal_emitted") is True for event in events),
+        "malformed_event_count": malformed_event_count,
+        "duplicate_event_id_count": duplicate_event_id_count,
+        "missing_event_id_count": missing_event_id_count,
+        "invalid_emitted_timestamp_count": invalid_emitted_timestamp_count,
+        "missing_temporal_observation_count": missing_temporal_observation_count,
+        "temporal_observation_count": len(temporal_observations),
+        "temporal_observation_valid_count": sum(item["validation_status"] == "valid" for item in temporal_observations),
+        "temporal_observation_invalid_count": sum(item["validation_status"] == "invalid" for item in temporal_observations),
+        "report_integrity_status": (
+            "valid" if not any((malformed_event_count, duplicate_event_id_count,
+                                missing_event_id_count, invalid_emitted_timestamp_count,
+                                missing_temporal_observation_count,
+                                sum(item["validation_status"] == "invalid" for item in temporal_observations)))
+            else "invalid"
+        ),
+        "temporal_observations": temporal_observations,
         "read_only": True,
         "execution_allowed": False,
         "executor_enabled": False,

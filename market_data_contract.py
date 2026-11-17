@@ -44,6 +44,13 @@ def aggregate_m1_to_m3(rows: Any, *, now: float | None = None,
         if len(items) != 3 or any(abs(a - b) > 2 for a, b in zip(normalized_stamps, expected)):
             continue
         try:
+            # Reject booleans and malformed numeric values instead of silently
+            # coercing them into prices or volume.
+            numeric_fields = ("open", "high", "low", "close")
+            if any(isinstance(x.get(field), bool) for x in items for field in numeric_fields):
+                continue
+            if any(isinstance(x.get("volume"), bool) for x in items):
+                continue
             opens = [float(x["open"]) for x in items]
             highs = [float(x["high"]) for x in items]
             lows = [float(x["low"]) for x in items]
@@ -51,7 +58,12 @@ def aggregate_m1_to_m3(rows: Any, *, now: float | None = None,
             volumes = [float(x.get("volume") or 0) for x in items]
         except (TypeError, ValueError, OverflowError):
             continue
-        if not all(math.isfinite(v) for v in opens + highs + lows + closes + volumes):
+        values = opens + highs + lows + closes + volumes
+        if not all(math.isfinite(v) for v in values):
+            continue
+        if any(min(o, h, l, c) <= 0 or h < max(o, c, l) or l > min(o, c, h)
+               or volume < 0
+               for o, h, l, c, volume in zip(opens, highs, lows, closes, volumes)):
             continue
         aggregated.append({
             "symbol": items[0].get("symbol"), "timeframe": "M3",
@@ -68,7 +80,19 @@ class CandleContractError(ValueError):
 
 def normalize_and_validate(rows: Any, symbol: str, interval_seconds: int) -> list[dict[str, Any]]:
     """Normalize valid provider candles without repairing or reordering them."""
-    interval_seconds = int(interval_seconds)
+    try:
+        if isinstance(interval_seconds, bool):
+            raise ValueError("boolean interval")
+        parsed_interval = float(interval_seconds)
+        if (not math.isfinite(parsed_interval)
+                or not parsed_interval.is_integer()
+                or parsed_interval <= 0):
+            raise ValueError("invalid interval")
+        interval_seconds = int(parsed_interval)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise CandleContractError(
+            f"INVALID_INTERVAL:{symbol}:{interval_seconds}"
+        ) from exc
     if not isinstance(rows, list):
         raise CandleContractError(f"CANDLES_NOT_LIST:{symbol}:{interval_seconds}")
     out: list[dict[str, Any]] = []
@@ -95,6 +119,54 @@ def normalize_and_validate(rows: Any, symbol: str, interval_seconds: int) -> lis
     for index, raw in enumerate(rows):
         if not isinstance(raw, dict):
             raise CandleContractError(f"CANDLE_NOT_OBJECT:{symbol}:{index}")
+
+        raw_symbol = raw.get("symbol")
+        if raw_symbol is not None:
+            if (not isinstance(raw_symbol, str)
+                    or raw_symbol.strip().upper() != str(symbol).strip().upper()):
+                raise CandleContractError(f"SYMBOL_MISMATCH:{symbol}:{index}")
+
+        raw_interval = raw.get("interval_seconds")
+        if raw_interval is not None:
+            try:
+                if isinstance(raw_interval, bool):
+                    raise ValueError("boolean interval")
+                parsed_raw_interval = float(raw_interval)
+                if (not math.isfinite(parsed_raw_interval)
+                        or not parsed_raw_interval.is_integer()
+                        or int(parsed_raw_interval) != interval_seconds):
+                    raise ValueError("interval mismatch")
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise CandleContractError(
+                    f"INTERVAL_MISMATCH:{symbol}:{index}"
+                ) from exc
+
+        raw_timeframe = raw.get("timeframe")
+        if raw_timeframe is not None:
+            timeframe_aliases = {
+                60: {"M1", "1M", "1MIN", "1MINUTE", "60", "60S"},
+                180: {"M3", "3M", "3MIN", "3MINUTE", "180", "180S"},
+                300: {"M5", "5M", "5MIN", "5MINUTE", "300", "300S"},
+            }
+            if isinstance(raw_timeframe, bool):
+                raise CandleContractError(f"TIMEFRAME_MISMATCH:{symbol}:{index}")
+            if isinstance(raw_timeframe, (int, float)):
+                try:
+                    timeframe_value = float(raw_timeframe)
+                except (TypeError, ValueError, OverflowError):
+                    timeframe_value = math.nan
+                timeframe_matches = (
+                    math.isfinite(timeframe_value)
+                    and timeframe_value == interval_seconds
+                )
+            else:
+                timeframe_value = str(raw_timeframe).strip().upper().replace(" ", "")
+                timeframe_matches = timeframe_value in timeframe_aliases.get(
+                    interval_seconds, {f"M{interval_seconds // 60}"}
+                )
+            if not timeframe_matches:
+                raise CandleContractError(f"TIMEFRAME_MISMATCH:{symbol}:{index}")
+
         timestamp = number(raw, "timestamp", index, "from", "time")
         if timestamp > 10_000_000_000:
             timestamp /= 1000.0
@@ -172,7 +244,8 @@ def freshness(rows: Any, max_age_seconds: int | float = 900,
     if not rows or not isinstance(rows[-1], dict) or not _num(rows[-1].get("timestamp")):
         return False, None
     age = (time.time() if now is None else float(now)) - float(rows[-1]["timestamp"])
-    return age <= float(max_age_seconds), age
+    # A future-dated candle is not fresh; negative age must fail closed.
+    return 0.0 <= age <= float(max_age_seconds), age
 
 
 def validate_snapshot_freshness(symbols: Any, *, now: float | None = None,
@@ -195,28 +268,56 @@ def validate_snapshot_freshness(symbols: Any, *, now: float | None = None,
         m5_payload = data.get("m5") or data.get("m5_candles") or []
         m1_rows = m1_payload.get("candles", []) if isinstance(m1_payload, dict) else m1_payload
         m5_rows = m5_payload.get("candles", []) if isinstance(m5_payload, dict) else m5_payload
-        m1_times = [stamp for row in (m1_rows if isinstance(m1_rows, list) else [])
+        m1_payload_rows = m1_rows if isinstance(m1_rows, list) else []
+        m5_payload_rows = m5_rows if isinstance(m5_rows, list) else []
+        m1_times = [stamp for row in m1_payload_rows
                     if (stamp := _timestamp_seconds(row)) is not None]
+        m5_times = [stamp for row in m5_payload_rows
+                    if (stamp := _timestamp_seconds(row)) is not None]
+        m1_duplicate_count = len(m1_times) - len(set(m1_times))
+        m5_duplicate_count = len(m5_times) - len(set(m5_times))
+        m1_future_count = sum(stamp > observed + 2.0 for stamp in m1_times)
+        m5_future_count = sum(stamp > observed + 2.0 for stamp in m5_times)
+        m1_closed = closed_candles(m1_payload_rows, 60, now=observed)
         m1_latest = max(m1_times) if m1_times else None
-        m1_age = max(0.0, observed - m1_latest) if m1_latest is not None else None
-        m5_closed = closed_candles(m5_rows, 300, now=observed)
+        m1_latest_closed = _timestamp_seconds(m1_closed[-1]) if m1_closed else None
+        m1_close_timestamp = m1_latest_closed + 60 if m1_latest_closed is not None else None
+        m1_age = max(0.0, observed - m1_close_timestamp) if m1_close_timestamp is not None else None
+        m1_forming_count = sum(stamp + 60 > observed + 1.0 for stamp in m1_times)
+        m5_closed = closed_candles(m5_payload_rows, 300, now=observed)
         m5_latest = _timestamp_seconds(m5_closed[-1]) if m5_closed else None
         m5_close_timestamp = m5_latest + 300 if m5_latest is not None else None
         m5_close_age = max(0.0, observed - m5_close_timestamp) if m5_close_timestamp is not None else None
         details[symbol] = {
             "m1_latest_timestamp": m1_latest,
+            "m1_latest_closed_timestamp": m1_latest_closed,
+            "m1_forming_count": m1_forming_count,
             "m1_age_seconds": m1_age,
+            "m1_duplicate_count": m1_duplicate_count,
+            "m5_duplicate_count": m5_duplicate_count,
+            "m1_future_count": m1_future_count,
+            "m5_future_count": m5_future_count,
             "m5_closed_count": len(m5_closed),
             "m5_latest_closed_timestamp": m5_latest,
             "m5_close_age_seconds": m5_close_age,
         }
+        if m1_duplicate_count:
+            errors.append(f"{symbol}:M1_DUPLICATE_TIMESTAMPS:{m1_duplicate_count}")
+        if m5_duplicate_count:
+            errors.append(f"{symbol}:M5_DUPLICATE_TIMESTAMPS:{m5_duplicate_count}")
+        if m1_future_count:
+            errors.append(f"{symbol}:M1_FUTURE_CANDLES:{m1_future_count}")
+        if m5_future_count:
+            errors.append(f"{symbol}:M5_FUTURE_CANDLES:{m5_future_count}")
         if m1_latest is None:
             errors.append(f"{symbol}:M1_MISSING")
+        elif m1_forming_count:
+            errors.append(f"{symbol}:M1_FORMING_CANDLES:{m1_forming_count}")
+        if m1_latest_closed is None:
+            errors.append(f"{symbol}:M1_NO_CLOSED_CANDLES")
         else:
-            m1_stamps.append(m1_latest)
-            if m1_latest > observed + 2:
-                errors.append(f"{symbol}:M1_FUTURE")
-            elif m1_age is not None and m1_age > float(max_m1_age_seconds):
+            m1_stamps.append(m1_close_timestamp)
+            if m1_age is not None and m1_age > float(max_m1_age_seconds):
                 errors.append(f"{symbol}:M1_STALE:{round(m1_age, 1)}s")
         if len(m5_closed) < int(min_m5_closed):
             errors.append(f"{symbol}:M5_CLOSED_INSUFFICIENT:{len(m5_closed)}<{int(min_m5_closed)}")
@@ -301,3 +402,114 @@ def snapshot_id(payload: Any) -> str:
     import hashlib, json
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+def validate_snapshot_envelope(payload: Any) -> dict[str, Any]:
+    """Validate batch identity and per-timeframe metadata without altering data.
+
+    This provider-neutral guard is intentionally side-effect free. Missing
+    optional metadata is tolerated; contradictory identity or coverage fails.
+    """
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return {"ok": False, "errors": ["SNAPSHOT_NOT_OBJECT"], "read_only": True}
+
+    requested = payload.get("requested_symbols")
+    collected = payload.get("collected_symbols")
+    data = payload.get("symbols")
+    if not isinstance(requested, list) or not requested:
+        errors.append("REQUESTED_SYMBOLS_INVALID")
+        requested = []
+    if not isinstance(collected, list) or not collected:
+        errors.append("COLLECTED_SYMBOLS_INVALID")
+        collected = []
+    if not isinstance(data, dict):
+        errors.append("SNAPSHOT_SYMBOL_MAP_INVALID")
+        data = {}
+
+    def canonical(value: Any) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip().upper().replace("/", "").replace("_OTC", "-OTC")
+
+    requested_keys = [canonical(item) for item in requested]
+    collected_keys = [canonical(item) for item in collected]
+    if any(item is None for item in requested_keys):
+        errors.append("REQUESTED_SYMBOL_INVALID")
+    if any(item is None for item in collected_keys):
+        errors.append("COLLECTED_SYMBOL_INVALID")
+    if len(set(requested_keys)) != len(requested_keys):
+        errors.append("REQUESTED_SYMBOLS_DUPLICATED")
+    if len(set(collected_keys)) != len(collected_keys):
+        errors.append("COLLECTED_SYMBOLS_DUPLICATED")
+    if requested_keys != collected_keys:
+        errors.append("REQUESTED_COLLECTED_SYMBOLS_MISMATCH")
+
+    map_keys = [canonical(key) for key in data]
+    if any(item is None for item in map_keys):
+        errors.append("SNAPSHOT_MAP_SYMBOL_INVALID")
+    if len(set(map_keys)) != len(map_keys):
+        errors.append("SNAPSHOT_MAP_SYMBOLS_COLLIDE")
+    if set(map_keys) != set(collected_keys):
+        errors.append("SNAPSHOT_MAP_COVERAGE_MISMATCH")
+
+    def interval_matches(value: Any, expected_seconds: int) -> bool:
+        if isinstance(value, bool):
+            return False
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return math.isfinite(parsed) and parsed.is_integer() and int(parsed) == expected_seconds
+
+    expected = {"m1": 60, "m5": 300}
+    for raw_symbol, pair in data.items():
+        symbol = canonical(raw_symbol) or str(raw_symbol)
+        if not isinstance(pair, dict):
+            errors.append(f"{symbol}:PAIR_PAYLOAD_INVALID")
+            continue
+        for key, interval in expected.items():
+            block = pair.get(key)
+            if block is None:
+                errors.append(f"{symbol}:{key.upper()}_PAYLOAD_MISSING")
+                continue
+            if not isinstance(block, dict):
+                errors.append(f"{symbol}:{key.upper()}_PAYLOAD_INVALID")
+                continue
+            for field in ("symbol", "symbol_requested"):
+                value = block.get(field)
+                if value is not None and canonical(value) != symbol:
+                    errors.append(f"{symbol}:{key.upper()}_{field.upper()}_MISMATCH")
+            raw_interval = block.get("interval_seconds")
+            if raw_interval is not None:
+                if not interval_matches(raw_interval, interval):
+                    errors.append(f"{symbol}:{key.upper()}_INTERVAL_MISMATCH")
+            aliases = {60: {"M1", "1M", "1MIN", "60", "60S"},
+                       300: {"M5", "5M", "5MIN", "300", "300S"}}
+            timeframe = block.get("timeframe")
+            if timeframe is not None:
+                if isinstance(timeframe, bool) or str(timeframe).strip().upper().replace(" ", "") not in aliases[interval]:
+                    errors.append(f"{symbol}:{key.upper()}_TIMEFRAME_MISMATCH")
+            rows = block.get("candles", [])
+            if not isinstance(rows, list):
+                errors.append(f"{symbol}:{key.upper()}_CANDLES_NOT_LIST")
+                continue
+            for index, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    errors.append(f"{symbol}:{key.upper()}_CANDLE_NOT_OBJECT:{index}")
+                    continue
+                row_symbol = row.get("symbol")
+                if row_symbol is not None and canonical(row_symbol) != symbol:
+                    errors.append(f"{symbol}:{key.upper()}_CANDLE_SYMBOL_MISMATCH:{index}")
+                row_interval = row.get("interval_seconds")
+                if row_interval is not None:
+                    if not interval_matches(row_interval, interval):
+                        errors.append(f"{symbol}:{key.upper()}_CANDLE_INTERVAL_MISMATCH:{index}")
+                row_timeframe = row.get("timeframe")
+                if row_timeframe is not None and (
+                    isinstance(row_timeframe, bool)
+                    or str(row_timeframe).strip().upper().replace(" ", "") not in aliases[interval]
+                ):
+                    errors.append(f"{symbol}:{key.upper()}_CANDLE_TIMEFRAME_MISMATCH:{index}")
+
+    return {"ok": not errors, "errors": errors, "read_only": True}
+

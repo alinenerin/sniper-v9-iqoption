@@ -31,6 +31,10 @@ def request_candles(symbol, interval, count):
         payload = json.load(response)
     if not isinstance(payload, dict):
         raise ValueError("INVALID_GATEWAY_PAYLOAD")
+    if payload.get("cache_used") is True or payload.get("cache_hit") is True:
+        raise RuntimeError("GATEWAY_CACHE_USED")
+    if payload.get("fresh") is False or payload.get("stale") is True:
+        raise RuntimeError("GATEWAY_REPORTED_STALE_DATA")
     rows = payload.get("candles") or []
     return payload, rows if isinstance(rows, list) else []
 
@@ -44,9 +48,15 @@ def valid_timestamp_rows(rows):
             ts = float(row.get("timestamp"))
             if not (ts == ts and abs(ts) != float("inf")):
                 continue
+            if ts > 10_000_000_000:
+                ts /= 1000.0
+            if ts <= 0:
+                continue
+            normalized = dict(row)
+            normalized["timestamp"] = ts
         except (TypeError, ValueError, OverflowError):
             continue
-        valid.append((ts, dict(row)))
+        valid.append((ts, normalized))
     return sorted(valid, key=lambda item: item[0])
 
 
@@ -61,6 +71,8 @@ for symbol in symbols:
     observed_m1 = time.time()
     m1_rows_sorted = valid_timestamp_rows(m1_rows)
     m1_closed = [(ts, row) for ts, row in m1_rows_sorted if ts + 60 <= observed_m1]
+    if len({ts for ts, _ in m1_rows_sorted}) != len(m1_rows_sorted):
+        raise RuntimeError(f"FINAL_TIMING_DUPLICATE_M1_TIMESTAMPS:{symbol}")
     if len(m1_rows_sorted) < 50:
         raise RuntimeError(f"FINAL_TIMING_INCOMPLETE_M1:{symbol}:{len(m1_rows_sorted)}")
     if not m1_closed:
@@ -106,7 +118,9 @@ for symbol in symbols:
     m5_age = max(0.0, observed_m5 - (latest_m5_ts + M5_INTERVAL_SECONDS)) if latest_m5_ts is not None else None
     m5_status = "ok"
     m5_reason = None
-    if m5_error and len(closed) < M5_MIN_CLOSED:
+    if len({ts for ts, _ in parsed}) != len(parsed):
+        m5_status, m5_reason = "blocked", "M5_DUPLICATE_CANDLE_TIMESTAMPS"
+    elif m5_error and len(closed) < M5_MIN_CLOSED:
         m5_status, m5_reason = "blocked", m5_error
     elif len(closed) < M5_MIN_CLOSED:
         m5_status, m5_reason = "blocked", f"M5_INCOMPLETE_CLOSED_CANDLES:{len(closed)}<{M5_MIN_CLOSED}"

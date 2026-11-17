@@ -1,10 +1,31 @@
 """Read-only dynamic sniper timing; no order or quote selection."""
 from __future__ import annotations
+import math
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 BRT = ZoneInfo("America/Sao_Paulo")
 TIMEFRAME_SECONDS = {"M1": 60, "M3": 180}
+
+def build_temporal_observation(epoch: float) -> dict:
+    """Describe the wall-clock observation inside its M3 bucket; never rank seconds."""
+    observed = float(epoch)
+    if not math.isfinite(observed) or observed <= 0:
+        raise ValueError("INVALID_OBSERVATION_EPOCH")
+    window_start = int(observed // 180) * 180
+    second_offset = int(observed - window_start)
+    return {
+        "observed_epoch": observed,
+        "observed_at_utc": datetime.fromtimestamp(observed, timezone.utc).isoformat(),
+        "observed_at_brt": datetime.fromtimestamp(observed, BRT).isoformat(),
+        "m3_window_start_timestamp": window_start,
+        "m3_window_end_timestamp": window_start + 180,
+        "second_within_m3_window": second_offset,
+        "clock_source": "system_wall_clock",
+        "selection_performed": False,
+        "read_only": True,
+    }
+
 
 def plan_sniper_window(epoch: float | None = None, timeframe: str = "M1", minimum_lead: int = 120,
                        expiration_timeframe: str | None = None) -> dict:

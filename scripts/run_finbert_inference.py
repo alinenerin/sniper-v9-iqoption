@@ -23,12 +23,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.symbol_selection import resolve_requested_symbols
+from market_data_contract import snapshot_id
+from shared_ai.agent_runtime import bounded_int_env, write_json_atomic
 
 MARKET_PATH = Path("reports/market_data.json")
 try:
-    MARKET_DATA = json.loads(MARKET_PATH.read_text())
+    loaded_market = json.loads(MARKET_PATH.read_text())
+    MARKET_DATA = loaded_market if isinstance(loaded_market, dict) else {}
 except (OSError, json.JSONDecodeError):
     MARKET_DATA = {}
+MARKET_SNAPSHOT_ID = snapshot_id(MARKET_DATA)
 SYMBOLS = resolve_requested_symbols(
     os.getenv("SYMBOLS", "EURUSD GBPUSD USDJPY AUDUSD"),
     (MARKET_DATA.get("symbols") or {}).keys(),
@@ -36,7 +40,7 @@ SYMBOLS = resolve_requested_symbols(
 )
 INCLUDE_OTC = os.getenv("INCLUDE_OTC", "false").lower() == "true"
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
-NEWS_LIMIT = max(1, min(int(os.getenv("FINNHUB_NEWS_LIMIT", "30")), 100))
+NEWS_LIMIT = bounded_int_env(os.getenv("FINNHUB_NEWS_LIMIT", "30"), 30, 1, 100)
 
 
 def _clean_text(value: Any) -> str:
@@ -213,16 +217,18 @@ def _fetch_forex_news() -> list[dict[str, Any]]:
 
 results: dict[str, dict[str, Any]] = {}
 
-classifier = (pipeline(
-    "text-classification",
-    model="ProsusAI/finbert",
-    tokenizer="ProsusAI/finbert",
-    top_k=None,
-) if pipeline is not None else None)
-
+classifier = None
 try:
-    if classifier is None:
-        raise RuntimeError("FINBERT_MODEL_UNAVAILABLE")
+    if pipeline is None:
+        raise RuntimeError("FINBERT_TRANSFORMERS_UNAVAILABLE")
+    # Model download/initialization can fail independently of the package import.
+    # Keep that failure inside the report contract instead of aborting before JSON.
+    classifier = pipeline(
+        "text-classification",
+        model="ProsusAI/finbert",
+        tokenizer="ProsusAI/finbert",
+        top_k=None,
+    )
     all_articles = _fetch_forex_news()
     fetch_error: str | None = None
 except Exception as exc:
@@ -302,25 +308,26 @@ if INCLUDE_OTC:
             "execution_allowed": False,
         }
 
-Path("reports").mkdir(exist_ok=True)
-report_status = "ok" if fetch_error is None else "degraded"
-Path("reports/finbert_inference.json").write_text(
-    json.dumps(
-        {
-            "status": report_status,
-            "purpose": "Free GDELT/Finnhub Forex news classified by FinBERT; OTC receives base-pair context only",
-            "provider": "GDELT+Finnhub",
-            "fetch_diagnostics": FETCH_DIAGNOSTICS,
-            "fetch_error": fetch_error,
-            "components": results,
-            "read_only": True,
-            "execution_allowed": False,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    + "\n"
+for item in results.values():
+    if isinstance(item, dict):
+        item.setdefault("snapshot_id", MARKET_SNAPSHOT_ID)
+
+report_status = "ok" if fetch_error is None and any(item.get("status") == "inference_ok" for item in results.values()) else "degraded"
+write_json_atomic(
+    "reports/finbert_inference.json",
+    {
+        "status": report_status,
+        "purpose": "Free GDELT/Finnhub Forex news classified by FinBERT; OTC receives base-pair context only",
+        "provider": "GDELT+Finnhub",
+        "fetch_diagnostics": FETCH_DIAGNOSTICS,
+        "fetch_error": fetch_error,
+        "components": results,
+        "snapshot_id": MARKET_SNAPSHOT_ID,
+        "read_only": True,
+        "execution_allowed": False,
+    },
 )
+
 print(
     "finbert_inference_complete",
     len(results),
