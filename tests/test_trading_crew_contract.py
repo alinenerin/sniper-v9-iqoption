@@ -106,5 +106,29 @@ class TradingCrewContract(unittest.TestCase):
                 os.chdir(original_cwd)
 
 
+    def test_artifact_provenance_blocks_missing_and_mismatched_snapshot(self):
+        components = {
+            "darts": {"status": "inference_ok", "snapshot_id": "old-snapshot"},
+            "timesfm": {"status": "inference_ok"},
+            "xgboost": {"status": "inference_ok", "snapshot_id": "current-snapshot"},
+            "finbert": {"status": "inference_ok", "snapshot_id": "news-context-snapshot"},
+            "smc": {"status": "inference_ok", "snapshot_id": "current-snapshot"},
+        }
+        validated = SharedAI._validate_artifact_provenance(components, "current-snapshot")
+        self.assertEqual(validated["darts"]["status"], "blocked")
+        self.assertEqual(validated["darts"]["reason"], "ARTIFACT_SNAPSHOT_MISSING_OR_MISMATCH")
+        self.assertEqual(validated["timesfm"]["status"], "blocked")
+        self.assertEqual(validated["xgboost"]["status"], "inference_ok")
+        self.assertEqual(validated["finbert"]["status"], "blocked")
+        self.assertEqual(validated["smc"]["status"], "inference_ok")
+        # The input mapping remains untouched; advisory mismatch is local.
+        self.assertEqual(components["darts"]["status"], "inference_ok")
+
+    def test_artifact_provenance_fails_closed_without_expected_snapshot(self):
+        components = {"darts": {"status": "inference_ok", "snapshot_id": "snap-1"}}
+        validated = SharedAI._validate_artifact_provenance(components, None)
+        self.assertEqual(validated["darts"]["status"], "blocked")
+
+
 if __name__ == "__main__":
     unittest.main()
