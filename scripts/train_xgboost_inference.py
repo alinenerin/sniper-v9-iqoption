@@ -6,6 +6,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Run a stdlib-only integrity gate before importing ML dependencies or creating
+# any model artifact. The current source is blocked while known dataset defects
+# remain present.
+from scripts.dataset_integrity_guard import audit_xgboost_source, blocked_report
+
+_SOURCE_AUDIT = audit_xgboost_source(Path(__file__).read_text(encoding="utf-8"))
+if not _SOURCE_AUDIT["ok"]:
+    Path("reports").mkdir(exist_ok=True)
+    Path("reports/xgboost_inference.json").write_text(
+        json.dumps(blocked_report(_SOURCE_AUDIT), indent=2) + "\\n",
+        encoding="utf-8",
+    )
+    print("xgboost_inference_blocked_dataset_integrity", *_SOURCE_AUDIT["blockers"])
+    raise SystemExit(0)
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
