@@ -92,6 +92,18 @@ def inspect_rows(rows):
         self.assertEqual(audit["rows_with_later_observation"], 1)
         self.assertEqual(audit["terminal_rows_without_later_observation"], 1)
 
+    def test_candle_audit_accepts_contract_timestamp_aliases(self):
+        rows = [
+            {"from": 1_700_000_000},
+            {"time": 1_700_000_060},
+        ]
+
+        audit = audit_candle_rows(rows)
+
+        self.assertTrue(audit["ok"])
+        self.assertEqual(audit["valid_timestamps"], 2)
+        self.assertEqual(audit["rows_with_later_observation"], 1)
+
     def test_candle_audit_blocks_duplicate_and_out_of_order_timestamps(self):
         rows = [
             {"timestamp": 100},
