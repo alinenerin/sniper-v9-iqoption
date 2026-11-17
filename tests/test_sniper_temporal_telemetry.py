@@ -210,6 +210,36 @@ class TemporalObservationTests(unittest.TestCase):
             self.assertEqual(report["missing_temporal_observation_count"], 0)
             self.assertEqual(report["report_integrity_status"], "invalid")
 
+    def test_report_integrity_fails_when_observation_does_not_match_emission_time(self):
+        import json
+        observation_epoch = 1800000023.4
+        emitted_at = datetime.fromtimestamp(observation_epoch + 1.0, timezone.utc)
+        event = {
+            "event_id": "event-clock-mismatch",
+            "symbol": "EURUSD",
+            "signal_emitted": True,
+            "emitted_at_utc": emitted_at.isoformat(),
+            "temporal_observation": build_temporal_observation(observation_epoch),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "live_signals.jsonl").write_text(
+                json.dumps(event) + "\\n", encoding="utf-8"
+            )
+            report = write_timing_report(
+                reports_dir=directory,
+                started_epoch=1800000000,
+                started_at_utc="2027-01-15T08:00:00+00:00",
+                pair_timings=[],
+                market_data={"fetch_mode": "offline_test"},
+                run_id="observation-emission-mismatch-test",
+            )
+            self.assertEqual(report["temporal_observation_invalid_count"], 1)
+            self.assertEqual(
+                report["temporal_observations"][0]["validation_errors"],
+                ["OBSERVATION_EMISSION_TIMESTAMP_MISMATCH"],
+            )
+            self.assertEqual(report["report_integrity_status"], "invalid")
+
     def test_emitted_read_only_event_contains_temporal_observation(self):
         analysis = {
             "market": "binary",
