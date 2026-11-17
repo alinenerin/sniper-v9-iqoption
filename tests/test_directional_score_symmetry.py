@@ -56,26 +56,62 @@ class DirectionalTechnicalCoreTest(unittest.TestCase):
         self.assertEqual(flat, 50.0)
         self.assertIsNone(flat_detail["aligned"])
 
-    def test_explicit_blocked_smc_vsa_states_are_not_counted_as_evidence(self):
+    def test_explicit_blocked_unknown_and_incomplete_smc_vsa_states_are_excluded(self):
         cases = (
-            ({"status": "blocked", "reason": "INPUT_NOT_READY"}, "SMC_ERROR:"),
-            ({"status": "failed", "reason": "MODEL_FAILURE"}, "VSA_ERROR:"),
-            ({"status": "unavailable", "reason": "SOURCE_MISSING"}, "SMC_ERROR:"),
-            ({"reason": "VSA_ERROR:RuntimeError"}, "VSA_ERROR:"),
-            (None, "SMC_ERROR:"),
+            ({"fvg": 0, "bos": 0, "direction": "NEUTRAL", "status": "blocked"}, "SMC_ERROR:", ("fvg", "bos", "direction")),
+            ({"anomaly": False, "rel_vol": 1.0, "status": "failed"}, "VSA_ERROR:", ("anomaly", "rel_vol")),
+            ({"fvg": 0, "bos": 0, "direction": "NEUTRAL", "status": "pending"}, "SMC_ERROR:", ("fvg", "bos", "direction")),
+            ({"anomaly": False, "rel_vol": 1.0, "status": "unknown"}, "VSA_ERROR:", ("anomaly", "rel_vol")),
+            ({"fvg": 0, "direction": "CALL"}, "SMC_ERROR:", ("fvg", "bos", "direction")),
+            ({"reason": "VSA_ERROR:RuntimeError"}, "VSA_ERROR:", ("anomaly", "rel_vol")),
+            (None, "SMC_ERROR:", ("fvg", "bos", "direction")),
+            ({}, "VSA_ERROR:", ("anomaly", "rel_vol")),
         )
-        for details, error_prefix in cases:
+        for details, error_prefix, required_fields in cases:
             with self.subTest(details=details, error_prefix=error_prefix):
                 self.assertEqual(
-                    SupremeIntelligence._evidence_component_status(details, error_prefix),
+                    SupremeIntelligence._evidence_component_status(details, error_prefix, required_fields),
                     "blocked",
                 )
 
     def test_successful_smc_vsa_details_remain_available_without_status_field(self):
         self.assertEqual(
-            SupremeIntelligence._evidence_component_status({"reason": "STRUCTURE_CONFIRMED"}, "SMC_ERROR:"),
+            SupremeIntelligence._evidence_component_status(
+                {"fvg": 0, "bos": 1, "direction": "CALL"}, "SMC_ERROR:",
+                ("fvg", "bos", "direction"),
+            ),
             "inference_ok",
         )
+        self.assertEqual(
+            SupremeIntelligence._evidence_component_status(
+                {"anomaly": False, "rel_vol": 1.2}, "VSA_ERROR:",
+                ("anomaly", "rel_vol"),
+            ),
+            "inference_ok",
+        )
+
+    def test_shared_component_status_requires_complete_smc_vsa_contracts(self):
+        status = SharedAI._component_status(
+            {
+                "symbol": "EURUSD",
+                "smc": {"fvg": 0, "bos": 1, "direction": "CALL"},
+                "vsa": {"anomaly": False, "rel_vol": 1.2},
+            },
+            {},
+        )
+        self.assertEqual(status["smc"]["status"], "inference_ok")
+        self.assertEqual(status["vsa"]["status"], "inference_ok")
+
+        for key, invalid in (
+            ("smc", {"fvg": 0, "direction": "CALL"}),
+            ("vsa", {"anomaly": False, "rel_vol": 1.2, "status": "pending"}),
+        ):
+            with self.subTest(key=key, invalid=invalid):
+                candidate = {"symbol": "EURUSD", "smc": {"fvg": 0, "bos": 0, "direction": "NEUTRAL"},
+                             "vsa": {"anomaly": False, "rel_vol": 1.0}}
+                candidate[key] = invalid
+                result = SharedAI._component_status(candidate, {})
+                self.assertEqual(result[key]["status"], "blocked")
 
     @staticmethod
     def realignment_fixture(smc=None):
