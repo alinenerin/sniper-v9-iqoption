@@ -1,6 +1,7 @@
 import unittest
 from market_data_contract import (aggregate_m1_to_m3, closed_candles,
-                                  freshness, validate_candles, validate_snapshot_freshness)
+                                  freshness, normalize_and_validate, validate_candles,
+                                  validate_snapshot_freshness)
 
 
 def candle(t=1700000000):
