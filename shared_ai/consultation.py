@@ -360,6 +360,18 @@ class SharedAI:
         times_report=report_status("timesfm_inference.json", symbol)
         finbert_report=report_status("finbert_inference.json", symbol)
         xgb_report=report_status("xgboost_inference.json", symbol)
+        def chart_status(details: Any, error_prefix: str, required_fields: tuple[str, ...]) -> str:
+            if not isinstance(details, dict):
+                return "blocked"
+            status = str(details.get("status", "")).strip().lower()
+            reason = str(details.get("reason", ""))
+            accepted = {"", "ok", "success", "inference_ok", "executed", "completed"}
+            if status not in accepted or reason.startswith(error_prefix):
+                return "blocked"
+            if any(field not in details or details[field] is None for field in required_fields):
+                return "blocked"
+            return "inference_ok"
+
         components = {
             "darts": {"status": darts_report.get("status", "inference_ok" if darts_available else "blocked"),
                       "snapshot_id": darts_report.get("snapshot_id"),
@@ -389,24 +401,12 @@ class SharedAI:
                              "reason": (advisory.get("cycle_catalog") or {}).get("reason"),
                              "read_only": True},
             "smc": {
-                "status": (
-                    "blocked"
-                    if not isinstance(analysis.get("smc"), dict)
-                    or str((analysis.get("smc") or {}).get("reason", "")).startswith("SMC_ERROR:")
-                    or str((analysis.get("smc") or {}).get("status", "")).lower() in {"blocked", "error", "failed", "unavailable"}
-                    else "inference_ok"
-                ),
+                "status": chart_status(analysis.get("smc"), "SMC_ERROR:", ("fvg", "bos", "direction")),
                 "reason": ((analysis.get("smc") or {}).get("reason")
                            if isinstance(analysis.get("smc"), dict) else "SMC_NOT_RUN"),
             },
             "vsa": {
-                "status": (
-                    "blocked"
-                    if not isinstance(analysis.get("vsa"), dict)
-                    or str((analysis.get("vsa") or {}).get("reason", "")).startswith("VSA_ERROR:")
-                    or str((analysis.get("vsa") or {}).get("status", "")).lower() in {"blocked", "error", "failed", "unavailable"}
-                    else "inference_ok"
-                ),
+                "status": chart_status(analysis.get("vsa"), "VSA_ERROR:", ("anomaly", "rel_vol")),
                 "reason": ((analysis.get("vsa") or {}).get("reason")
                            if isinstance(analysis.get("vsa"), dict) else "VSA_NOT_RUN"),
             },
