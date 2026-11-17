@@ -223,7 +223,7 @@ class TemporalObservationTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "live_signals.jsonl").write_text(
-                json.dumps(event) + "\\n", encoding="utf-8"
+                json.dumps(event) + "\n", encoding="utf-8"
             )
             report = write_timing_report(
                 reports_dir=directory,
