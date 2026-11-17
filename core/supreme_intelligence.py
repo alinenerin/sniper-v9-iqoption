@@ -73,6 +73,19 @@ class SupremeIntelligence:
         })
         return round(max(0.0, min(100.0, float(score))), 4), details
 
+    @staticmethod
+    def _evidence_component_status(details, error_prefix):
+        """Return blocked for explicit unavailable states or component errors."""
+        if not isinstance(details, dict):
+            return "blocked"
+        status = str(details.get("status", "")).strip().lower()
+        reason = str(details.get("reason", ""))
+        if status in {"blocked", "error", "failed", "unavailable"}:
+            return "blocked"
+        if reason.startswith(error_prefix):
+            return "blocked"
+        return "inference_ok"
+
     def get_full_analysis(self, ohlcv_df):
         """
         Pipeline Completo: Camada 0 → Camada 1 → Camada 2 → Score
@@ -158,8 +171,8 @@ class SupremeIntelligence:
             smc_direction, ohlcv_df["close"],
         )
 
-        smc_status = "blocked" if str(smc_details.get("reason", "")).startswith("SMC_ERROR:") else "inference_ok"
-        vsa_status = "blocked" if str(vsa_details.get("reason", "")).startswith("VSA_ERROR:") else "inference_ok"
+        smc_status = self._evidence_component_status(smc_details, "SMC_ERROR:")
+        vsa_status = self._evidence_component_status(vsa_details, "VSA_ERROR:")
         score_parts = [
             ("technical_core", technical_core, TRADING_CONFIG.technical_core_weight),
         ]
