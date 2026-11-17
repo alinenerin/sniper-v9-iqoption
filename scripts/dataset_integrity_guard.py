@@ -153,10 +153,10 @@ def audit_candle_rows(
 ) -> dict[str, Any]:
     """Audit one symbol's candle rows without sorting, repairing, or labeling.
 
-    Millisecond timestamps are normalized to seconds for comparison. A row is
-    counted as having a later observation only when the next input row has a
-    strictly greater timestamp. The terminal row is therefore never treated
-    as having a future observation.
+    Millisecond timestamps are normalized to seconds for comparison. The
+    timestamp aliases match market_data_contract.normalize_and_validate().
+    A row has a later observation only when the next input row has a strictly
+    greater timestamp; the terminal row is never treated as having one.
     """
     if not isinstance(rows, list):
         return {
@@ -189,6 +189,10 @@ def audit_candle_rows(
             continue
 
         raw = row.get(timestamp_field)
+        if raw is None and timestamp_field == "timestamp":
+            raw = row.get("from")
+            if raw is None:
+                raw = row.get("time")
         if isinstance(raw, bool) or raw is None:
             invalid += 1
             normalized.append(None)
