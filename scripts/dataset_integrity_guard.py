@@ -146,6 +146,60 @@ def audit_xgboost_source(source: str) -> dict[str, Any]:
     return {"ok": not blockers, "blockers": blockers, "read_only": True}
 
 
+def build_next_close_labels(closes: Any) -> list[tuple[int, int]]:
+    """Return (row index, binary label) only where a next close exists."""
+    if not isinstance(closes, (list, tuple)):
+        raise ValueError("CLOSES_NOT_SEQUENCE")
+    values: list[float] = []
+    for index, raw in enumerate(closes):
+        if isinstance(raw, bool):
+            raise ValueError(f"INVALID_CLOSE:{index}")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"INVALID_CLOSE:{index}") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"INVALID_CLOSE:{index}")
+        values.append(value)
+    return [(index, int(values[index + 1] > close))
+            for index, close in enumerate(values[:-1])]
+
+
+def chronological_split_boundary(
+    timestamps: Any, train_fraction: float = 0.8
+) -> float:
+    """Return first holdout timestamp, keeping equal-time rows together."""
+    if not isinstance(timestamps, (list, tuple)) or len(timestamps) < 2:
+        raise ValueError("INSUFFICIENT_DISTINCT_TIMESTAMPS")
+    if isinstance(train_fraction, bool):
+        raise ValueError("INVALID_TRAIN_FRACTION")
+    try:
+        fraction = float(train_fraction)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("INVALID_TRAIN_FRACTION") from exc
+    if not math.isfinite(fraction) or not 0 < fraction < 1:
+        raise ValueError("INVALID_TRAIN_FRACTION")
+
+    normalized: list[float] = []
+    for index, raw in enumerate(timestamps):
+        if isinstance(raw, bool):
+            raise ValueError(f"INVALID_TIMESTAMP:{index}")
+        try:
+            stamp = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"INVALID_TIMESTAMP:{index}") from exc
+        if not math.isfinite(stamp) or stamp <= 0:
+            raise ValueError(f"INVALID_TIMESTAMP:{index}")
+        if stamp > 10_000_000_000:
+            stamp /= 1000.0
+        normalized.append(stamp)
+    unique = sorted(set(normalized))
+    split_index = int(len(unique) * fraction)
+    if split_index <= 0 or split_index >= len(unique):
+        raise ValueError("INSUFFICIENT_CHRONOLOGICAL_PARTITIONS")
+    return unique[split_index]
+
+
 def audit_candle_rows(
     rows: Any,
     *,

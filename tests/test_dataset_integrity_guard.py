@@ -12,6 +12,8 @@ from dataset_integrity_guard import (
     audit_candle_rows,
     audit_xgboost_source,
     blocked_report,
+    build_next_close_labels,
+    chronological_split_boundary,
 )
 
 
@@ -19,12 +21,34 @@ RUNNER = ROOT / "scripts" / "train_xgboost_inference.py"
 
 
 class DatasetIntegrityGuardTests(unittest.TestCase):
-    def test_current_runner_is_blocked_for_both_known_integrity_defects(self):
+    def test_runner_source_passes_known_integrity_pattern_guard(self):
         audit = audit_xgboost_source(RUNNER.read_text(encoding="utf-8"))
 
+        self.assertTrue(audit["ok"], audit["blockers"])
+        self.assertEqual(audit["blockers"], [])
+
+    def test_invalid_interval_configuration_fails_closed_without_raising(self):
+        for interval, tolerance in [(True, 2), (60, "bad"), (None, "bad")]:
+            with self.subTest(interval=interval, tolerance=tolerance):
+                audit = audit_candle_rows(
+                    [{"timestamp": 1_700_000_000}],
+                    interval_seconds=interval,
+                    interval_tolerance_seconds=tolerance,
+                )
+                self.assertFalse(audit["ok"])
+                self.assertIn("INVALID_EXPECTED_INTERVAL_CONFIGURATION", audit["errors"])
+
+    def test_tolerated_terminal_row_is_not_an_integrity_failure(self):
+        labels = build_next_close_labels([10, 11, 10])
+        self.assertEqual(labels, [(0, 1), (1, 0)])
+        self.assertEqual(chronological_split_boundary([1, 2, 3, 4, 1, 2, 3, 4], .5), 3.0)
+
+    def test_interval_configuration_rejects_non_integral_interval(self):
+        audit = audit_candle_rows(
+            [{"timestamp": 1_700_000_000}], interval_seconds=60.5,
+        )
         self.assertFalse(audit["ok"])
-        self.assertIn("TERMINAL_OBSERVATION_CAST_TO_CLASS_ZERO", audit["blockers"])
-        self.assertIn("GLOBAL_POSITIONAL_SPLIT_MAY_LEAK_TIME_ORDER", audit["blockers"])
+        self.assertIn("INVALID_EXPECTED_INTERVAL_CONFIGURATION", audit["errors"])
 
     def test_blocked_report_is_read_only_and_contains_no_model_output(self):
         audit = {
@@ -45,6 +69,19 @@ class DatasetIntegrityGuardTests(unittest.TestCase):
         self.assertTrue(report["read_only"])
         self.assertNotIn("probability_up", report)
         self.assertNotIn("direction", report)
+
+    def test_invalid_interval_configuration_fails_closed_without_raising(self):
+        for interval, tolerance in [(True, 2), (60, "bad"), (None, "bad")]:
+            with self.subTest(interval=interval, tolerance=tolerance):
+                audit = audit_candle_rows([{"timestamp": 1_700_000_000}],
+                    interval_seconds=interval, interval_tolerance_seconds=tolerance)
+                self.assertFalse(audit["ok"])
+                self.assertIn("INVALID_EXPECTED_INTERVAL_CONFIGURATION", audit["errors"])
+
+    def test_terminal_row_is_not_assigned_a_training_label(self):
+        labels = build_next_close_labels([10, 11, 10])
+        self.assertEqual(labels, [(0, 1), (1, 0)])
+        self.assertEqual(chronological_split_boundary([1, 2, 3, 4, 1, 2, 3, 4], .5), 3.0)
 
     def test_unrelated_safe_source_has_no_known_blockers(self):
         source = """
@@ -157,18 +194,6 @@ def inspect_rows(rows):
         self.assertFalse(audit["ok"])
         self.assertEqual(audit["status"], "blocked")
         self.assertIn("INVALID_EXPECTED_INTERVAL_CONFIGURATION", audit["errors"])
-
-    def test_candle_audit_fails_closed_on_malformed_interval_configuration(self):
-        rows = [{"timestamp": 1_700_000_000}, {"timestamp": 1_700_000_060}]
-
-        invalid_tolerance = audit_candle_rows(rows, interval_seconds=60, interval_tolerance_seconds="bad")
-        fractional_interval = audit_candle_rows(rows, interval_seconds=60.5)
-        boolean_interval = audit_candle_rows(rows, interval_seconds=True)
-
-        for audit in (invalid_tolerance, fractional_interval, boolean_interval):
-            self.assertFalse(audit["ok"])
-            self.assertEqual(audit["status"], "blocked")
-            self.assertIn("INVALID_EXPECTED_INTERVAL_CONFIGURATION", audit["errors"])
 
     def test_candle_audit_blocks_invalid_timestamps_and_non_list_input(self):
         invalid_rows = [

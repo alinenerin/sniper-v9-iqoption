@@ -1,42 +1,18 @@
-"""Synthetic, offline audit for XGBoost dataset-integrity defects.
-
-This module intentionally does not train, evaluate, serialize, or invoke a model.
-It reproduces two data-integrity failure modes using tiny in-memory fixtures and
-binds the audit to the current source patterns in the XGBoost runner.
-"""
+"""Synthetic regression tests for XGBoost temporal dataset integrity."""
 from __future__ import annotations
 
 import ast
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from dataset_integrity_guard import (
+    audit_xgboost_source, build_next_close_labels, chronological_split_boundary,
+)
+
 SCRIPT = ROOT / "scripts" / "train_xgboost_inference.py"
-
-
-def emulate_current_next_candle_labels(closes: list[float]) -> tuple[list[int], list[bool]]:
-    """Reproduce the current comparison/cast behavior without pandas or a model."""
-    labels: list[int] = []
-    has_future: list[bool] = []
-    for index, close in enumerate(closes):
-        next_close = closes[index + 1] if index + 1 < len(closes) else None
-        has_future.append(next_close is not None)
-        # The current implementation effectively casts a missing comparison to 0.
-        labels.append(int(next_close is not None and next_close > close))
-    return labels, has_future
-
-
-def emulate_symbol_concatenation_split(
-    symbol_timestamps: dict[str, list[int]], train_fraction: float = 0.8
-) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
-    """Reproduce concatenation in symbol order followed by a positional split."""
-    rows = [
-        (symbol, timestamp)
-        for symbol, timestamps in symbol_timestamps.items()
-        for timestamp in timestamps
-    ]
-    split = int(len(rows) * train_fraction)
-    return rows[:split], rows[split:]
 
 
 class XGBoostDatasetIntegrityAuditTests(unittest.TestCase):
@@ -44,57 +20,31 @@ class XGBoostDatasetIntegrityAuditTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.source = SCRIPT.read_text(encoding="utf-8")
 
-    def test_terminal_observation_without_future_candle_is_invalid_not_class_zero(self):
-        closes = [100.0, 101.0, 99.0]
-        labels, has_future = emulate_current_next_candle_labels(closes)
+    def test_terminal_observation_is_unlabeled(self):
+        labels = build_next_close_labels([100.0, 101.0, 99.0])
+        self.assertEqual(labels, [(0, 1), (1, 0)])
+        self.assertNotIn(2, [index for index, _ in labels])
 
-        self.assertEqual(labels, [1, 0, 0])
-        self.assertEqual(has_future, [True, True, False])
-        self.assertFalse(has_future[-1])
-        self.assertEqual(labels[-1], 0)
+    def test_chronological_split_keeps_symbols_at_common_time_together(self):
+        timestamps = [1, 2, 3, 4, 1, 2, 3, 4]
+        boundary = chronological_split_boundary(timestamps, .5)
+        train = [stamp for stamp in timestamps if stamp < boundary]
+        holdout = [stamp for stamp in timestamps if stamp >= boundary]
+        self.assertEqual(max(train), 2)
+        self.assertEqual(min(holdout), 3)
 
-        # The audit verdict is BLOCKED because the final row has no target horizon.
-        audit_status = "BLOCKED" if not has_future[-1] else "CLEAR"
-        self.assertEqual(audit_status, "BLOCKED")
-
-    def test_symbol_concatenation_can_put_later_training_rows_before_earlier_holdout_rows(self):
-        fixtures = {
-            "AAA": [1, 2, 3, 4],
-            "BBB": [1, 2, 3, 4],
-        }
-        train_rows, holdout_rows = emulate_symbol_concatenation_split(fixtures)
-
-        self.assertEqual(len(train_rows), 6)
-        self.assertEqual(len(holdout_rows), 2)
-        latest_train_timestamp = max(timestamp for _, timestamp in train_rows)
-        earliest_holdout_timestamp = min(timestamp for _, timestamp in holdout_rows)
-        self.assertGreater(latest_train_timestamp, earliest_holdout_timestamp)
-
-        # A global chronological split would require this invariant.
-        audit_status = (
-            "BLOCKED"
-            if latest_train_timestamp > earliest_holdout_timestamp
-            else "CLEAR"
-        )
-        self.assertEqual(audit_status, "BLOCKED")
-
-    def test_audit_is_bound_to_the_two_current_source_patterns(self):
-        self.assertIn(
-            "f['target']=(close.shift(-1)>close).astype(int)",
-            self.source,
-        )
-        self.assertIn(
-            "data=pd.concat(all_rows).reset_index(drop=True)",
-            self.source,
-        )
-        self.assertIn("split=int(len(data)*0.8)", self.source)
+    def test_runner_has_no_known_unsafe_source_patterns(self):
+        self.assertTrue(audit_xgboost_source(self.source)["ok"])
+        self.assertIn("build_next_close_labels", self.source)
+        self.assertIn("chronological_split_boundary", self.source)
+        self.assertIn('data["target_timestamp"] < split_timestamp', self.source)
+        self.assertIn('data["timestamp"] >= split_timestamp', self.source)
 
     def test_audit_does_not_import_or_call_model_training_or_inference(self):
-        audit_tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
         imported_modules: list[str] = []
         called_names: list[str] = []
-
-        for node in ast.walk(audit_tree):
+        for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imported_modules.extend(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
@@ -104,7 +54,6 @@ class XGBoostDatasetIntegrityAuditTests(unittest.TestCase):
                     called_names.append(node.func.id)
                 elif isinstance(node.func, ast.Attribute):
                     called_names.append(node.func.attr)
-
         self.assertFalse(any("xgboost" in name.lower() for name in imported_modules))
         self.assertFalse(any("pickle" in name.lower() for name in imported_modules))
         self.assertFalse(any(name in {"fit", "predict_proba", "dump"} for name in called_names))

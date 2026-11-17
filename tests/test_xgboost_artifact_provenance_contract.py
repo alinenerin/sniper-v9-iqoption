@@ -40,15 +40,15 @@ class XGBoostArtifactProvenanceContractTests(unittest.TestCase):
 
     def test_runner_uses_aggregate_status_for_root_artifact(self):
         self.assertIn("overall_status = aggregate_component_status(results)", self.source)
-        self.assertIn("'status':overall_status", self.source)
+        self.assertIn('"status": overall_status', self.source)
 
     def test_snapshot_id_is_preserved_for_success_and_blocked_components(self):
         self.assertIn("MARKET_SNAPSHOT_ID = snapshot_id(market)", self.source)
-        self.assertIn("'snapshot_id':MARKET_SNAPSHOT_ID", self.source)
-        self.assertIn("item.setdefault('snapshot_id', MARKET_SNAPSHOT_ID)", self.source)
+        self.assertIn('"snapshot_id": MARKET_SNAPSHOT_ID', self.source)
+        self.assertIn('item.setdefault("snapshot_id", MARKET_SNAPSHOT_ID)', self.source)
 
     def test_script_remains_read_only_at_report_boundary(self):
-        self.assertIn("'read_only':True", self.source)
+        self.assertIn('"read_only": True', self.source)
         self.assertTrue(any(
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
