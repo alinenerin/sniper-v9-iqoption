@@ -849,8 +849,14 @@ def _analyse_with_fetch_status(market: str, symbol: str, symbol_data: dict[str, 
                                market_snapshot_id: str | None = None) -> dict[str, Any]:
     """Keep failed market-data pairs explicitly blocked in the final report."""
     fetch_status = symbol_data.get("fetch_status") if isinstance(symbol_data, dict) else None
-    if isinstance(fetch_status, dict) and fetch_status.get("status") == "blocked":
-        reason = str(fetch_status.get("reason") or "GATEWAY_FETCH_FAILED")
+    if (not isinstance(fetch_status, dict)
+            or fetch_status.get("status") != "ok"
+            or fetch_status.get("blocked") is True):
+        reason = str(
+            (fetch_status or {}).get("reason")
+            or ("GATEWAY_FETCH_FAILED" if isinstance(fetch_status, dict)
+                else "GATEWAY_FETCH_STATUS_MISSING")
+        )
         result = _analyse(market, symbol, [], observed_at, final_timing,
                           [], market_snapshot_id)
         result["reason"] = reason
