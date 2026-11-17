@@ -93,10 +93,18 @@ def _has_positional_split_after_concat(tree: ast.AST) -> bool:
             continue
         if not node.value.args:
             continue
-        expression = ast.dump(node.value.args[0])
-        if "len(data)" in ast.unparse(node.value.args[0]) and (
-            isinstance(node.value.args[0], ast.BinOp)
-            and isinstance(node.value.args[0].op, ast.Mult)
+        split_expression = node.value.args[0]
+        has_len_data = any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "len"
+            and child.args
+            and isinstance(child.args[0], ast.Name)
+            and child.args[0].id == "data"
+            for child in ast.walk(split_expression)
+        )
+        if has_len_data and isinstance(split_expression, ast.BinOp) and isinstance(
+            split_expression.op, ast.Mult
         ):
             has_fractional_len_split = True
 
@@ -105,7 +113,8 @@ def _has_positional_split_after_concat(tree: ast.AST) -> bool:
             continue
         if not isinstance(node.value, ast.Attribute) or node.value.attr != "iloc":
             continue
-        if "split" in ast.unparse(node.slice):
+        if any(isinstance(child, ast.Name) and child.id == "split"
+               for child in ast.walk(node.slice)):
             has_iloc_split = True
 
     return has_concat and has_fractional_len_split and has_iloc_split
