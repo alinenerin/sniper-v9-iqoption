@@ -103,6 +103,7 @@ jobs:
         if: github.event.inputs.sniper_mode == 'true'
         run: python scripts/sniper_mode.py
       - uses: actions/setup-python@v5
+        if: github.event.inputs.technical_test_mode != 'true'
         with:
           python-version: '3.11'
           cache: pip
