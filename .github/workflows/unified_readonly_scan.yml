@@ -286,7 +286,7 @@ jobs:
         if: github.event.inputs.technical_test_mode == 'true'
         run: python -m py_compile scripts/fetch_technical_test_data.py scripts/technical_test_mode.py
       - name: Refresh final M1/M5 timing without replacing agent evidence
-        if: success()
+        if: success() && github.event.inputs.technical_test_mode != 'true'
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
           FAST_TRIAGE: 'true'

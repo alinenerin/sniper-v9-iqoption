@@ -4,6 +4,7 @@ import unittest
 import sys
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -78,6 +79,25 @@ class TechnicalTestModeTests(unittest.TestCase):
         self.assertIsNone(result.get("score"))
         self.assertEqual(result["components"]["xgboost"]["status"], "blocked")
         self.assertEqual(result["components"]["timesfm"]["status"], "blocked")
+
+    def test_verified_live_stream_snapshot_is_accepted_and_stale_stream_is_blocked(self):
+        timing = _valid_timing("EURUSD")
+        for key in ("m1", "m5"):
+            timing[key].update({"source": "IQ_OPTION_DIRECT_LIVE_STREAM_BUFFER",
+                                 "cache_used": True, "provider_cache_used": True,
+                                 "stream_fresh": True, "stream_update_age_seconds": 5})
+        result = analyze_symbol("EURUSD", timing, now=NOW)
+        self.assertEqual(result["status"], "test_candidate")
+        self.assertEqual(result["data"]["m1_source"], "IQ_OPTION_DIRECT_LIVE_STREAM_BUFFER")
+        stale = _valid_timing("EURUSD")
+        for key in ("m1", "m5"):
+            stale[key].update({"source": "IQ_OPTION_DIRECT_LIVE_STREAM_BUFFER",
+                               "cache_used": True, "provider_cache_used": True,
+                               "stream_fresh": True, "stream_update_age_seconds": 5})
+        stale["m1"]["stream_update_age_seconds"] = 91
+        blocked = analyze_symbol("EURUSD", stale, now=NOW)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertIn("M1_LIVE_STREAM_STALE", blocked["reason"])
 
     def test_stale_m1_fails_closed(self):
         timing = _valid_timing("EURUSD")
@@ -179,23 +199,47 @@ class TechnicalTestModeTests(unittest.TestCase):
         import urllib.parse
         from unittest.mock import patch
         script = ROOT / "scripts/fetch_technical_test_data.py"
-        symbols = " ".join(("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
-                             "USDCHF", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY"))
+        symbols = ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
+                   "USDCHF", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY")
         class Response:
             def __init__(self, payload): self.payload = payload
             def __enter__(self): return self
             def __exit__(self, *args): return False
             def read(self): return json.dumps(self.payload).encode()
+        now = time.time()
+        stream_symbols = {}
+        for symbol in symbols:
+            pair = {}
+            for key, interval, count in (("m1", 60, 1000), ("m5", 300, 30)):
+                anchor = int(now // interval) * interval - interval
+                rows = [{"timestamp": anchor - (count-i-1)*interval, "open": 1.1,
+                         "high": 1.101, "low": 1.099, "close": 1.1005, "volume": 1}
+                        for i in range(count)]
+                close_age = now - (anchor + interval)
+                frame = {"status":"OK", "provider_status":"OK", "validation_status":"PASS",
+                         "freshness_status":"PASS", "source":"IQ_OPTION_DIRECT_LIVE_STREAM_BUFFER",
+                         "cache_used":True, "provider_cache_used":True, "stream_fresh":True,
+                         "stream_update_age_seconds":5, "closed_candle_age_seconds":close_age,
+                         "closed_candle_count":count, "read_only":True, "symbol":symbol,
+                         "symbol_requested":symbol, "market_type":"REAL", "interval_seconds":interval,
+                         "observed_timestamp":now, "candles":rows}
+                if key == "m5": frame["closed_candles"] = rows
+                pair[key] = frame
+            stream_symbols[symbol] = pair
+        snapshot = {"ok":True, "ready":True, "status":"ready", "symbols":stream_symbols,
+                    "requested_symbols":list(symbols), "ready_symbols":list(symbols),
+                    "observed_timestamp":now,
+                    "observed_at_utc":datetime.fromtimestamp(now, timezone.utc).isoformat(),
+                    "source":"IQ_OPTION_DIRECT_LIVE_STREAM_BUFFER",
+                    "cache_policy":"direct_live_stream_buffer", "read_only":True,
+                    "execution_allowed":False, "executor_enabled":False}
         def fake_urlopen(url, timeout=None):
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-            symbol, interval, count = query["symbol"][0], int(query["interval"][0]), int(query["count"][0])
-            now = time.time(); anchor = int(now // interval) * interval - interval
-            rows = [{"timestamp": anchor - (count-i-1)*interval, "open": 1.1,
-                     "high": 1.101, "low": 1.099, "close": 1.1005, "volume": 1}
-                    for i in range(count)]
-            return Response({"status":"OK", "validation_status":"PASS", "freshness_status":"PASS",
-                             "read_only":True, "cache_hit":False, "source":"IQ_OPTION_HISTORICAL",
-                             "symbol_requested":symbol, "market_type":"REAL", "candles":rows})
+            path = urllib.parse.urlparse(url).path
+            if path.endswith("/prewarm"):
+                return Response({"status":"seeding", "read_only":True, "execution_allowed":False})
+            if path.endswith("/warm_snapshot"):
+                return Response(snapshot)
+            raise AssertionError(f"unexpected test URL: {url}")
         old_cwd = os.getcwd()
         root_text = str(ROOT)
         old_module = sys.modules.pop("market_data_contract", None)
@@ -203,45 +247,38 @@ class TechnicalTestModeTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 os.chdir(tmp)
-                env = {"SYMBOLS": symbols, "INCLUDE_OTC":"false", "OTC_ONLY":"false",
-                       "MARKET_GATEWAY_URL":"https://mock-gateway.invalid"}
+                env = {"SYMBOLS":" ".join(symbols), "INCLUDE_OTC":"false", "OTC_ONLY":"false",
+                       "MARKET_GATEWAY_URL":"https://mock-gateway.invalid", "WARMUP_TIMEOUT_SECONDS":"60"}
                 with patch.dict(os.environ, env, clear=False), patch("urllib.request.urlopen", side_effect=fake_urlopen):
                     with self.assertRaises(SystemExit) as raised:
                         runpy.run_path(str(script), run_name="__main__")
                 self.assertEqual(raised.exception.code, 0)
                 report = json.loads(Path("reports/market_data.json").read_text())
-                self.assertEqual(set(report["fresh_symbols"]), set(symbols.split()))
+                timing = json.loads(Path("reports/final_timing.json").read_text())
+                self.assertEqual(set(report["fresh_symbols"]), set(symbols))
+                self.assertEqual(report["fetch_mode"], "technical_test_live_stream_snapshot")
+                self.assertEqual(report["snapshot_id"], timing.get("snapshot_id"))
         finally:
             os.chdir(old_cwd)
             if root_text not in sys.path: sys.path.insert(0, root_text)
             if old_module is not None: sys.modules["market_data_contract"] = old_module
 
-    def test_live_fetch_requires_uncached_verified_gateway_candles(self):
-        now = time.time()
-        interval = 60
-        anchor = int(now // interval) * interval - interval
-        rows = [{"timestamp": anchor - (119 - i) * interval, "open": 1.0,
-                 "high": 1.001, "low": 0.999, "close": 1.0005, "volume": 1}
-                for i in range(120)]
-        payload = {"status": "OK", "validation_status": "PASS", "freshness_status": "PASS",
-                   "read_only": True, "cache_hit": False, "source": "IQ_OPTION_HISTORICAL",
-                   "symbol_requested": "EURUSD", "market_type": "REAL", "candles": rows}
-
-        class Response:
-            def __enter__(self): return self
-            def __exit__(self, *args): return False
-            def read(self): return json.dumps(payload).encode()
-
-        with patch.object(fetch_technical_test_data.urllib.request, "urlopen", return_value=Response()):
-            result = fetch_technical_test_data.fetch("EURUSD", 60, 120)
-        self.assertEqual(result["status"], "ok")
-        self.assertIs(result["cache_used"], False)
-        self.assertEqual(result["source"], "IQ_OPTION_HISTORICAL")
-
-        payload["cache_hit"] = True
-        with patch.object(fetch_technical_test_data.urllib.request, "urlopen", return_value=Response()):
-            with self.assertRaisesRegex(ValueError, "CACHE_PROVENANCE"):
-                fetch_technical_test_data.fetch("EURUSD", 60, 120)
+    def test_live_stream_snapshot_requires_explicit_fresh_provenance(self):
+        now = time.time(); interval=60; anchor=int(now//interval)*interval-interval
+        rows = [{"timestamp":anchor-(119-i)*interval,"open":1.0,"high":1.001,
+                 "low":0.999,"close":1.0005,"volume":1} for i in range(120)]
+        frame={"status":"OK","provider_status":"OK","validation_status":"PASS",
+               "freshness_status":"PASS","source":"IQ_OPTION_DIRECT_LIVE_STREAM_BUFFER",
+               "cache_used":True,"provider_cache_used":True,"stream_fresh":True,
+               "stream_update_age_seconds":5,"closed_candle_age_seconds":5,
+               "read_only":True,"symbol_requested":"EURUSD","market_type":"REAL",
+               "interval_seconds":60,"observed_timestamp":now,"candles":rows}
+        validated,error=fetch_technical_test_data._validate_stream_frame("EURUSD",frame,60,120,90)
+        self.assertIsNone(error);self.assertEqual(validated["status"],"ok")
+        frame["stream_update_age_seconds"]=91
+        validated,error=fetch_technical_test_data._validate_stream_frame("EURUSD",frame,60,120,90)
+        self.assertEqual(error,"LIVE_STREAM_PROVENANCE_OR_FRESHNESS_FAILED")
+        self.assertEqual(validated,{})
 
 
 if __name__ == "__main__":

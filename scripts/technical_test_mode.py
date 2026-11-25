@@ -128,6 +128,9 @@ def analyze_symbol(symbol: str, timing: dict[str, Any], *, now: float | None = N
                    "read_only": True}
             for name in ("darts", "timesfm", "xgboost", "finbert", "news_api")
         },
+        "m5_confirmation": {"timeframe": "M5", "status": "blocked",
+                            "confirmed": False, "candidate_alignment": False,
+                            "execution_allowed": False, "read_only": True},
     }
     if symbol not in REAL_SYMBOLS:
         result["reason"] = "SYMBOL_NOT_IN_REAL_FX_ALLOWLIST"
@@ -148,9 +151,19 @@ def analyze_symbol(symbol: str, timing: dict[str, Any], *, now: float | None = N
         if not isinstance(frame, dict) or frame.get("status") != "ok":
             result["reason"] = (frame.get("reason") if isinstance(frame, dict) else None) or f"{name.upper()}_BLOCKED"
             return result
-        if (frame.get("read_only") is not True or frame.get("cache_used") is not False
-                or frame.get("provider_cache_used") is not False
-                or frame.get("source") != "IQ_OPTION_HISTORICAL"
+        direct_historical = (
+            frame.get("source") == "IQ_OPTION_HISTORICAL"
+            and frame.get("cache_used") is False
+            and frame.get("provider_cache_used") is False
+        )
+        live_stream = (
+            frame.get("source") == "IQ_OPTION_DIRECT_LIVE_STREAM_BUFFER"
+            and frame.get("cache_used") is True
+            and frame.get("provider_cache_used") is True
+            and frame.get("stream_fresh") is True
+        )
+        if (frame.get("read_only") is not True
+                or not (direct_historical or live_stream)
                 or frame.get("provider_status") != "OK"
                 or frame.get("validation_status") != "PASS"
                 or frame.get("freshness_status") != "PASS"
@@ -158,6 +171,15 @@ def analyze_symbol(symbol: str, timing: dict[str, Any], *, now: float | None = N
                 or frame.get("market_type") != "REAL"):
             result["reason"] = f"{name.upper()}_PROVENANCE_NOT_VERIFIED"
             return result
+        if live_stream:
+            try:
+                stream_age = float(frame.get("stream_update_age_seconds"))
+            except (TypeError, ValueError, OverflowError):
+                result["reason"] = f"{name.upper()}_LIVE_STREAM_TIMESTAMP_MISSING"
+                return result
+            if stream_age < 0 or stream_age > max_age:
+                result["reason"] = f"{name.upper()}_LIVE_STREAM_STALE:{stream_age:.1f}s"
+                return result
         observed = _as_seconds(frame.get("observed_timestamp"))
         if observed is None or observed > now + 30:
             result["reason"] = f"{name.upper()}_OBSERVATION_TIMESTAMP_INVALID"
@@ -182,7 +204,7 @@ def analyze_symbol(symbol: str, timing: dict[str, Any], *, now: float | None = N
     result.update({
         "status": "test_only", "reason": None,
         "data": {
-            "m1_source": "IQ_OPTION_HISTORICAL", "m5_source": "IQ_OPTION_HISTORICAL",
+            "m1_source": timing["m1"].get("source"), "m5_source": timing["m5"].get("source"),
             "m1_closed_candles": len(m1_rows), "m5_closed_candles": len(m5_rows),
             "m1_latest_closed_timestamp": m1_rows[-1]["timestamp"],
             "m5_latest_closed_timestamp": m5_rows[-1]["timestamp"],

@@ -4,7 +4,7 @@ O fluxo `Unified V16 Scan - Read Only` aceita `technical_test_mode=true`. Ele ex
 
 ## O que o modo faz
 
-- Busca candles M1/M5 diretamente no gateway read-only, sem cache e com validação de origem, timestamp, frescor e OHLC.
+- Usa um snapshot atômico do buffer de stream ao vivo do gateway read-only; só aceita a origem explícita da IQ Option, subscrições ativas, timestamps, frescor, M1/M5 fechados e OHLC válidos.
 - Exige cobertura completa do universo solicitado; se algum par ou o refresh final estiver incompleto/stale, bloqueia todos os candidatos daquele teste.
 - Usa somente candles fechados, estrutura EMA 9/21 em M1 e M5, alinhamento da última vela M1 e filtro RSI de extremos.
 - Não instala nem executa Darts, TimesFM, XGBoost, FinBERT, TradingAgents, comitê SharedAI, gerador oficial ou avaliador de resultado.
