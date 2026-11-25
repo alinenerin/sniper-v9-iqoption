@@ -18,7 +18,9 @@ class GitHubScanBridge:
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json"})
 
-    def dispatch(self, symbols: list[str], include_otc: bool = False, otc_only: bool = False, fast: bool = False, ref: str = "main") -> Dict[str, Any]:
+    def dispatch(self, symbols: list[str], include_otc: bool = False, otc_only: bool = False,
+                 fast: bool = False, technical_test_mode: bool = False,
+                 ref: str = "main") -> Dict[str, Any]:
         safe_symbols = [s.upper() for s in symbols if s and s.replace("-", "").isalnum()][:20]
         if not safe_symbols:
             raise ValueError("SYMBOLS_REQUIRED")
@@ -28,11 +30,11 @@ class GitHubScanBridge:
         dispatched_at = time.time()
         response = self.session.post(
             f"{API}/repos/{self.repo}/actions/workflows/{WORKFLOW}/dispatches",
-            json={"ref": ref, "inputs": {"symbols": " ".join(safe_symbols), "include_otc": str(bool(include_otc)).lower(), "otc_only": str(bool(otc_only)).lower(), "fast_mode": str(bool(fast)).lower()}},
+            json={"ref": ref, "inputs": {"symbols": " ".join(safe_symbols), "include_otc": str(bool(include_otc)).lower(), "otc_only": str(bool(otc_only)).lower(), "fast_mode": str(bool(fast)).lower(), "technical_test_mode": str(bool(technical_test_mode)).lower()} },
             timeout=30,
         )
         response.raise_for_status()
-        return {"dispatched": True, "workflow": WORKFLOW, "repo": self.repo, "ref": ref, "dispatched_at": dispatched_at, "symbols": safe_symbols, "include_otc": include_otc, "otc_only": otc_only, "fast": fast, "read_only": True, "execution_allowed": False, "executor_enabled": False}
+        return {"dispatched": True, "workflow": WORKFLOW, "repo": self.repo, "ref": ref, "dispatched_at": dispatched_at, "symbols": safe_symbols, "include_otc": include_otc, "otc_only": otc_only, "fast": fast, "technical_test_mode": bool(technical_test_mode), "read_only": True, "execution_allowed": False, "executor_enabled": False}
 
     def run_after(self, dispatched_at: float, timeout_seconds: int = 120,
                   ref: str = "main") -> Dict[str, Any]:
@@ -95,6 +97,8 @@ class GitHubScanBridge:
                 raise RuntimeError("REPORT_INCLUDE_OTC_MISMATCH")
             if bool(inputs.get("otc_only")) != bool(expected.get("otc_only")):
                 raise RuntimeError("REPORT_OTC_ONLY_MISMATCH")
+            if bool(inputs.get("technical_test_mode")) != bool(expected.get("technical_test_mode", False)):
+                raise RuntimeError("REPORT_TECHNICAL_TEST_MODE_MISMATCH")
             expected_symbols = set(expected.get("symbols") or [])
             report_symbols = set(inputs.get("symbols") or [])
             if expected_symbols != report_symbols:

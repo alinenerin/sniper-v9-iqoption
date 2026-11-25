@@ -130,8 +130,10 @@ class LiveStreamIntegrationTests(unittest.TestCase):
         timing_step = workflow.split("- name: Refresh final M1/M5 timing", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("USE_WARM_STREAM:", timing_step)
         coverage = workflow.split("- name: Verify fast-mode pair coverage and timing provenance", 1)[1].split("- name:", 1)[0]
-        self.assertIn("fast_direct_live_stream_warm_cache", coverage)
+        # The fast-lane coverage gate accepts only the verified uncached lane;
+        # warm-stream handling is validated separately by its integration test.
         self.assertIn("fast_direct_m1_m5_uncached", coverage)
+        self.assertNotIn("fast_direct_live_stream_warm_cache", coverage)
 
     def test_gateway_prewarm_and_snapshot_routes_forward_pair_subset_read_only(self):
         import market_gateway

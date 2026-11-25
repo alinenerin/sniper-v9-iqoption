@@ -33,6 +33,11 @@ on:
         required: true
         default: false
         type: boolean
+      technical_test_mode:
+        description: 'Teste técnico determinístico com M1/M5, sem módulos de IA e sem sinal operacional'
+        required: true
+        default: false
+        type: boolean
       sniper_mode:
         description: 'Modo isolado: análise binária real de até 3 pares, com registro antecipado somente após aprovação canônica'
         required: true
@@ -71,6 +76,7 @@ jobs:
       SYMBOLS: ${{ github.event.inputs.symbols }}
       MARKET: ${{ github.event.inputs.market }}
       FAST_MODE: ${{ github.event.inputs.fast_mode }}
+      TECHNICAL_TEST_MODE: ${{ github.event.inputs.technical_test_mode }}
       SNIPER_MODE: ${{ github.event.inputs.sniper_mode }}
       NO_SCORE_MODE: ${{ github.event.inputs.no_score_mode }}
       REQUEST_ISSUE: ${{ github.event.inputs.request_issue }}
@@ -80,6 +86,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Record workflow start epoch
         run: echo "SCAN_JOB_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Validate technical test mode inputs
+        if: github.event.inputs.technical_test_mode == 'true'
+        run: |
+          python - <<'PYTESTMODE'
+          import os
+          if os.getenv('INCLUDE_OTC', 'false').lower() == 'true' or os.getenv('OTC_ONLY', 'false').lower() == 'true':
+              raise SystemExit('TECHNICAL_TEST_MODE_REAL_FX_ONLY')
+          if os.getenv('MARKET', 'binary').lower() != 'binary':
+              raise SystemExit('TECHNICAL_TEST_MODE_BINARY_MARKET_ONLY')
+          if os.getenv('SNIPER_MODE', 'false').lower() == 'true':
+              raise SystemExit('TECHNICAL_TEST_MODE_CANNOT_COMBINE_WITH_SNIPER')
+          print('technical_test_mode_inputs=valid; read_only=true; execution_allowed=false')
+          PYTESTMODE
       - name: Validate and prepare isolated sniper inputs before gateway calls
         if: github.event.inputs.sniper_mode == 'true'
         run: python scripts/sniper_mode.py
@@ -89,21 +108,24 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - name: Restore persistent Python intelligence environment
+        if: github.event.inputs.technical_test_mode != 'true'
         id: python-env-cache
         uses: actions/cache@v4
         with:
           path: .venv
           key: v16-python311-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-intelligence-v5
       - name: Prepare Python intelligence environment
-        if: steps.python-env-cache.outputs.cache-hit != 'true'
+        if: steps.python-env-cache.outputs.cache-hit != 'true' && github.event.inputs.technical_test_mode != 'true'
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/pip install -r requirements.txt
           .venv/bin/pip install 'Darts>=0.30,<1.0' 'timesfm>=1.3.0' 'torch>=2.2' 'transformers>=4.40' sentencepiece requests 'xgboost>=2.0' scikit-learn
       - name: Activate cached Python environment
+        if: github.event.inputs.technical_test_mode != 'true'
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Verify and repair cached dependencies
+        if: github.event.inputs.technical_test_mode != 'true'
         run: |
           python -m pip install --disable-pip-version-check -r requirements.txt
           python -m pip install --disable-pip-version-check 'Darts>=0.30,<1.0' 'timesfm>=1.3.0' 'torch>=2.2' 'transformers>=4.40' sentencepiece requests 'xgboost>=2.0' scikit-learn
@@ -119,10 +141,14 @@ jobs:
           python audit_architecture.py
           python audit_readonly_validation.py
       - name: Run offline read-only contract tests
+        if: github.event.inputs.technical_test_mode != 'true'
         env:
           # Unit tests must exercise the ordinary path even during a sniper dispatch.
           SNIPER_MODE: 'false'
         run: python -m unittest discover -s tests -t . -v
+      - name: Run deterministic technical-test contracts
+        if: github.event.inputs.technical_test_mode == 'true'
+        run: python -m unittest discover -s tests -p 'test_technical_test_mode.py' -v
       - name: Warm active read-only Render/IQ Option gateway
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
@@ -140,6 +166,7 @@ jobs:
           echo 'Gateway did not reach connected state; stopping before market-data fetch.' >&2
           exit 1
       - name: Fetch live market data from active read-only gateway
+        if: github.event.inputs.technical_test_mode != 'true'
         env:
           MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
           FAST_TRIAGE: ${{ github.event.inputs.fast_mode }}
@@ -156,7 +183,13 @@ jobs:
           rc=$?
           python scripts/record_sniper_timing.py market_data_fetch "$fetch_started"
           exit "$rc"
+      - name: Fetch bounded uncached candles for technical test
+        if: github.event.inputs.technical_test_mode == 'true'
+        env:
+          MARKET_GATEWAY_URL: https://iqoption-readonly-gateway.onrender.com
+        run: python scripts/fetch_technical_test_data.py
       - name: Fetch canonical DXY/VIX macro snapshot
+        if: github.event.inputs.technical_test_mode != 'true'
         run: |
           macro_started=$(date +%s.%N)
           python scripts/fetch_tradingview_macro.py
@@ -164,7 +197,7 @@ jobs:
           python scripts/record_sniper_timing.py macro_snapshot "$macro_started"
           exit "$rc"
       - name: Enforce verified-fresh macro provenance for real markets
-        if: github.event.inputs.otc_only != 'true' && github.event.inputs.market != 'otc'
+        if: github.event.inputs.technical_test_mode != 'true' && github.event.inputs.otc_only != 'true' && github.event.inputs.market != 'otc'
         run: |
           python - <<'PY'
           import json
@@ -195,11 +228,13 @@ jobs:
           json.dump({'ok':False,'reason':'FAST_MODE_MACRO_ADVISORY_SKIPPED','symbols':{}},open('reports/macro_data.json','w'))
           PY
       - name: Cache FinBERT and TimesFM model artifacts
+        if: github.event.inputs.technical_test_mode != 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
           key: finbert-timesfm-prosusai-${{ runner.os }}-v2
       - name: Run intelligence modules in parallel (read-only)
+        if: github.event.inputs.technical_test_mode != 'true'
         continue-on-error: true
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
@@ -242,9 +277,14 @@ jobs:
             exit 1
           fi
       - name: Test strict market-data contract
+        if: github.event.inputs.technical_test_mode != 'true'
         run: python -m unittest -v test_market_data_contract.py
       - name: Compile read-only analysis modules
+        if: github.event.inputs.technical_test_mode != 'true'
         run: python -m py_compile shared_ai/consultation.py scripts/generate_scan_report.py scripts/sniper_mode.py scripts/record_sniper_timing.py engines/binary/sniper_timing.py scripts/evaluate_hypothetical_expiration.py scripts/run_darts_inference.py scripts/run_timesfm_inference.py scripts/run_finbert_inference.py scripts/train_xgboost_inference.py scripts/run_m5_inference.py scripts/run_sniper_layer_b.py
+      - name: Compile dependency-free technical test lane
+        if: github.event.inputs.technical_test_mode == 'true'
+        run: python -m py_compile scripts/fetch_technical_test_data.py scripts/technical_test_mode.py
       - name: Refresh final M1/M5 timing without replacing agent evidence
         if: success()
         env:
@@ -261,6 +301,7 @@ jobs:
           python scripts/record_sniper_timing.py final_timing_refresh "$timing_started"
           exit "$rc"
       - name: Verify current analysis commit and official thresholds
+        if: github.event.inputs.technical_test_mode != 'true'
         run: |
           python - <<'PYCONFIG'
           import os
@@ -276,12 +317,17 @@ jobs:
           test -n "${GITHUB_SHA:-}"
           test -f scripts/generate_scan_report.py
           test -f core/score_mode_comparison.py
-          test "$(grep -RIl --include='*.py' 'Path(\"reports/latest_scan.json\")\.write_text' scripts | wc -l)" -eq 1
+          test "$(grep -c 'Path(\"reports/latest_scan.json\")\.write_text' scripts/generate_scan_report.py)" -eq 1
+          test -f scripts/technical_test_mode.py
           sha256sum scripts/generate_scan_report.py core/score_mode_comparison.py
           echo "unified_checkout_sha=$GITHUB_SHA"
           echo "unified_report_entrypoint=scripts/generate_scan_report.py"
 
+      - name: Generate deterministic technical test report
+        if: github.event.inputs.technical_test_mode == 'true'
+        run: python scripts/technical_test_mode.py
       - name: Generate unified read-only report
+        if: github.event.inputs.technical_test_mode != 'true'
         run: |
           report_started=$(date +%s.%N)
           set +e
@@ -336,13 +382,13 @@ jobs:
             reports/sniper_layer_b.json
           if-no-files-found: ignore
       - name: Run isolated sniper Layer B advisory enrichment
-        if: github.event.inputs.sniper_mode == 'true'
+        if: github.event.inputs.sniper_mode == 'true' && github.event.inputs.technical_test_mode != 'true'
         run: |
           layer_b_started=$(date +%s.%N)
           python scripts/run_sniper_layer_b.py
           python scripts/record_sniper_timing.py layer_b_advisory "$layer_b_started"
       - name: Verify fast-mode pair coverage and timing provenance
-        if: github.event.inputs.fast_mode == 'true'
+        if: github.event.inputs.fast_mode == 'true' && github.event.inputs.technical_test_mode != 'true'
         run: |
           python - <<'PYFAST'
           import json, os
@@ -366,14 +412,40 @@ jobs:
           print(f'fast_coverage requested={len(expected)} market={len(market.get("symbols",{}))} timing={len(timing.get("symbols",{}))} analyses={len(analyses)} fresh={len(market.get("fresh_symbols",[]))} blocked={len(expected)-len(set(market.get("fresh_symbols",[])))}')
           PYFAST
       - name: Run TradingAgents shadow committee
+        if: github.event.inputs.technical_test_mode != 'true'
         run: python scripts/run_tradingagents_shadow.py
       - name: Evaluate hypothetical result after expiration
+        if: github.event.inputs.technical_test_mode != 'true'
         env:
           # Do not spend the workflow timeout waiting for a future candle;
           # the evaluator remains read-only and records pending_expiration when
           # no post-decision candle exists yet.
           PAPER_EXPIRATION_WAIT_SECONDS: 0
         run: python scripts/evaluate_hypothetical_expiration.py
+      - name: Validate deterministic technical-test report
+        if: github.event.inputs.technical_test_mode == 'true'
+        run: |
+          python - <<'PYTESTREPORT'
+          import json, os
+          from pathlib import Path
+          report=json.loads(Path('reports/latest_scan.json').read_text())
+          expected=os.environ.get('SYMBOLS','ALL_AVAILABLE').replace(',',' ').split()
+          canonical=['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD','EURGBP','EURJPY','GBPJPY']
+          symbols=canonical if not expected or any(x.upper() in {'ALL','ALL_AVAILABLE','*'} for x in expected) else [x.upper() for x in expected]
+          analyses=report.get('binary',{}).get('analyses',[])
+          assert report.get('technical_test_mode') is True
+          assert report.get('read_only') is True and report.get('execution_allowed') is False
+          assert report.get('executor_enabled') is False
+          assert report.get('test_mode_contract',{}).get('official_signal') is False
+          assert {x.get('symbol') for x in analyses} == set(symbols)
+          for item in analyses:
+              assert item.get('official_signal') is False
+              assert item.get('approved') is False
+              assert item.get('signal_actionable') is False
+              assert item.get('execution_allowed') is False
+              assert item.get('score') is None
+          print('technical_test_report=VALID; official_signals=0; execution=blocked')
+          PYTESTREPORT
       - name: Validate separated read-only report
         run: |
           python - <<'PY'

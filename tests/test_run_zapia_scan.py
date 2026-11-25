@@ -49,6 +49,18 @@ class RunZapiaScanCliTest(unittest.TestCase):
         self.assertIs(call.kwargs["include_otc"], True)
         self.assertIs(call.kwargs["otc_only"], True)
 
+    def test_technical_test_mode_is_explicit_and_does_not_use_ai_fast_lane(self):
+        _, call, _ = self.run_cli(["--symbols", "EURUSD", "--technical-test"])
+        self.assertIs(call.kwargs["technical_test_mode"], True)
+        self.assertIs(call.kwargs["fast"], False)
+
+    def test_technical_test_mode_rejects_otc(self):
+        with patch.object(sys, "argv", ["run_zapia_scan.py", "--symbols", "EURUSD", "--technical-test", "--otc"]), \
+             patch.object(run_zapia_scan, "GitHubScanBridge"):
+            with self.assertRaises(SystemExit) as raised:
+                run_zapia_scan.main()
+        self.assertEqual(raised.exception.code, 2)
+
     def test_full_and_fast_cannot_be_combined(self):
         with patch.object(sys, "argv", ["run_zapia_scan.py", "--symbols", "EURUSD", "--full", "--fast"]), \
              patch.object(run_zapia_scan, "GitHubScanBridge"):

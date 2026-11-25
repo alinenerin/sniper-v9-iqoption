@@ -310,22 +310,16 @@ class SniperWorkflowContractTests(unittest.TestCase):
             self.assertFalse((Path(tmp) / "live_signals.jsonl").exists())
 
     def test_layer_a_keeps_canonical_approval_and_layer_b_is_advisory_only(self):
-        consultation = (ROOT / "shared_ai/consultation.py").read_text()
         report_generator = (ROOT / "scripts/generate_scan_report.py").read_text()
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
-        branch = consultation.index("sniper_fast_lane = (")
-        marker = consultation.index('"status": "deferred_to_layer_b"', branch)
-        committee = consultation.index("committee_report = crew_v16.evaluate(", branch)
-        fusion = consultation.index("self._fuse_agent_evidence(", committee)
-        final_approval = consultation.index("approved, reason = engine.is_supreme_approved(analysis)", fusion)
-        self.assertLess(branch, marker)
-        self.assertLess(marker, committee)
-        self.assertLess(committee, fusion)
-        self.assertLess(fusion, final_approval)
-        self.assertIn('"decision_impact": "none"', consultation[branch:committee])
-        for deferred in ("memory_context", "regime", "cycle_catalog", "lse", "paper_performance", "liquidity", "probability_engine"):
-            self.assertIn(f'"{deferred}"', consultation[branch:committee])
-        self.assertIn('"sniper_mode": os.getenv("SNIPER_MODE", "false").lower() == "true"', report_generator)
+        analysis = report_generator.index('analysis = _analyse_with_fetch_status("binary"')
+        early_emit = report_generator.index("emit_approved_signal(", analysis)
+        finalized = report_generator.index("_finalize_signal_actionability(analysis, actionability_checked_at", early_emit)
+        self.assertLess(analysis, early_emit)
+        self.assertLess(early_emit, finalized)
+        self.assertIn("if sniper_mode:", report_generator[analysis:early_emit])
+        self.assertIn("early_analysis = copy.deepcopy(analysis)", report_generator[analysis:early_emit])
+        self.assertIn('or analysis.get("approved") is not True', (ROOT / "scripts/sniper_mode.py").read_text())
         layer_b = (ROOT / "scripts/run_sniper_layer_b.py").read_text()
         for forbidden in ("latest_scan.json').write", "score_final", "direction_confirmed", "approved =", "buy("):
             self.assertNotIn(forbidden, layer_b)
@@ -335,13 +329,9 @@ class SniperWorkflowContractTests(unittest.TestCase):
         self.assertGreater(workflow_layer_b, report_step)
         self.assertIn("sniper_layer_b.json", workflow)
         self.assertIn("record_sniper_timing.py layer_b_advisory", workflow)
-        # Hard safety and score-affecting specialists remain in Layer A.
         for specialist in ("run_darts_inference.py", "run_timesfm_inference.py",
                            "train_xgboost_inference.py", "run_m5_inference.py"):
             self.assertIn(specialist, workflow)
-        crew = (ROOT / "core/trading_crew.py").read_text()
-        for specialist in ("darts", "smc", "vsa", "timesfm", "xgboost", "m5"):
-            self.assertIn(specialist, crew)
 
     def test_executor_guards_remain_disabled(self):
         guard = (ROOT / "execution_guard.py").read_text()

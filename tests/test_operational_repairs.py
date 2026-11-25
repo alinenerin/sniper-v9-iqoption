@@ -22,10 +22,10 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("github.event.inputs.fast_mode == 'true' && '0' || '3'", workflow)
         self.assertNotIn("select_fast_candidates.py", workflow)
         self.assertNotIn("Fetch deep data for selected candidates", workflow)
-        self.assertEqual(workflow.count("python scripts/fetch_railway_market.py"), 1)
+        self.assertEqual(workflow.count("python scripts/fetch_market_gateway.py"), 1)
         timing_step = workflow.split("- name: Refresh final M1/M5 timing", 1)[1].split("- name:", 1)[0]
         self.assertIn("if: success()", timing_step)
-        self.assertIn("USE_WARM_STREAM:", timing_step)
+        self.assertNotIn("USE_WARM_STREAM:", timing_step)
         fast_input = workflow.split("      fast_mode:", 1)[1].split("      no_score_mode:", 1)[0]
         self.assertIn("default: false", fast_input)
         self.assertIn("-intelligence-v5", workflow)
@@ -42,7 +42,7 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertIn("actionable_without_valid_timing", workflow)
 
     def test_live_scan_uses_bounded_single_pair_batches_and_records_latency(self):
-        fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
+        fetcher = (ROOT / "scripts/fetch_market_gateway.py").read_text()
         self.assertIn("SNAPSHOT_BATCH_SIZE = 1", fetcher)
         self.assertIn("range(0, len(symbols), SNAPSHOT_BATCH_SIZE)", fetcher)
         self.assertIn("batch_diagnostics", fetcher)
@@ -52,7 +52,7 @@ class WorkflowRepairContractTests(unittest.TestCase):
         self.assertNotIn("range(0, len(symbols), 2)", fetcher)
 
     def test_helper_scripts_use_active_gateway(self):
-        names = ("scripts/fetch_railway_market.py", "scripts/refresh_final_timing.py",
+        names = ("scripts/fetch_market_gateway.py", "scripts/refresh_final_timing.py",
                  "scripts/evaluate_hypothetical_expiration.py", "scripts/test_market_data_only.py")
         for name in names:
             source = (ROOT / name).read_text()
@@ -182,17 +182,21 @@ class FastMarketLaneTests(unittest.TestCase):
         now = 1_000_000.0
         m1_last = int(now // 60) * 60 - 60
         m5_last = int(now // 300) * 300 - 300
-        m1 = [{"timestamp": m1_last - i * 60, "close": 1.0} for i in range(999, -1, -1)]
-        m5 = [{"timestamp": m5_last - i * 300, "close": 1.0} for i in range(30, -1, -1)]
+        m1_rows = [{"timestamp": m1_last - i * 60, "open": 1.0, "high": 1.001,
+                    "low": .999, "close": 1.0, "volume": 1} for i in range(999, -1, -1)]
+        m5_rows = [{"timestamp": m5_last - i * 300, "open": 1.0, "high": 1.001,
+                    "low": .999, "close": 1.0, "volume": 1} for i in range(30, -1, -1)]
+        def frame(rows, symbol, interval, observed=now):
+            return {"candles": rows, "observed_timestamp": observed, "symbol": symbol,
+                    "interval_seconds": interval, "source": "IQ_OPTION_HISTORICAL",
+                    "cache_used": False, "provider_cache_used": False,
+                    "provider_status": "OK", "validation_status": "PASS",
+                    "freshness_status": "PASS"}
         payload = {"symbols": {
-            "EURUSD": {"candles": {"candles": m1, "observed_timestamp": now},
-                       "m5_candles": {"candles": m5, "observed_timestamp": now}},
-            "GBPUSD": {"candles": {"candles": m1[:20], "observed_timestamp": now},
-                       "m5_candles": {"candles": m5, "observed_timestamp": now}},
-            "USDJPY": {"candles": {"candles": m1, "observed_timestamp": now + 300},
-                       "m5_candles": {"candles": m5, "observed_timestamp": now}},
-            "AUDUSD": {"candles": {"candles": m1, "observed_timestamp": now},
-                       "m5_candles": {"candles": m5[:10], "observed_timestamp": now}},
+            "EURUSD": {"candles": frame(m1_rows, "EURUSD", 60), "m5_candles": frame(m5_rows, "EURUSD", 300)},
+            "GBPUSD": {"candles": frame(m1_rows[:20], "GBPUSD", 60), "m5_candles": frame(m5_rows, "GBPUSD", 300)},
+            "USDJPY": {"candles": frame(m1_rows, "USDJPY", 60, now + 300), "m5_candles": frame(m5_rows, "USDJPY", 300)},
+            "AUDUSD": {"candles": frame(m1_rows, "AUDUSD", 60), "m5_candles": frame(m5_rows[:10], "AUDUSD", 300)},
         }}
         # Timestamp is the candle open; the closed-candle age is fresh even
         # when the raw timestamp is older than the configured freshness window.
@@ -252,7 +256,7 @@ class FastMarketLaneTests(unittest.TestCase):
                 os.chdir(cwd)
                 with patch.dict(os.environ, env), patch("urllib.request.urlopen", side_effect=fake_urlopen):
                     try:
-                        runpy.run_path(str(ROOT / "scripts/fetch_railway_market.py"), run_name="__main__")
+                        runpy.run_path(str(ROOT / "scripts/fetch_market_gateway.py"), run_name="__main__")
                     except SystemExit as exc:
                         self.assertEqual(exc.code, 0)
             finally:
@@ -272,7 +276,7 @@ class FastMarketLaneTests(unittest.TestCase):
             self.assertIs(market["read_only"], True)
 
     def test_fast_fetcher_has_explicit_coverage_failure_contract(self):
-        fetcher = (ROOT / "scripts/fetch_railway_market.py").read_text()
+        fetcher = (ROOT / "scripts/fetch_market_gateway.py").read_text()
         workflow = (ROOT / ".github/workflows/unified_readonly_scan.yml").read_text()
         self.assertIn("for symbol in symbols:", fetcher)
         self.assertIn("fetch_fast_pair(", fetcher)

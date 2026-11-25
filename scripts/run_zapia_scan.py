@@ -11,6 +11,8 @@ def main() -> int:
     parser.add_argument("--symbols", nargs="+", required=True)
     parser.add_argument("--otc", action="store_true", help="OTC-only scan")
     parser.add_argument("--wait", action="store_true")
+    parser.add_argument("--technical-test", action="store_true",
+                        help="deterministic M1/M5 test lane; no AI modules and never an official/actionable signal")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--fast", action="store_true", help="fast IQ read-only lane; heavy agents remain advisory")
     mode.add_argument("--full", action="store_true", help="run the full read-only lane")
@@ -21,8 +23,11 @@ def main() -> int:
     bridge = GitHubScanBridge()
     # Full ten-pair coverage is the default. Fast mode is opt-in only; OTC and
     # explicit full scans always preserve complete isolated coverage.
-    fast = bool(args.fast and not args.full and not args.otc)
-    result = bridge.dispatch(symbols, include_otc=args.otc, otc_only=args.otc, fast=fast)
+    if args.technical_test and args.otc:
+        parser.error("--technical-test supports real FX only; OTC remains isolated")
+    fast = bool(args.fast and not args.full and not args.otc and not args.technical_test)
+    result = bridge.dispatch(symbols, include_otc=args.otc, otc_only=args.otc, fast=fast,
+                             technical_test_mode=args.technical_test)
     if not args.wait:
         print(json.dumps(result, ensure_ascii=False)); return 0
     run = bridge.run_after(result["dispatched_at"], ref=result.get("ref", "main"))
