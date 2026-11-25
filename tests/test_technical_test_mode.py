@@ -172,6 +172,50 @@ class TechnicalTestModeTests(unittest.TestCase):
         self.assertIn("python scripts/run_timesfm_inference.py", workflow)
         self.assertIn("python scripts/train_xgboost_inference.py", workflow)
 
+    def test_fetcher_entrypoint_resolves_repo_contract_when_run_by_path(self):
+        import os
+        import runpy
+        import tempfile
+        import urllib.parse
+        from unittest.mock import patch
+        script = ROOT / "scripts/fetch_technical_test_data.py"
+        symbols = " ".join(("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
+                             "USDCHF", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY"))
+        class Response:
+            def __init__(self, payload): self.payload = payload
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return json.dumps(self.payload).encode()
+        def fake_urlopen(url, timeout=None):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            symbol, interval, count = query["symbol"][0], int(query["interval"][0]), int(query["count"][0])
+            now = time.time(); anchor = int(now // interval) * interval - interval
+            rows = [{"timestamp": anchor - (count-i-1)*interval, "open": 1.1,
+                     "high": 1.101, "low": 1.099, "close": 1.1005, "volume": 1}
+                    for i in range(count)]
+            return Response({"status":"OK", "validation_status":"PASS", "freshness_status":"PASS",
+                             "read_only":True, "cache_hit":False, "source":"IQ_OPTION_HISTORICAL",
+                             "symbol_requested":symbol, "market_type":"REAL", "candles":rows})
+        old_cwd = os.getcwd()
+        root_text = str(ROOT)
+        old_module = sys.modules.pop("market_data_contract", None)
+        if root_text in sys.path: sys.path.remove(root_text)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.chdir(tmp)
+                env = {"SYMBOLS": symbols, "INCLUDE_OTC":"false", "OTC_ONLY":"false",
+                       "MARKET_GATEWAY_URL":"https://mock-gateway.invalid"}
+                with patch.dict(os.environ, env, clear=False), patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                    with self.assertRaises(SystemExit) as raised:
+                        runpy.run_path(str(script), run_name="__main__")
+                self.assertEqual(raised.exception.code, 0)
+                report = json.loads(Path("reports/market_data.json").read_text())
+                self.assertEqual(set(report["fresh_symbols"]), set(symbols.split()))
+        finally:
+            os.chdir(old_cwd)
+            if root_text not in sys.path: sys.path.insert(0, root_text)
+            if old_module is not None: sys.modules["market_data_contract"] = old_module
+
     def test_live_fetch_requires_uncached_verified_gateway_candles(self):
         now = time.time()
         interval = 60
