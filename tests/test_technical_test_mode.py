@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.technical_test_mode import analyze_symbol
+from scripts.technical_test_mode import analyze_symbol, hypothetical_entry_timing
 from scripts import fetch_technical_test_data
 
 
@@ -68,6 +68,16 @@ def _valid_timing(symbol: str):
 
 
 class TechnicalTestModeTests(unittest.TestCase):
+    def test_hypothetical_entry_uses_next_m1_boundary_and_m3_window_without_actionability(self):
+        timing = hypothetical_entry_timing(1_800_000_057.4)
+        self.assertEqual(timing["entry_timestamp"], 1_800_000_120)
+        self.assertEqual(timing["exact_second"], 0)
+        self.assertEqual(timing["entry_local_hhmmss"].split(":")[-1], "00")
+        self.assertEqual(timing["expiry_timestamp"] - timing["entry_timestamp"], 180)
+        self.assertFalse(timing["official_signal"])
+        self.assertFalse(timing["signal_actionable"])
+        self.assertFalse(timing["execution_allowed"])
+
     def test_aligned_closed_fresh_m1_m5_produces_hypothesis_only(self):
         result = analyze_symbol("EURUSD", _valid_timing("EURUSD"), now=NOW)
         self.assertEqual(result["status"], "test_candidate")
@@ -181,6 +191,11 @@ class TechnicalTestModeTests(unittest.TestCase):
         self.assertFalse(row["signal_actionable"])
         self.assertIsNone(row.get("score"))
         self.assertFalse(row["official_signal"])
+        timing = row["test_entry_timing"]
+        self.assertEqual(timing["exact_second"], 0)
+        self.assertEqual(timing["expiry_timestamp"] - timing["entry_timestamp"], 180)
+        self.assertFalse(timing["signal_actionable"])
+        self.assertFalse(timing["execution_allowed"])
 
     def test_report_lane_isolated_from_ai_pipeline(self):
         from pathlib import Path

@@ -14,6 +14,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,37 @@ M1_MAX_AGE_SECONDS = 90
 M5_MAX_AGE_SECONDS = 300
 M1_MIN_CLOSED = 30
 M5_MIN_CLOSED = 25
+TEST_ENTRY_MIN_LEAD_SECONDS = 5
+TEST_EXPIRY_SECONDS = 180
+SAO_PAULO = ZoneInfo("America/Sao_Paulo")
+
+
+def hypothetical_entry_timing(now: float) -> dict[str, Any]:
+    """Next valid M1 boundary for a paper check; not an actionable entry."""
+    entry = ((int(float(now) + TEST_ENTRY_MIN_LEAD_SECONDS) + 59) // 60) * 60
+    expiry = entry + TEST_EXPIRY_SECONDS
+    local = datetime.fromtimestamp(entry, SAO_PAULO)
+    return {
+        "status": "hypothetical_test_window",
+        "timeframe": "M1",
+        "entry_timestamp": entry,
+        "entry_at_utc": datetime.fromtimestamp(entry, timezone.utc).isoformat(),
+        "entry_at_local": local.isoformat(),
+        "entry_local_hhmm": local.strftime("%H:%M"),
+        "exact_second": local.second,
+        "entry_local_hhmmss": local.strftime("%H:%M:%S"),
+        "minimum_lead_seconds": TEST_ENTRY_MIN_LEAD_SECONDS,
+        "expiry_timeframe": "M3",
+        "expiry_duration_seconds": TEST_EXPIRY_SECONDS,
+        "expiry_timestamp": expiry,
+        "expiry_at_local": datetime.fromtimestamp(expiry, SAO_PAULO).isoformat(),
+        "hypothetical_result": None,
+        "official_signal": False,
+        "signal_actionable": False,
+        "execution_allowed": False,
+        "read_only": True,
+        "note": "Janela hipotética para medir assertividade; não é ordem nem sinal aprovado.",
+    }
 
 
 def _as_seconds(raw: Any) -> float | None:
@@ -292,6 +324,10 @@ def main() -> int:
                      or timing_symbols[symbol].get("status") != "ok"]
     rows = [analyze_symbol(symbol, timing_symbols.get(symbol, {}), now=now)
             for symbol in symbols]
+    test_window = hypothetical_entry_timing(now)
+    for row in rows:
+        if row.get("status") == "test_candidate":
+            row["test_entry_timing"] = dict(test_window)
     if timing_errors:
         reason = "FULL_REQUESTED_UNIVERSE_FINAL_TIMING_INCOMPLETE:" + ";".join(timing_errors)
         for row in rows:
